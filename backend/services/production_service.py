@@ -1,12 +1,10 @@
 import io
 import os
-import pandas as pd
 from bs4 import BeautifulSoup
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-# ── Reference file paths ───────────────────────────────────────────────────
 BASE = os.path.dirname(os.path.dirname(__file__))
 REF  = os.path.join(BASE, "reference-files")
 
@@ -14,7 +12,6 @@ CAT_MAP_PATH    = os.path.join(REF, "daraz_and_cartup_category_mapping.xlsx")
 CARTUP_CAT_PATH = os.path.join(REF, "category_mapping.xlsx")
 VAR_MATCH_PATH  = os.path.join(REF, "Category_wise_varints.xlsx")
 
-# ── Static lookups (loaded once) ───────────────────────────────────────────
 MANUAL_CAT_MAP = {
     '10000860': '4681', '10000866': '4681', '10000887': '4681',
     '10002020': '4660', '10121':    '4690',
@@ -37,24 +34,87 @@ SECTIONS = [
     ('Extra',               'EDEDED', 4),
 ]
 
+# ── openpyxl helpers ───────────────────────────────────────────────────────
+def _wb_to_rows(path_or_bytes, sheet_name=None, skip_rows=0):
+    """Read xlsx → list of dicts using openpyxl (no pandas)."""
+    if isinstance(path_or_bytes, (str, os.PathLike)):
+        wb = load_workbook(path_or_bytes, read_only=True, data_only=True)
+    else:
+        wb = load_workbook(io.BytesIO(path_or_bytes), read_only=True, data_only=True)
+
+    ws = wb[sheet_name] if sheet_name else wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+
+    if not rows: return []
+    header = [str(c).strip() if c is not None else '' for c in rows[skip_rows]]
+    result = []
+    for row in rows[skip_rows + 1:]:
+        d = {header[i]: (_v(row[i]) if i < len(row) else '') for i in range(len(header))}
+        result.append(d)
+    return result, header
+
+def _wb_sheets(path_or_bytes, skip_rows=0):
+    """Read all sheets → dict of sheet_name: list of dicts."""
+    if isinstance(path_or_bytes, (str, os.PathLike)):
+        wb = load_workbook(path_or_bytes, read_only=True, data_only=True)
+    else:
+        wb = load_workbook(io.BytesIO(path_or_bytes), read_only=True, data_only=True)
+    result = {}
+    for name in wb.sheetnames:
+        ws = wb[name]
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows: continue
+        header = [str(c).strip() if c is not None else '' for c in rows[skip_rows]]
+        sheet_rows = []
+        for row in rows[skip_rows + 1:]:
+            d = {header[i]: (_v(row[i]) if i < len(row) else '') for i in range(len(header))}
+            sheet_rows.append(d)
+        result[name] = (sheet_rows, header)
+    wb.close()
+    return result
+
+def _v(x):
+    if x is None: return ''
+    s = str(x).strip()
+    return '' if s == 'nan' else s
+
+# ── Load reference files ───────────────────────────────────────────────────
 def _load_references():
-    cat_map    = pd.read_excel(CAT_MAP_PATH, dtype=str)
-    cartup_cat = pd.read_excel(CARTUP_CAT_PATH, dtype=str)
-    var_match  = pd.read_excel(VAR_MATCH_PATH, sheet_name='Variations matching', dtype=str)
-
-    daraz_to_cartup = dict(zip(cat_map['Daraz Category ID'].str.strip(), cat_map['Cartup Category ID'].str.strip()))
+    # Category map: Daraz → Cartup
+    cat_rows, _ = _wb_to_rows(CAT_MAP_PATH)
+    daraz_to_cartup = {}
+    for r in cat_rows:
+        d = _v(r.get('Daraz Category ID'))
+        c = _v(r.get('Cartup Category ID'))
+        if d and c:
+            daraz_to_cartup[d] = c
     daraz_to_cartup.update(MANUAL_CAT_MAP)
-    cartup_to_path = dict(zip(cartup_cat['Cartup Category ID'].str.strip(), cartup_cat['Cartup Category Path'].str.strip()))
-    cartup_to_tags = dict(zip(cartup_cat['Cartup Category ID'].str.strip(), cartup_cat.iloc[:,2].str.strip()))
 
+    # Cartup categories: ID → Path + Tags
+    cartup_rows, cartup_header = _wb_to_rows(CARTUP_CAT_PATH)
+    cartup_to_path = {}
+    cartup_to_tags = {}
+    tag_col = cartup_header[2] if len(cartup_header) > 2 else ''
+    for r in cartup_rows:
+        cid  = _v(r.get('Cartup Category ID'))
+        path = _v(r.get('Cartup Category Path'))
+        tags = _v(r.get(tag_col, ''))
+        if cid:
+            cartup_to_path[cid] = path
+            cartup_to_tags[cid] = tags
+
+    # Variant matching: Cartup catId → applicable variant cols
+    var_sheets = _wb_sheets(VAR_MATCH_PATH)
+    var_rows, var_header = var_sheets.get('Variations matching', ([], []))
     cat_variant_map = {}
     for col in VARIANT_COLS:
-        if col not in var_match.columns: continue
-        col_idx = var_match.columns.get_loc(col)
-        status_col = var_match.columns[col_idx + 1]
-        for _, row in var_match.iterrows():
-            cat_id = str(row[col]).strip() if pd.notna(row[col]) else ''
-            status = str(row[status_col]).strip() if pd.notna(row[status_col]) else ''
+        if col not in var_header: continue
+        col_idx = var_header.index(col)
+        status_col = var_header[col_idx + 1] if col_idx + 1 < len(var_header) else ''
+        for r in var_rows:
+            cat_id = _v(r.get(col))
+            status = _v(r.get(status_col))
             if cat_id and status.lower() == 'yes':
                 cat_variant_map.setdefault(cat_id, set()).add(col)
 
@@ -63,24 +123,21 @@ def _load_references():
 def _build_brand_dict(attr_bytes):
     if not attr_bytes: return {}
     brand_dict = {}
-    attr_raw = pd.read_excel(io.BytesIO(attr_bytes), sheet_name=None, dtype=str, header=1)
-    for sheet_name, df in attr_raw.items():
+    sheets = _wb_sheets(attr_bytes, skip_rows=1)
+    for sheet_name, (rows, header) in sheets.items():
         if sheet_name == 'INDEX': continue
-        pid_col   = next((c for c in df.columns if 'Product ID' in str(c)), None)
-        brand_col = next((c for c in df.columns if 'Brand' in str(c)), None)
+        pid_col   = next((c for c in header if 'Product ID' in c), None)
+        brand_col = next((c for c in header if 'Brand' in c), None)
         if not pid_col or not brand_col: continue
-        for _, row in df.iterrows():
-            pid   = str(row[pid_col]).strip() if pd.notna(row[pid_col]) else ''
-            brand = str(row[brand_col]).strip() if pd.notna(row[brand_col]) else ''
+        for r in rows:
+            pid   = _v(r.get(pid_col))
+            brand = _v(r.get(brand_col))
             if pid and pid not in brand_dict:
-                brand_dict[pid] = brand if brand and brand != 'nan' else 'No Brand'
+                brand_dict[pid] = brand if brand else 'No Brand'
     return brand_dict
 
-def _val(x):
-    return '' if pd.isna(x) or str(x).strip() == 'nan' else str(x).strip()
-
 def _clean_highlights(html):
-    if not html or str(html).strip() in ('', 'nan'): return ''
+    if not html: return ''
     soup = BeautifulSoup(str(html), 'html.parser')
     for img in soup.find_all('img'): img.decompose()
     items = [f'<li>{li.get_text(strip=True)}</li>' for li in soup.find_all('li') if li.get_text(strip=True)]
@@ -89,7 +146,7 @@ def _clean_highlights(html):
     return '<ul>' + ''.join(f'<li>{l}</li>' for l in lines) + '</ul>' if lines else ''
 
 def _clean_description(html):
-    if not html or str(html).strip() in ('', 'nan'): return ''
+    if not html: return ''
     soup = BeautifulSoup(str(html), 'html.parser')
     for img in soup.find_all('img'): img.decompose()
     paras = [f'<p>{p.get_text(strip=True)}</p>' for p in soup.find_all(['p','pre']) if p.get_text(strip=True)]
@@ -99,8 +156,8 @@ def _clean_description(html):
 
 def _parse_variations(combo, applicable):
     result = {c: '' for c in VARIANT_COLS}
-    if not combo or str(combo).strip() in ('', 'nan'): return result
-    parts = [p.strip() for p in str(combo).split(',', 1)]
+    if not combo: return result
+    parts = [p.strip() for p in combo.split(',', 1)]
     color    = parts[0]
     size_val = parts[1] if len(parts) > 1 else 'Yes'
     if 'Color' in applicable: result['Color'] = color
@@ -118,7 +175,6 @@ def _build_excel(output_rows):
     ws = wb.active
     ws.title = 'product'
 
-    # Section header row
     sec_row = []
     for name_s, color, span in SECTIONS:
         sec_row.extend([name_s] + [''] * (span - 1))
@@ -135,7 +191,6 @@ def _build_excel(output_rows):
             ws.merge_cells(start_row=1, start_column=col_pos, end_row=1, end_column=col_pos + span - 1)
         col_pos += span
 
-    # Column header row
     ws.append(cols)
     for ci, col in enumerate(cols, 1):
         c = ws.cell(row=2, column=ci)
@@ -143,11 +198,9 @@ def _build_excel(output_rows):
         c.font = Font(bold=True)
         c.alignment = Alignment(horizontal='center', wrap_text=True)
 
-    # Data rows
     for r in output_rows:
         ws.append([r.get(c, '') for c in cols])
 
-    # Color Report column
     report_col_idx = cols.index('Report') + 1
     for row_i in range(3, len(output_rows) + 3):
         cell = ws.cell(row=row_i, column=report_col_idx)
@@ -181,26 +234,42 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
     daraz_to_cartup, cartup_to_path, cartup_to_tags, cat_variant_map = _load_references()
     brand_dict = _build_brand_dict(attr_b)
 
-    price   = pd.read_excel(io.BytesIO(price_b),  sheet_name='template', dtype=str)
-    basic   = pd.read_excel(io.BytesIO(basic_b),  sheet_name='template', dtype=str)
-    freight = pd.read_excel(io.BytesIO(weight_b), sheet_name='template', dtype=str)
-    skuimg  = pd.read_excel(io.BytesIO(skuimg_b), sheet_name='template', dtype=str)
+    price_rows,   _ = _wb_to_rows(price_b,  sheet_name='template')
+    basic_rows,   bh = _wb_to_rows(basic_b,  sheet_name='template')
+    freight_rows, _ = _wb_to_rows(weight_b, sheet_name='template')
+    skuimg_rows,  _ = _wb_to_rows(skuimg_b, sheet_name='template')
 
-    basic_dict   = basic.drop_duplicates('Product ID').set_index('Product ID').to_dict('index')
-    freight_dict = freight.drop_duplicates('Product ID').set_index('Product ID').to_dict('index')
-    skuimg_dict  = skuimg.set_index('SellerSKU').to_dict('index')
-    warranty_type_col = '*Warranty Type' if '*Warranty Type' in basic.columns else 'Warranty Type'
+    # Build lookup dicts
+    basic_dict   = {}
+    for r in basic_rows:
+        pid = _v(r.get('Product ID'))
+        if pid and pid not in basic_dict:
+            basic_dict[pid] = r
+
+    freight_dict = {}
+    for r in freight_rows:
+        pid = _v(r.get('Product ID'))
+        if pid and pid not in freight_dict:
+            freight_dict[pid] = r
+
+    skuimg_dict = {}
+    for r in skuimg_rows:
+        sku = _v(r.get('SellerSKU'))
+        if sku and sku not in skuimg_dict:
+            skuimg_dict[sku] = r
+
+    warranty_type_col = '*Warranty Type' if '*Warranty Type' in bh else 'Warranty Type'
 
     output_rows = []
-    for _, row in price.iterrows():
-        pid   = _val(row['Product ID'])
-        cat   = _val(row['catId'])
-        name  = _val(row['*Product Name(English)'])
-        sku   = _val(row['SellerSKU'])
-        combo = _val(row.get('Variations Combo', ''))
+    for row in price_rows:
+        pid   = _v(row.get('Product ID'))
+        cat   = _v(row.get('catId'))
+        name  = _v(row.get('*Product Name(English)'))
+        sku   = _v(row.get('SellerSKU'))
+        combo = _v(row.get('Variations Combo'))
 
         brand = brand_dict.get(pid, 'No Brand')
-        if not brand or brand in ('', 'nan'): brand = 'No Brand'
+        if not brand: brand = 'No Brand'
 
         is_mystery  = cat in MYSTERY_CATIDS
         report_note = ''
@@ -222,8 +291,8 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
         applicable = cat_variant_map.get(cartup_id, set())
 
         b = basic_dict.get(pid, {})
-        highlights  = _clean_highlights(_val(b.get('*Highlights', '')))
-        description = _clean_description(_val(b.get('Main Description', '')))
+        highlights  = _clean_highlights(_v(b.get('*Highlights')))
+        description = _clean_description(_v(b.get('Main Description')))
 
         if not highlights and not description:
             highlights  = f'<ul><li>{name}</li></ul>'
@@ -237,18 +306,22 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
 
         f = freight_dict.get(pid, {})
         s = skuimg_dict.get(sku, {})
-        images = [_val(b.get('*Product Images1' if i==1 else f'Product Images{i}', '')) for i in range(1, 9)]
+
+        def img(i):
+            k = '*Product Images1' if i == 1 else f'Product Images{i}'
+            return _v(b.get(k))
+
         vr = _parse_variations(combo, applicable)
-        warranty_policy = _val(b.get('Warranty Policy', ''))
+        warranty_policy = _v(b.get('Warranty Policy'))
 
         output_rows.append({
             '**Category Id':            cartup_id,
             '**Name (English)':         name,
             'Name (Bengali)':           name,
-            '**Product Image 1':        images[0], 'Product Image 2': images[1],
-            'Product Image 3':          images[2], 'Product Image 4': images[3],
-            'Product Image 5':          images[4], 'Product Image 6': images[5],
-            'Product Image 7':          images[6], 'Product Image 8': images[7],
+            '**Product Image 1':        img(1), 'Product Image 2': img(2),
+            'Product Image 3':          img(3), 'Product Image 4': img(4),
+            'Product Image 5':          img(5), 'Product Image 6': img(6),
+            'Product Image 7':          img(7), 'Product Image 8': img(8),
             'VideoUrl':                 '',
             '**Brand':                  brand,
             '**Unit':                   'pcs',
@@ -268,12 +341,12 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
             "What's in the box":        f'1* {name}',
             'Warranty Policy(English)': warranty_policy,
             'Warranty Policy(Bangla)':  warranty_policy,
-            'Warranty Type':            _val(b.get(warranty_type_col, '')),
-            'Warranty Period':          _val(b.get('Warranty', '')),
-            '**Package Weight (kg)':    _val(f.get('*Package Weight (kg)', '')),
-            '**Package Length(cm)':     _val(f.get('*Package Length (cm)', '')),
-            '*Package Width (cm)':      _val(f.get('*Package Width (cm)', '')),
-            '*Package Height(cm)':      _val(f.get('*Package Height (cm)', '')),
+            'Warranty Type':            _v(b.get(warranty_type_col)),
+            'Warranty Period':          _v(b.get('Warranty')),
+            '**Package Weight (kg)':    _v(f.get('*Package Weight (kg)')),
+            '**Package Length(cm)':     _v(f.get('*Package Length (cm)')),
+            '*Package Width (cm)':      _v(f.get('*Package Width (cm)')),
+            '*Package Height(cm)':      _v(f.get('*Package Height (cm)')),
             'Clothing Size':            vr['Clothing Size'],
             'Color':                    vr['Color'],
             'Model':                    vr['Model'],
@@ -283,9 +356,9 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
             'Bedding Size':             vr['Bedding Size'],
             '**Seller SKU':             sku,
             '**Parent Sku':             pid,
-            '*Variant Image':           _val(s.get('Images1', '')),
-            '**Current Stock Qty':      _val(row.get('*Quantity', '')),
-            'status':                   _val(row.get('status', '')),
+            '*Variant Image':           _v(s.get('Images1')),
+            '**Current Stock Qty':      _v(row.get('*Quantity')),
+            'status':                   _v(row.get('status')),
             'Cartup Category Path':     cartup_path,
             'Variations Combo':         combo,
             'Report':                   report_note,
@@ -294,9 +367,14 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
     return _build_excel(output_rows)
 
 def process_manual_upload(input_bytes):
-    # Manual upload processing (AI-powered content fix)
-    # Placeholder — full logic comes in next phase
-    df = pd.read_excel(io.BytesIO(input_bytes), dtype=str)
+    wb = load_workbook(io.BytesIO(input_bytes), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    out_wb = Workbook()
+    out_ws = out_wb.active
+    for row in rows:
+        out_ws.append([_v(c) for c in row])
     buf = io.BytesIO()
-    df.to_excel(buf, index=False)
+    out_wb.save(buf)
     return buf.getvalue()
