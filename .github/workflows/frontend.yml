@@ -1,4 +1,8 @@
-name: Deploy Frontend to GitHub Pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  name: Deploy Frontend to GitHub Pages
 
 on:
   push:
