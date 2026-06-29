@@ -2,7 +2,6 @@ fastapi==0.111.0
 uvicorn==0.29.0
 python-multipart==0.0.9
 openpyxl==3.1.2
-pandas==2.0.3
 beautifulsoup4==4.12.3
 supabase==2.5.0
 python-jose[cryptography]==3.3.0
