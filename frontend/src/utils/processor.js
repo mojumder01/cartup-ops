@@ -242,23 +242,58 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     await runConcurrent(catTasks, 3)
   }
 
-  // ── Step 4: Build output rows ───────────────────────────────────────────────
-  const outputRows = []
+  // ── Step 4: Build output rows — separate valid vs invalid ──────────────────
+  const validRows = []
+  const invalidRows = []
   const total = priceRows.length
 
   for (let i = 0; i < priceRows.length; i++) {
     const row = priceRows[i]
     if (i % 10 === 0) onProgress(`Building output row ${i + 1} of ${total}...`)
 
-    const pid   = String(row['Product ID'] || '').trim()
-    const cat   = String(row['catId'] || '').trim()
-    const sku   = String(row['SellerSKU'] || '').trim()
-    const combo = String(row['Variations Combo'] || '').trim()
+    const pid    = String(row['Product ID'] || '').trim()
+    const cat    = String(row['catId'] || '').trim()
+    const name   = String(row['*Product Name(English)'] || '').trim()
+    const sku    = String(row['SellerSKU'] || '').trim()
+    const combo  = String(row['Variations Combo'] || '').trim()
     const status = String(row['status'] || '').trim()
+    const price  = String(row['**Price(MRP)'] || row['Price'] || '').trim()
 
+    const b = basicDict[pid] || {}
+    const f = freightDict[pid] || {}
+    const s = skuDict[sku] || {}
+
+    const img1         = String(b['*Product Images1'] || '').trim()
+    const variantImage = String(s['Images1'] || '').trim()
+
+    // ── Validity check ────────────────────────────────────────────────────────
+    const missing = []
+    if (!name)         missing.push('Name missing')
+    if (!price)        missing.push('Price missing')
+    if (!img1)         missing.push('Image 1 missing')
+    if (!variantImage) missing.push('Variant Image missing')
+
+    if (missing.length > 0) {
+      // Raw original data, no AI, just report
+      invalidRows.push({
+        'Product ID':   pid,
+        'SellerSKU':    sku,
+        'Product Name': name,
+        'catId':        cat,
+        'Price':        price,
+        'Image 1':      img1,
+        'Variant Image':variantImage,
+        'Quantity':     String(row['*Quantity'] || '').trim(),
+        'Status':       status,
+        'Report':       missing.join(' | '),
+      })
+      continue
+    }
+
+    // ── Valid row — use AI cache ───────────────────────────────────────────────
     const brand = brandDict[pid] || 'No Brand'
-    const ai    = aiCache[pid] || { name: String(row['*Product Name(English)'] || '').trim(), highlights: '', description: '' }
-    const fixedName = ai.name
+    const ai    = aiCache[pid] || { name, highlights: '', description: '' }
+    const fixedName   = ai.name
     const highlights  = ai.highlights
     const description = ai.description
 
@@ -272,7 +307,7 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       cartupId = daraz_to_cartup[cat] || ''
       if (cartupId) {
         cartupPath = cartup_map[cartupId]?.path || ''
-        tags = cartup_map[cartupId]?.tags || ''
+        tags       = cartup_map[cartupId]?.tags || ''
         reportNote = manual_cats.includes(cat) ? `Manually mapped (Daraz catId=${cat})` : 'OK'
       } else if (catMatchCache[cat]) {
         ;({ cartupId, cartupPath, tags, reportNote } = catMatchCache[cat])
@@ -281,16 +316,17 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       }
     }
 
+    const applicable = cat_variant_map[cartupId] || []
     const vr = parseVariations(combo, applicable)
-    const warrantyPolicy = String(b['Warranty Policy'] || '').trim()
+    const warrantyPolicy  = String(b['Warranty Policy'] || '').trim()
     const warrantyTypeCol = b['*Warranty Type'] !== undefined ? '*Warranty Type' : 'Warranty Type'
 
-    const images = Array.from({length: 8}, (_, i) => {
-      const k = i === 0 ? '*Product Images1' : `Product Images${i + 1}`
+    const images = Array.from({length: 8}, (_, idx) => {
+      const k = idx === 0 ? '*Product Images1' : `Product Images${idx + 1}`
       return String(b[k] || '').trim()
     })
 
-    outputRows.push({
+    validRows.push({
       '**Category Id':            cartupId,
       '**Name (English)':         fixedName,
       'Name (Bengali)':           fixedName,
@@ -332,9 +368,9 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       'Bedding Size':             vr['Bedding Size'],
       '**Seller SKU':             sku,
       '**Parent Sku':             pid,
-      '*Variant Image':           String(s['Images1'] || '').trim(),
+      '*Variant Image':           variantImage,
       '**Current Stock Qty':      String(row['*Quantity'] || '').trim(),
-      '**Price(MRP)':            String(row['**Price(MRP)'] || row['Price'] || '').trim(),
+      '**Price(MRP)':             price,
       'Special Price':            String(row['Special Price'] || row['SpecialPrice'] || '').trim(),
       'Special Price Start Date': String(row['Special Price Start Date'] || '').trim(),
       'Special Price End Date':   String(row['Special Price End Date'] || '').trim(),
@@ -346,41 +382,49 @@ export async function processDarazFiles(files, apiKey, onProgress) {
   }
 
   onProgress('Building Excel output...')
-  return buildExcel(outputRows)
+  return buildExcel(validRows, invalidRows)
 }
 
-function buildExcel(rows) {
+function buildExcel(validRows, invalidRows = []) {
   const wb = XLSX.utils.book_new()
-  const wsData = []
 
-  // Row 1: section headers
+  // ── Sheet 1: product (valid rows) ──────────────────────────────────────────
+  const wsData = []
   const secRow = []
   for (const sec of SECTIONS) {
     secRow.push(sec.name)
     for (let i = 1; i < sec.cols; i++) secRow.push('')
   }
   wsData.push(secRow)
-
-  // Row 2: column headers
   wsData.push(OUTPUT_COLS)
-
-  // Data rows
-  for (const r of rows) {
+  for (const r of validRows) {
     wsData.push(OUTPUT_COLS.map(col => r[col] ?? ''))
   }
 
   const ws = XLSX.utils.aoa_to_sheet(wsData)
-
-  // Column widths
   ws['!cols'] = OUTPUT_COLS.map((col, i) => {
     if (i === 2 || i === 3) return { wch: 50 }
     if (col === 'Report' || col === 'Cartup Category Path') return { wch: 45 }
     return { wch: 20 }
   })
-
-  // Freeze row 3
   ws['!freeze'] = { xSplit: 0, ySplit: 2 }
-
   XLSX.utils.book_append_sheet(wb, ws, 'product')
+
+  // ── Sheet 2: invalid (rows with missing required fields) ───────────────────
+  if (invalidRows.length > 0) {
+    const invCols = ['Product ID','SellerSKU','Product Name','catId','Price','Image 1','Variant Image','Quantity','Status','Report']
+    const invData = [invCols]
+    for (const r of invalidRows) {
+      invData.push(invCols.map(c => r[c] ?? ''))
+    }
+    const wsInv = XLSX.utils.aoa_to_sheet(invData)
+    wsInv['!cols'] = invCols.map(c => c === 'Report' ? { wch: 55 } : { wch: 22 })
+    wsInv['!freeze'] = { xSplit: 0, ySplit: 1 }
+
+    // Red fill on header
+    wsInv['!rows'] = [{ hpt: 20 }]
+    XLSX.utils.book_append_sheet(wb, wsInv, 'invalid')
+  }
+
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
 }
