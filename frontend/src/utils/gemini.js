@@ -200,14 +200,15 @@ Return ONLY: [{"pid":"...","id":"...","path":"..."},...]`
 
   try {
     const result = await callGemini(prompt, apiKey)
-    const clean = result.replace(/```json[\s\S]*?```|```/g, '').trim()
-    // Extract JSON array even if there's surrounding text
+    const clean = result.replace(/```json|```/g, '').trim()
     const match = clean.match(/\[[\s\S]*\]/)
     if (!match) throw new Error('No JSON array in response')
     const parsed = JSON.parse(match[0])
     const out = {}
-    for (const item of parsed) {
-      if (item.pid) out[item.pid] = { id: item.id || '', path: item.path || '' }
+    for (let i = 0; i < parsed.length; i++) {
+      const item = parsed[i]
+      const pid = item.pid || products[i]?.pid
+      if (pid && item.id) out[pid] = { id: String(item.id), path: item.path || '' }
     }
     return out
   } catch {
