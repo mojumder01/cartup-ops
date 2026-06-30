@@ -264,7 +264,7 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const s = skuDict[sku] || {}
 
     const img1         = String(b['*Product Images1'] || '').trim()
-    const variantImage = String(s['Images1'] || '').trim()
+    const variantImage = String(s['Images1'] || img1 || '').trim()
 
     // ── Validity check ────────────────────────────────────────────────────────
     const missing = []
