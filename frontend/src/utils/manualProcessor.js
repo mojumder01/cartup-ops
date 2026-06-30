@@ -42,6 +42,20 @@ const TEMPLATE_COLS = [
   'Warranty',
 ]
 
+function ensureHtmlHighlights(text, name) {
+  if (!text) return `<ul><li>${name}</li></ul>`
+  if (text.startsWith('<ul>') || text.startsWith('<ol>')) return text
+  const lines = text.split(/[\n\r]+/).map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean)
+  if (!lines.length) return `<ul><li>${name}</li></ul>`
+  return `<ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul>`
+}
+
+function ensureHtmlDescription(text, name) {
+  if (!text) return `<p>${name}</p>`
+  if (text.startsWith('<p>') || text.startsWith('<div>')) return text
+  return `<p>${text.trim()}</p>`
+}
+
 // Flexible column finder
 function col(row, ...keys) {
   for (const k of keys) {
@@ -344,6 +358,9 @@ export async function processManualFile(file, apiKey, onProgress) {
   for (const r of expandedRows) {
     const ai = aiCache[r.pid] || { name: uniqueProducts[r.pid]?.name || '', highlights: '', description: '' }
     const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: apiKey ? 'No category match found' : 'No API key — category not matched' }
+    const productName = ai.name || uniqueProducts[r.pid]?.name || ''
+    const highlights = ensureHtmlHighlights(ai.highlights, productName)
+    const description = ensureHtmlDescription(ai.description, productName)
 
     outputRows.push({
       '**Category Id':            cat.cartupId,
@@ -369,11 +386,11 @@ export async function processManualFile(file, apiKey, onProgress) {
       'Recommended Age':          '',
       'Watch Type':               '',
       'Main Materials':           '',
-      'Highlights(English)':      ai.highlights,
-      'Highlights(Bengali)':      ai.highlights,
-      'Description (Bengali)':    ai.description,
-      'Description (English)':    ai.description,
-      "What's in the box":        `1* ${ai.name}`,
+      'Highlights(English)':      highlights,
+      'Highlights(Bengali)':      highlights,
+      'Description (Bengali)':    description,
+      'Description (English)':    description,
+      "What's in the box":        `1* ${productName}`,
       'Warranty Policy(English)': r.warranty,
       'Warranty Policy(Bangla)':  r.warranty,
       'Warranty Type':            '',
