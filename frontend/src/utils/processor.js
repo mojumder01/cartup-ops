@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { fixName, fixHighlights, fixDescription, matchCategory } from './gemini'
+import { processProductAI, matchCategory } from './gemini'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -215,21 +215,17 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const f = freightDict[pid] || {}
     const s = skuDict[sku] || {}
 
-    // Name fix
-    let fixedName = name
-    if (apiKey && name) {
-      onProgress(`Fixing name ${i + 1}/${total}...`)
-      fixedName = await fixName(name, apiKey)
-    }
-
-    // Content
+    // Content cleanup (basic, before AI)
     let highlights  = cleanHighlights(String(b['*Highlights'] || ''))
     let description = cleanDescription(String(b['Main Description'] || ''))
+    let fixedName = name
 
     if (apiKey) {
-      onProgress(`AI processing content ${i + 1}/${total}...`)
-      highlights  = await fixHighlights(highlights, fixedName, description, apiKey)
-      description = await fixDescription(description, fixedName, highlights, apiKey)
+      onProgress(`AI processing ${i + 1}/${total}: ${name.slice(0, 30)}...`)
+      const result = await processProductAI(name, highlights, description, apiKey)
+      fixedName   = result.name
+      highlights  = result.highlights
+      description = result.description
     } else {
       // No AI — basic logic
       if (!highlights && !description) {
