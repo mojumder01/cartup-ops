@@ -165,7 +165,30 @@ export async function processProductAI(name, highlights, description, apiKey) {
 // ── Category match ────────────────────────────────────────────────────────────
 export async function matchCategory(productName, cartupCategories, apiKey) {
   if (!apiKey || !productName) return null
-  const catList = cartupCategories.slice(0, 150).map(c => `${c.id}|${c.path}`).join('\n')
+
+  // Extract meaningful keywords from product name (words > 2 chars)
+  const words = productName.toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2)
+
+  // Filter categories whose path contains any keyword
+  let filtered = cartupCategories.filter(c =>
+    words.some(w => c.path.toLowerCase().includes(w))
+  )
+
+  // Broaden: also try top-level category words (first segment of path)
+  if (filtered.length < 15) {
+    const shortWords = words.filter(w => w.length > 1)
+    filtered = cartupCategories.filter(c =>
+      shortWords.some(w => c.path.toLowerCase().includes(w))
+    )
+  }
+
+  // Fallback: send all categories in slices — use first 400 if still nothing
+  const pool = filtered.length >= 5 ? filtered.slice(0, 300) : cartupCategories.slice(0, 400)
+  const catList = pool.map(c => `${c.id}|${c.path}`).join('\n')
+
   const prompt = `Match this product to the best category. Reply ONLY with JSON, no markdown: {"id":"...","path":"...","reason":"..."}
 
 Product: "${productName}"
