@@ -1,4 +1,4 @@
-const GEMINI_MODEL = 'gemini-2.0-flash-lite'
+const GEMINI_MODEL = 'gemini-2.5-flash'
 const DELAY_MS = 7000  // safer delay
 const MAX_RETRIES = 3
 
