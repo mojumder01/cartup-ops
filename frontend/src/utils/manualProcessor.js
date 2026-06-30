@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { processProductsBatch, matchCategoriesBatch, localFixName, runConcurrent } from './gemini'
+import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini'
 
 const { cartup_map } = MAPPINGS
 
@@ -312,53 +312,31 @@ export async function processManualFile(file, apiKey, onProgress) {
   const pidList = Object.values(uniqueProducts)
   if (!pidList.length) throw new Error('No valid rows found (Name missing in all rows)')
 
-  // ── Step 2: Batch AI — name + highlights + description per unique product ───
-  const aiCache = {}   // pid → { name, highlights, description }
+  // ── Steps 2+3: One combined AI call per batch — clean + categorise ───────────
+  const aiCache = {}       // pid → { name, highlights, description }
+  const catMatchCache = {} // pid → { cartupId, cartupPath, tags, reportNote }
   const BATCH_SIZE = 5
 
   if (apiKey) {
     const batches = []
     for (let i = 0; i < pidList.length; i += BATCH_SIZE) batches.push(pidList.slice(i, i + BATCH_SIZE))
-    const totalBatches = batches.length
     const tasks = batches.map((batch, bi) => async () => {
-      onProgress(`AI processing products ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}...`)
-      const result = await processProductsBatch(batch, apiKey)
-      Object.assign(aiCache, result)
+      onProgress(`AI processing + category matching ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}...`)
+      const results = await processAndCategoriseBatch(batch, cartupCategories, apiKey)
+      for (const p of batch) {
+        const r = results[p.pid] || {}
+        aiCache[p.pid] = { name: r.name || p.name, highlights: r.highlights || '', description: r.description || '' }
+        const cid = r.categoryId || ''
+        catMatchCache[p.pid] = cid
+          ? { cartupId: cid, cartupPath: r.categoryPath || '', tags: cartup_map[cid]?.tags || '', reportNote: '[AI] Category matched' }
+          : { cartupId: '', cartupPath: '', tags: '', reportNote: r.categoryError ? `API error: ${r.categoryError}` : 'No category match found' }
+      }
     })
-    await runConcurrent(tasks, 3)
+    await runConcurrent(tasks, 2)
   } else {
     for (const p of pidList) {
-      aiCache[p.pid] = { name: p.name, highlights: p.highlights || `<ul><li>${p.name}</li></ul>`, description: p.description || `<p>${p.name}</p>` }
-    }
-  }
-
-  // ── Step 3: Batch category matching — one API call per 10 products ──────────
-  const catMatchCache = {}  // pid → { cartupId, cartupPath, tags, reportNote }
-  if (apiKey) {
-    const CAT_BATCH = 10
-    for (let i = 0; i < pidList.length; i += CAT_BATCH) {
-      const batch = pidList.slice(i, i + CAT_BATCH)
-      const batchProducts = batch.map(p => ({
-        pid: p.pid,
-        name: aiCache[p.pid]?.name || p.name || '',
-      })).filter(p => p.name)
-
-      if (!batchProducts.length) continue
-      onProgress(`Matching categories for products ${i + 1}–${Math.min(i + CAT_BATCH, pidList.length)} of ${pidList.length}...`)
-
-      const results = await matchCategoriesBatch(batchProducts, cartupCategories, apiKey)
-
-      const batchError = results.__error__ || ''
-      for (const p of batchProducts) {
-        const matched = results[p.pid]
-        if (matched && matched.id) {
-          const cid = matched.id
-          catMatchCache[p.pid] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: '[AI] Category matched' }
-        } else {
-          const reason = batchError ? `API error: ${batchError}` : 'No category match found'
-          catMatchCache[p.pid] = { cartupId: '', cartupPath: '', tags: '', reportNote: reason }
-        }
-      }
+      aiCache[p.pid] = { name: p.name, highlights: p.highlights || '', description: p.description || '' }
+      catMatchCache[p.pid] = { cartupId: '', cartupPath: '', tags: '', reportNote: 'No API key — category not matched' }
     }
   }
 
@@ -368,7 +346,7 @@ export async function processManualFile(file, apiKey, onProgress) {
 
   for (const r of expandedRows) {
     const ai = aiCache[r.pid] || { name: uniqueProducts[r.pid]?.name || '', highlights: '', description: '' }
-    const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: apiKey ? 'No category match found' : 'No API key — category not matched' }
+    const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: 'No category match found' }
     const productName = ai.name || uniqueProducts[r.pid]?.name || ''
     const highlights = ensureHtmlHighlights(ai.highlights, productName)
     const description = ensureHtmlDescription(ai.description, productName)

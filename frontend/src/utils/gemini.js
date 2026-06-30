@@ -96,45 +96,114 @@ async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
-// ── Batch process up to 5 products in ONE API call ───────────────────────────
+// ── Combined: clean + categorise in ONE API call ─────────────────────────────
+export async function processAndCategoriseBatch(products, cartupCategories, apiKey) {
+  // products: [{pid, name, highlights, description}]
+  // returns: {pid: {name, highlights, description, categoryId, categoryPath, categoryError}}
+  if (!products.length) return {}
+
+  const localFixed = products.map(p => ({ ...p, name: localFixName(p.name || '') }))
+
+  if (!apiKey) {
+    return Object.fromEntries(localFixed.map(p => [p.pid, {
+      name: p.name, highlights: p.highlights, description: p.description,
+      categoryId: '', categoryPath: '', categoryError: 'No API key'
+    }]))
+  }
+
+  // Build category pool from combined keywords
+  const pathToId = {}
+  for (const c of cartupCategories) pathToId[c.path.toLowerCase()] = c.id
+
+  const allWords = new Set()
+  for (const p of localFixed) {
+    p.name.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3 && !STOP_WORDS.has(w))
+      .forEach(w => allWords.add(w))
+  }
+  let filtered = cartupCategories.filter(c => [...allWords].some(w => c.path.toLowerCase().includes(w)))
+  if (filtered.length < 10) {
+    const shorter = [...allWords].filter(w => w.length > 2 && !STOP_WORDS.has(w))
+    filtered = cartupCategories.filter(c => shorter.some(w => c.path.toLowerCase().includes(w)))
+  }
+  const pool = filtered.length >= 5 ? filtered.slice(0, 150) : cartupCategories.slice(0, 250)
+  const catList = pool.map(c => `${c.id}|${c.path}`).join('\n')
+
+  const inputBlock = localFixed.map((p, i) =>
+    `Product ${i + 1} (pid:"${p.pid}"):\nName: ${p.name || '(empty)'}\nHighlights: ${p.highlights || '(empty)'}\nDescription: ${p.description || '(empty)'}`
+  ).join('\n\n')
+
+  const prompt = `You are an e-commerce product data processor. For EACH product below:
+1. Clean the name: fix typos, remove duplicate words. Do NOT change product type/color/attributes.
+2. highlights: Return <ul><li> HTML. Remove non-Latin chars, artifacts, hashtags, empty items. If empty: create 3-5 bullets from name only.
+3. description: Return <p> HTML. Remove non-Latin chars, boilerplate. If empty: write 2 sentences from name only.
+4. category_id + category_path: Pick the BEST matching category from the list below.
+
+PRODUCTS:
+${inputBlock}
+
+CATEGORIES (ID|Path):
+${catList}
+
+Return ONLY a JSON array, no markdown:
+[{"pid":"...","name":"...","highlights":"...","description":"...","category_id":"...","category_path":"..."},...]`
+
+  try {
+    const result = await callGemini(prompt, apiKey)
+    const clean = result.replace(/```json|```/g, '').trim()
+    const arrMatch = clean.match(/\[[\s\S]*\]/)
+    if (!arrMatch) throw new Error(`No JSON array. Got: ${clean.slice(0, 80)}`)
+    const parsed = JSON.parse(arrMatch[0])
+    const map = {}
+    for (let i = 0; i < parsed.length; i++) {
+      const item = parsed[i]
+      const pid = String(item.pid || localFixed[i]?.pid || '')
+      if (!pid) continue
+      let catId = String(item.category_id || item.categoryId || item.id || '')
+      const catPath = item.category_path || item.categoryPath || item.path || ''
+      if (!catId && catPath) catId = pathToId[catPath.toLowerCase()] || ''
+      const validCat = pool.find(c => c.id === catId)
+      map[pid] = {
+        name: item.name || localFixed[i]?.name || '',
+        highlights: item.highlights || '',
+        description: item.description || '',
+        categoryId: validCat ? catId : '',
+        categoryPath: validCat ? validCat.path : '',
+        categoryError: validCat ? '' : (catId ? `Unknown ID: ${catId}` : 'No category returned'),
+      }
+    }
+    // Fill missing pids
+    for (const p of localFixed) {
+      if (!map[p.pid]) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description, categoryId: '', categoryPath: '', categoryError: 'Missing from AI response' }
+    }
+    return map
+  } catch (e) {
+    const errMsg = e.message || 'Unknown error'
+    return Object.fromEntries(localFixed.map(p => [p.pid, {
+      name: p.name, highlights: p.highlights, description: p.description,
+      categoryId: '', categoryPath: '', categoryError: errMsg
+    }]))
+  }
+}
+
+// ── Batch process up to 5 products in ONE API call (no category) ──────────────
 export async function processProductsBatch(products, apiKey) {
   // products: [{pid, name, highlights, description}]
   // returns: {pid: {name, highlights, description}}
   if (!products.length) return {}
-
-  // Local fix first
   const localFixed = products.map(p => ({ ...p, name: localFixName(p.name || '') }))
-
   if (!apiKey) {
     return Object.fromEntries(localFixed.map(p => [p.pid, { name: p.name, highlights: p.highlights, description: p.description }]))
   }
-
   const inputBlock = localFixed.map((p, i) =>
     `Product ${i + 1} (id: "${p.pid}"):\nName: ${p.name || '(empty)'}\nHighlights: ${p.highlights || '(empty)'}\nDescription: ${p.description || '(empty)'}`
   ).join('\n\n')
-
   const prompt = `You are cleaning e-commerce product data. Process ALL ${products.length} products below and return ONLY a JSON array, no markdown, no explanation.
-
-RULES for each product:
-1. "name": Fix remaining spelling errors. Remove only exact duplicate consecutive words. Do NOT add words or change product type/color/attributes.
-2. "highlights": Return HTML using ONLY <ul><li> tags.
-   - Remove ALL non-Latin characters (Bengali, Chinese, Japanese, Arabic, etc.)
-   - Remove encoding artifacts: Â, â€™, Ã, â€", ï¿½, etc.
-   - Remove hashtags (#word) and keyword-spam items
-   - Remove duplicate <li> items and empty <li> items. Remove all <img> tags.
-   - If empty after cleaning or was empty: create 3-5 bullets from name + description ONLY. Never invent specs.
-3. "description": Return HTML using ONLY <p> tags.
-   - Remove ALL non-Latin characters and encoding artifacts. Remove all <img> tags.
-   - If contains boilerplate ("The seller offers...", "We provide...", "Contact us..."): replace with 2-3 sentence product-specific text from name + highlights ONLY.
-   - If empty: create 2-3 sentences from name + highlights ONLY.
-
-CRITICAL: NEVER add info not in the given inputs. NEVER invent materials, specs, features.
-
+RULES: 1. name: fix typos, remove duplicate words. 2. highlights: <ul><li> HTML, remove non-Latin/artifacts, if empty create 3-5 bullets from name. 3. description: <p> HTML, remove boilerplate, if empty write 2 sentences from name.
 ${inputBlock}
-
-Return ONLY a JSON array with ${products.length} objects, preserving the "pid" field:
-[{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
-
+Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
   try {
     const result = await callGemini(prompt, apiKey)
     const clean = result.replace(/```json|```/g, '').trim()
@@ -143,7 +212,6 @@ Return ONLY a JSON array with ${products.length} objects, preserving the "pid" f
     for (const item of parsed) {
       if (item.pid) map[item.pid] = { name: item.name, highlights: item.highlights, description: item.description }
     }
-    // Fill any missing with local-fixed version
     for (const p of localFixed) {
       if (!map[p.pid]) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description }
     }
