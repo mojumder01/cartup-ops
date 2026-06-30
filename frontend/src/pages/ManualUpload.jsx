@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { getApiKey } from '../utils/gemini'
-import { processManualFile } from '../utils/manualProcessor'
+import { processManualFile, generateTemplate } from '../utils/manualProcessor'
 import { FileSpreadsheet, CheckCircle, AlertCircle, Loader, Download, Zap, Info } from 'lucide-react'
 
 export default function ManualUpload() {
@@ -14,6 +14,15 @@ export default function ManualUpload() {
   const handleFile = e => {
     const f = e.target.files[0]
     if (f) { setFile(f); setFileName(f.name); setStatus(''); setError('') }
+  }
+
+  const handleTemplate = () => {
+    const arr = generateTemplate()
+    const blob = new Blob([arr], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'cartup_manual_template.xlsx'; a.click()
+    URL.revokeObjectURL(url)
   }
 
   const handleProcess = async () => {
@@ -42,20 +51,31 @@ export default function ManualUpload() {
 
       {/* Input format info */}
       <div style={{ ...card, marginBottom:16, background:'#f8fafc' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
-          <Info size={15} color='#4f46e5' />
-          <span style={{ fontWeight:600, fontSize:13, color:'#1a202c' }}>Expected Input Columns</span>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <Info size={15} color='#4f46e5' />
+            <span style={{ fontWeight:600, fontSize:13, color:'#1a202c' }}>Input Columns — Variants auto-expand</span>
+          </div>
+          <button
+            onClick={handleTemplate}
+            style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 12px', background:'#4f46e5', color:'#fff', border:'none', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer' }}
+          >
+            <Download size={13} /> Download Template
+          </button>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'6px 16px' }}>
           {[
             ['Name', 'Required'],
+            ['Parent SKU', 'Required'],
+            ['Price', 'Optional'],
+            ['Color (comma-sep)', 'Optional'],
+            ['Size (comma-sep)', 'Optional'],
             ['Highlights', 'Optional'],
             ['Description', 'Optional'],
-            ['Price', 'Optional'],
-            ['SKU', 'Optional'],
             ['Brand', 'Optional'],
             ['Image 1–8', 'Optional'],
             ['Stock / Quantity', 'Optional'],
+            ['Special Price', 'Optional'],
             ['Weight / Length / Width / Height', 'Optional'],
           ].map(([col, req]) => (
             <div key={col} style={{ display:'flex', alignItems:'center', gap:6, fontSize:12 }}>
@@ -67,6 +87,9 @@ export default function ManualUpload() {
               <span style={{ color:'#374151' }}>{col}</span>
             </div>
           ))}
+        </div>
+        <div style={{ marginTop:10, padding:'8px 12px', background:'#eef2ff', borderRadius:6, fontSize:12, color:'#4338ca' }}>
+          <b>Variant expansion:</b> Color=<i>Black,Blue</i> × Size=<i>40,42</i> → 4 rows with SKU like <code>SWE77556_Black_40</code>
         </div>
       </div>
 
