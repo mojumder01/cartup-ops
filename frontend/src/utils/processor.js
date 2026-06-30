@@ -263,8 +263,35 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const f = freightDict[pid] || {}
     const s = skuDict[sku] || {}
 
-    const img1         = String(b['*Product Images1'] || '').trim()
-    const variantImage = String(s['Images1'] || img1 || '').trim()
+    const img1   = String(b['*Product Images1'] || '').trim()
+    const skuImg = String(s['Images1'] || '').trim()
+
+    // ── Resolve cartupId early (needed for variant type check) ────────────────
+    const isMystery = mystery_cats.includes(cat)
+    let cartupId = '', cartupPath = '', tags = '', reportNote = ''
+    if (!isMystery) {
+      cartupId = daraz_to_cartup[cat] || ''
+      if (cartupId) {
+        cartupPath = cartup_map[cartupId]?.path || ''
+        tags       = cartup_map[cartupId]?.tags || ''
+        reportNote = manual_cats.includes(cat) ? `Manually mapped (Daraz catId=${cat})` : 'OK'
+      } else if (catMatchCache[cat]) {
+        ;({ cartupId, cartupPath, tags, reportNote } = catMatchCache[cat])
+      } else {
+        reportNote = `No category match for Daraz catId=${cat}`
+      }
+    } else {
+      reportNote = 'Mystery/Surprise Box — no category. Manual review needed.'
+    }
+
+    const applicable = cat_variant_map[cartupId] || []
+
+    // ── Variant image logic ───────────────────────────────────────────────────
+    // skuimg Images1 present → always use it
+    // empty + no variant OR size-only → fall back to basic Image 1
+    // empty + color variant (with or without size) → must come from skuimg (missing = invalid)
+    const hasColorVariant = combo && applicable.includes('Color')
+    const variantImage = skuImg || (hasColorVariant ? '' : img1)
 
     // ── Validity check ────────────────────────────────────────────────────────
     const missing = []
@@ -274,7 +301,6 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     if (!variantImage) missing.push('Variant Image missing')
 
     if (missing.length > 0) {
-      // Raw original data, no AI, just report
       invalidRows.push({
         'Product ID':   pid,
         'SellerSKU':    sku,
@@ -296,27 +322,6 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const fixedName   = ai.name
     const highlights  = ai.highlights
     const description = ai.description
-
-    // Category mapping
-    let cartupId = '', cartupPath = '', tags = '', reportNote = ''
-    const isMystery = mystery_cats.includes(cat)
-
-    if (isMystery) {
-      reportNote = 'Mystery/Surprise Box — no category. Manual review needed.'
-    } else {
-      cartupId = daraz_to_cartup[cat] || ''
-      if (cartupId) {
-        cartupPath = cartup_map[cartupId]?.path || ''
-        tags       = cartup_map[cartupId]?.tags || ''
-        reportNote = manual_cats.includes(cat) ? `Manually mapped (Daraz catId=${cat})` : 'OK'
-      } else if (catMatchCache[cat]) {
-        ;({ cartupId, cartupPath, tags, reportNote } = catMatchCache[cat])
-      } else {
-        reportNote = `No category match for Daraz catId=${cat}`
-      }
-    }
-
-    const applicable = cat_variant_map[cartupId] || []
     const vr = parseVariations(combo, applicable)
     const warrantyPolicy  = String(b['Warranty Policy'] || '').trim()
     const warrantyTypeCol = b['*Warranty Type'] !== undefined ? '*Warranty Type' : 'Warranty Type'
