@@ -1,5 +1,5 @@
-const GEMINI_MODEL = 'gemini-1.5-flash'
-const DELAY_MS = 7000  // safer delay, ~8-9 requests/min
+const GEMINI_MODEL = 'gemini-2.0-flash-lite'
+const DELAY_MS = 7000  // safer delay
 const MAX_RETRIES = 3
 
 export function getApiKey() {
