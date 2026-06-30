@@ -53,13 +53,13 @@ export default function Layout() {
       <aside style={{ width:220, background:'#1e1b4b', display:'flex', flexDirection:'column', flexShrink:0 }}>
         {/* Logo */}
         <div style={{ padding:'24px 20px 16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{ fontSize:18, fontWeight:700, color:'#fff', letterSpacing:'-0.3px' }}>
-            CartUp <span style={{ color:'#818cf8' }}>Ops</span>
+          <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
+            <div style={{ fontSize:18, fontWeight:700, color:'#fff', letterSpacing:'-0.3px' }}>
+              CartUp <span style={{ color:'#818cf8' }}>Ops</span>
+            </div>
+            <span style={{ fontSize:10, color:'rgba(255,255,255,0.3)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
           </div>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:2 }}>
-            <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Team Platform</div>
-            <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>v{APP_VERSION}</div>
-          </div>
+          <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)', marginTop:2 }}>Team Platform</div>
         </div>
 
         {/* Nav */}
