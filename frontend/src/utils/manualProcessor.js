@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { fixName, fixHighlights, fixDescription, matchCategory } from './gemini'
+import { processProductAI, matchCategory, localFixName } from './gemini'
 
 const { cartup_map } = MAPPINGS
 
@@ -101,14 +101,20 @@ export async function processManualFile(file, apiKey, onProgress) {
       continue
     }
 
-    // Step 1: Fix name
-    let fixedName = rawName
+    // Step 1: Local typo fix first
+    let fixedName = localFixName(rawName)
+
+    // Step 2: AI — name + highlights + description in one call
+    let highlights = rawHl, description = rawDesc
     if (apiKey) {
-      onProgress(`[${i+1}/${total}] Fixing name: ${rawName.slice(0,40)}...`)
-      fixedName = await fixName(rawName, apiKey)
+      onProgress(`[${i+1}/${total}] AI processing name, highlights & description...`)
+      const ai = await processProductAI(fixedName, rawHl, rawDesc, apiKey)
+      fixedName   = ai.name        || fixedName
+      highlights  = ai.highlights  || rawHl
+      description = ai.description || rawDesc
     }
 
-    // Step 2: AI category match
+    // Step 3: AI category match
     let cartupId = '', cartupPath = '', tags = '', reportNote = ''
     if (apiKey && fixedName) {
       onProgress(`[${i+1}/${total}] Matching category...`)
@@ -123,20 +129,6 @@ export async function processManualFile(file, apiKey, onProgress) {
       }
     } else {
       reportNote = 'No API key — category not matched'
-    }
-
-    // Step 3: Fix highlights
-    let highlights = rawHl
-    if (apiKey) {
-      onProgress(`[${i+1}/${total}] Fixing highlights...`)
-      highlights = await fixHighlights(rawHl, fixedName, rawDesc, apiKey)
-    }
-
-    // Step 4: Fix description
-    let description = rawDesc
-    if (apiKey) {
-      onProgress(`[${i+1}/${total}] Fixing description...`)
-      description = await fixDescription(rawDesc, fixedName, highlights, apiKey)
     }
 
     outputRows.push({

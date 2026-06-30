@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { fixName, fixHighlights, fixDescription, matchCategory } from './gemini'
+import { processProductAI, matchCategory } from './gemini'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -16,7 +16,7 @@ const SECTIONS = [
   { name: 'Product Description', color: 'FFFCE4D6', cols: 5  },
   { name: 'Service',             color: 'FFFFF2CC', cols: 4  },
   { name: 'Delivery',            color: 'FFDDEBF7', cols: 4  },
-  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 11 },
+  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 15 },
   { name: 'Extra',               color: 'FFEDEDED', cols: 4  },
 ]
 
@@ -32,6 +32,7 @@ const OUTPUT_COLS = [
   '**Package Weight (kg)','**Package Length(cm)','*Package Width (cm)','*Package Height(cm)',
   'Clothing Size','Color','Model','Age Group','Size','Shoe Size','Bedding Size',
   '**Seller SKU','**Parent Sku','*Variant Image','**Current Stock Qty',
+  '**Price(MRP)','Special Price','Special Price Start Date','Special Price End Date',
   'status','Cartup Category Path','Variations Combo','Report'
 ]
 
@@ -214,21 +215,17 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const f = freightDict[pid] || {}
     const s = skuDict[sku] || {}
 
-    // Name fix
-    let fixedName = name
-    if (apiKey && name) {
-      onProgress(`Fixing name ${i + 1}/${total}...`)
-      fixedName = await fixName(name, apiKey)
-    }
-
-    // Content
+    // Content cleanup (basic, before AI)
     let highlights  = cleanHighlights(String(b['*Highlights'] || ''))
     let description = cleanDescription(String(b['Main Description'] || ''))
+    let fixedName = name
 
     if (apiKey) {
-      onProgress(`AI processing content ${i + 1}/${total}...`)
-      highlights  = await fixHighlights(highlights, fixedName, description, apiKey)
-      description = await fixDescription(description, fixedName, highlights, apiKey)
+      onProgress(`AI processing ${i + 1}/${total}: ${name.slice(0, 30)}...`)
+      const result = await processProductAI(name, highlights, description, apiKey)
+      fixedName   = result.name
+      highlights  = result.highlights
+      description = result.description
     } else {
       // No AI — basic logic
       if (!highlights && !description) {
@@ -296,6 +293,10 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       '**Parent Sku':             pid,
       '*Variant Image':           String(s['Images1'] || '').trim(),
       '**Current Stock Qty':      String(row['*Quantity'] || '').trim(),
+      '**Price(MRP)':            String(row['**Price(MRP)'] || row['Price'] || '').trim(),
+      'Special Price':            String(row['Special Price'] || row['SpecialPrice'] || '').trim(),
+      'Special Price Start Date': String(row['Special Price Start Date'] || '').trim(),
+      'Special Price End Date':   String(row['Special Price End Date'] || '').trim(),
       'status':                   status,
       'Cartup Category Path':     cartupPath,
       'Variations Combo':         combo,
