@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini'
+import { applyReplacements } from './wordReplacements'
 
 const { cartup_map, cat_variant_map } = MAPPINGS
 
@@ -337,6 +338,16 @@ export async function processManualFile(file, apiKey, onProgress) {
     for (const p of pidList) {
       aiCache[p.pid] = { name: p.name, highlights: p.highlights || '', description: p.description || '' }
       catMatchCache[p.pid] = { cartupId: '', cartupPath: '', tags: '', reportNote: 'No API key — category not matched' }
+    }
+  }
+
+  // Apply word replacements to name, highlights, description
+  for (const pid of Object.keys(aiCache)) {
+    const c = aiCache[pid]
+    aiCache[pid] = {
+      name:        applyReplacements(c.name),
+      highlights:  applyReplacements(c.highlights),
+      description: applyReplacements(c.description),
     }
   }
 
