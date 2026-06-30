@@ -214,7 +214,17 @@ export async function fixDescription(description, name, highlights, apiKey) {
 
 export async function testConnection(apiKey) {
   try {
-    await callGemini('Say "ok"', apiKey, 0)
-    return true
-  } catch { return false }
+    await sleep(DELAY_MS)
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Say "ok"' }] }], generationConfig: { maxOutputTokens: 10 } })
+      }
+    )
+    if (res.status === 429) return 'rate_limited'
+    if (res.ok) return 'ok'
+    return 'fail'
+  } catch { return 'fail' }
 }
