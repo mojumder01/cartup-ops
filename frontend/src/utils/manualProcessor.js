@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
+import { processProductsBatch, matchCategoriesBatch, localFixName, runConcurrent } from './gemini'
 
 const { cartup_map } = MAPPINGS
 
@@ -41,6 +41,20 @@ const TEMPLATE_COLS = [
   'Weight(kg)','Length(cm)','Width(cm)','Height(cm)',
   'Warranty',
 ]
+
+function ensureHtmlHighlights(text, name) {
+  if (!text) return `<ul><li>${name}</li></ul>`
+  if (text.startsWith('<ul>') || text.startsWith('<ol>')) return text
+  const lines = text.split(/[\n\r]+/).map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean)
+  if (!lines.length) return `<ul><li>${name}</li></ul>`
+  return `<ul>${lines.map(l => `<li>${l}</li>`).join('')}</ul>`
+}
+
+function ensureHtmlDescription(text, name) {
+  if (!text) return `<p>${name}</p>`
+  if (text.startsWith('<p>') || text.startsWith('<div>')) return text
+  return `<p>${text.trim()}</p>`
+}
 
 // Flexible column finder
 function col(row, ...keys) {
@@ -318,23 +332,32 @@ export async function processManualFile(file, apiKey, onProgress) {
     }
   }
 
-  // ── Step 3: Collect unique names for category matching ───────────────────────
+  // ── Step 3: Batch category matching — one API call per 10 products ──────────
   const catMatchCache = {}  // pid → { cartupId, cartupPath, tags, reportNote }
   if (apiKey) {
-    const uniquePidsForCat = pidList.map(p => p.pid)
-    const catTasks = uniquePidsForCat.map(pid => async () => {
-      const fixedName = aiCache[pid]?.name || uniqueProducts[pid]?.name || ''
-      if (!fixedName) { catMatchCache[pid] = { cartupId:'', cartupPath:'', tags:'', reportNote:'No name for category match' }; return }
-      onProgress(`Matching category for: ${fixedName.slice(0, 40)}...`)
-      const matched = await matchCategory(fixedName, cartupCategories, apiKey)
-      if (matched) {
-        const cid = matched.id || ''
-        catMatchCache[pid] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: `[AI] ${matched.reason || 'AI matched'}` }
-      } else {
-        catMatchCache[pid] = { cartupId:'', cartupPath:'', tags:'', reportNote:'No category match found' }
+    const CAT_BATCH = 10
+    for (let i = 0; i < pidList.length; i += CAT_BATCH) {
+      const batch = pidList.slice(i, i + CAT_BATCH)
+      const batchProducts = batch.map(p => ({
+        pid: p.pid,
+        name: aiCache[p.pid]?.name || p.name || '',
+      })).filter(p => p.name)
+
+      if (!batchProducts.length) continue
+      onProgress(`Matching categories for products ${i + 1}–${Math.min(i + CAT_BATCH, pidList.length)} of ${pidList.length}...`)
+
+      const results = await matchCategoriesBatch(batchProducts, cartupCategories, apiKey)
+
+      for (const p of batchProducts) {
+        const matched = results[p.pid]
+        if (matched && matched.id) {
+          const cid = matched.id
+          catMatchCache[p.pid] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: '[AI] Category matched' }
+        } else {
+          catMatchCache[p.pid] = { cartupId: '', cartupPath: '', tags: '', reportNote: 'No category match found' }
+        }
       }
-    })
-    await runConcurrent(catTasks, 3)
+    }
   }
 
   // ── Step 4: Build output rows ─────────────────────────────────────────────
@@ -344,6 +367,9 @@ export async function processManualFile(file, apiKey, onProgress) {
   for (const r of expandedRows) {
     const ai = aiCache[r.pid] || { name: uniqueProducts[r.pid]?.name || '', highlights: '', description: '' }
     const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: apiKey ? 'No category match found' : 'No API key — category not matched' }
+    const productName = ai.name || uniqueProducts[r.pid]?.name || ''
+    const highlights = ensureHtmlHighlights(ai.highlights, productName)
+    const description = ensureHtmlDescription(ai.description, productName)
 
     outputRows.push({
       '**Category Id':            cat.cartupId,
@@ -369,11 +395,11 @@ export async function processManualFile(file, apiKey, onProgress) {
       'Recommended Age':          '',
       'Watch Type':               '',
       'Main Materials':           '',
-      'Highlights(English)':      ai.highlights,
-      'Highlights(Bengali)':      ai.highlights,
-      'Description (Bengali)':    ai.description,
-      'Description (English)':    ai.description,
-      "What's in the box":        `1* ${ai.name}`,
+      'Highlights(English)':      highlights,
+      'Highlights(Bengali)':      highlights,
+      'Description (Bengali)':    description,
+      'Description (English)':    description,
+      "What's in the box":        `1* ${productName}`,
       'Warranty Policy(English)': r.warranty,
       'Warranty Policy(Bangla)':  r.warranty,
       'Warranty Type':            '',

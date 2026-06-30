@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight, UserCircle } from 'lucide-react'
+import { APP_VERSION } from '../version'
 
 export default function Layout() {
   const { user, signOut } = useAuth()
@@ -52,8 +53,11 @@ export default function Layout() {
       <aside style={{ width:220, background:'#1e1b4b', display:'flex', flexDirection:'column', flexShrink:0 }}>
         {/* Logo */}
         <div style={{ padding:'24px 20px 16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{ fontSize:18, fontWeight:700, color:'#fff', letterSpacing:'-0.3px' }}>
-            CartUp <span style={{ color:'#818cf8' }}>Ops</span>
+          <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
+            <div style={{ fontSize:18, fontWeight:700, color:'#fff', letterSpacing:'-0.3px' }}>
+              CartUp <span style={{ color:'#818cf8' }}>Ops</span>
+            </div>
+            <span style={{ fontSize:10, color:'rgba(255,255,255,0.3)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
           </div>
           <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)', marginTop:2 }}>Team Platform</div>
         </div>
