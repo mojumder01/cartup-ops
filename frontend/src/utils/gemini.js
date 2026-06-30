@@ -162,44 +162,64 @@ export async function processProductAI(name, highlights, description, apiKey) {
   return { name: r.name || localName, highlights: r.highlights || highlights, description: r.description || description }
 }
 
-// ── Category match ────────────────────────────────────────────────────────────
-export async function matchCategory(productName, cartupCategories, apiKey) {
-  if (!apiKey || !productName) return null
+// ── Batch category match — one API call for up to 10 products ────────────────
+export async function matchCategoriesBatch(products, cartupCategories, apiKey) {
+  // products: [{pid, name}]
+  // returns: {pid: {id, path, reason} | null}
+  if (!apiKey || !products.length) return {}
 
-  // Extract meaningful keywords from product name (words > 2 chars)
-  const words = productName.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 2)
-
-  // Filter categories whose path contains any keyword
-  let filtered = cartupCategories.filter(c =>
-    words.some(w => c.path.toLowerCase().includes(w))
-  )
-
-  // Broaden: also try top-level category words (first segment of path)
-  if (filtered.length < 15) {
-    const shortWords = words.filter(w => w.length > 1)
-    filtered = cartupCategories.filter(c =>
-      shortWords.some(w => c.path.toLowerCase().includes(w))
-    )
+  // Collect keywords from ALL product names to build combined category pool
+  const allWords = new Set()
+  for (const p of products) {
+    p.name.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2)
+      .forEach(w => allWords.add(w))
   }
 
-  // Fallback: send all categories in slices — use first 400 if still nothing
-  const pool = filtered.length >= 5 ? filtered.slice(0, 300) : cartupCategories.slice(0, 400)
+  let filtered = cartupCategories.filter(c =>
+    [...allWords].some(w => c.path.toLowerCase().includes(w))
+  )
+  // Fallback to first 400 if poor match
+  const pool = filtered.length >= products.length * 3 ? filtered.slice(0, 250) : cartupCategories.slice(0, 400)
   const catList = pool.map(c => `${c.id}|${c.path}`).join('\n')
 
-  const prompt = `Match this product to the best category. Reply ONLY with JSON, no markdown: {"id":"...","path":"...","reason":"..."}
+  const productBlock = products.map((p, i) => `${i + 1}. (pid:"${p.pid}") "${p.name}"`).join('\n')
 
-Product: "${productName}"
+  const prompt = `Match each product to the BEST category from the list below.
+Reply ONLY with a JSON array, no markdown, no explanation.
+
+Products:
+${productBlock}
 
 Categories (ID|Path):
-${catList}`
+${catList}
+
+Return ONLY: [{"pid":"...","id":"...","path":"..."},...]`
+
   try {
     const result = await callGemini(prompt, apiKey)
-    const clean = result.replace(/```json|```/g, '').trim()
-    return JSON.parse(clean)
-  } catch { return null }
+    const clean = result.replace(/```json[\s\S]*?```|```/g, '').trim()
+    // Extract JSON array even if there's surrounding text
+    const match = clean.match(/\[[\s\S]*\]/)
+    if (!match) throw new Error('No JSON array in response')
+    const parsed = JSON.parse(match[0])
+    const out = {}
+    for (const item of parsed) {
+      if (item.pid) out[item.pid] = { id: item.id || '', path: item.path || '' }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+// ── Single category match (kept for compatibility) ────────────────────────────
+export async function matchCategory(productName, cartupCategories, apiKey) {
+  if (!apiKey || !productName) return null
+  const results = await matchCategoriesBatch([{ pid: '__single__', name: productName }], cartupCategories, apiKey)
+  return results['__single__'] || null
 }
 
 // ── Run async tasks with max concurrency ─────────────────────────────────────
