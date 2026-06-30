@@ -27,7 +27,8 @@ const OUTPUT_COLS = [
   '**Package Weight (kg)','**Package Length(cm)','*Package Width (cm)','*Package Height(cm)',
   'Clothing Size','Color','Model','Age Group','Size','Shoe Size','Bedding Size',
   '**Seller SKU','**Parent Sku','*Variant Image','**Current Stock Qty',
-  'Price','status','Cartup Category Path','Report'
+  '**Price(MRP)','Special Price','Special Price Start Date','Special Price End Date',
+  'status','Cartup Category Path','Report'
 ]
 
 // Flexible column finder — tries multiple common header names
@@ -74,38 +75,36 @@ export async function processManualFile(file, apiKey, onProgress) {
     const row = rows[i]
     onProgress(`Processing row ${i + 1} of ${total}...`)
 
-    const rawName   = col(row, 'name', 'product name', '*product name', 'product name (english)', '*product name(english)', 'title')
-    const rawHl     = col(row, 'highlights', '*highlights', 'highlight', 'key features', 'features')
-    const rawDesc   = col(row, 'description', 'main description', '*description', 'product description', 'desc')
-    const price     = col(row, 'price', '*price', 'special price', 'sale price', 'selling price')
-    const sku       = col(row, 'sku', 'seller sku', '*seller sku', 'sellersku', 'item sku')
-    const parentSku = col(row, 'parent sku', '*parent sku', 'parentsku', 'parent id', 'product id')
-    const brand     = col(row, 'brand', '*brand') || 'No Brand'
-    const stock     = col(row, 'stock', 'quantity', '*quantity', 'current stock', '*current stock qty', 'qty')
-    const status    = col(row, 'status')
-    const img1      = col(row, 'image', 'image 1', 'image1', 'product image 1', '*product image 1', 'images1', 'image url')
-    const img2      = col(row, 'image 2', 'image2', 'product image 2')
-    const img3      = col(row, 'image 3', 'image3', 'product image 3')
-    const img4      = col(row, 'image 4', 'image4', 'product image 4')
-    const img5      = col(row, 'image 5', 'image5', 'product image 5')
-    const img6      = col(row, 'image 6', 'image6', 'product image 6')
-    const img7      = col(row, 'image 7', 'image7', 'product image 7')
-    const img8      = col(row, 'image 8', 'image8', 'product image 8')
-    const warranty  = col(row, 'warranty policy', 'warranty', 'warranty period')
-    const weight    = col(row, 'package weight', '*package weight (kg)', 'weight')
-    const length    = col(row, 'package length', '*package length(cm)', 'length')
-    const width     = col(row, 'package width', '*package width (cm)', 'width')
-    const height    = col(row, 'package height', '*package height(cm)', 'height')
+    const rawName      = col(row, '**name (english)', 'name (english)', 'name', 'product name', '*product name', 'product name (english)', '*product name(english)', 'title')
+    const rawHl        = col(row, 'highlights', '*highlights', 'highlight', 'key features', 'features')
+    const rawDesc      = col(row, 'description', 'main description', '*description', 'product description', 'desc')
+    const price        = col(row, '**price(mrp)', 'price(mrp)', 'mrp', 'price', '*price', 'sale price', 'selling price')
+    const specialPrice = col(row, 'special price', 'specialprice', 'discounted price', 'offer price')
+    const spStart      = col(row, 'special start date', 'special price start date', 'specialprice start', 'sp start')
+    const spEnd        = col(row, 'special end date', 'special price end date', 'specialprice end', 'sp end')
+    const sku          = col(row, '**seller sku', 'seller sku', '*seller sku', 'sku', 'sellersku', 'item sku')
+    const parentSku    = col(row, 'parent sku', '*parent sku', 'parentsku', 'parent id', 'product id')
+    const brand        = col(row, '**brand', 'brand', '*brand') || 'No Brand'
+    const stock        = col(row, '**stock', 'stock', '**current stock qty', 'quantity', '*quantity', 'current stock', 'qty')
+    const status       = col(row, 'status')
+    const color        = col(row, '*color', 'color', 'colour')
+    const size         = col(row, 'available sizes', 'size', 'clothing size', '*size')
+    const img1         = col(row, '**product image 1', '*product image 1', 'product image 1', 'image 1', 'image1', 'image', 'images1', 'image url', 'image code')
+    const img2         = col(row, 'product image 2', 'image 2', 'image2')
+    const img3         = col(row, 'product image 3', 'image 3', 'image3')
+    const img4         = col(row, 'product image 4', 'image 4', 'image4')
+    const img5         = col(row, 'product image 5', 'image 5', 'image5')
+    const img6         = col(row, 'product image 6', 'image 6', 'image6')
+    const img7         = col(row, 'product image 7', 'image 7', 'image7')
+    const img8         = col(row, 'product image 8', 'image 8', 'image8')
+    const warranty     = col(row, 'warranty policy', 'warranty', 'warranty period', 'warranty type')
+    const weight       = col(row, '**package weight (kg)', '*package weight (kg)', 'package weight', 'weight')
+    const length       = col(row, '**package length(cm)', '*package length(cm)', 'package length', 'length')
+    const width        = col(row, '*package width (cm)', 'package width', 'width')
+    const height       = col(row, '*package height(cm)', 'package height', 'height')
 
-    // ── Validity check ────────────────────────────────────────────────────────
-    const missing = []
-    if (!rawName) missing.push('Name missing')
-    if (!price)   missing.push('Price missing')
-    if (!img1)    missing.push('Image 1 missing')
-    // variant image = img1 for manual (same field)
-    if (!img1)    {} // already caught above
-
-    if (missing.length > 0) {
+    // ── Validity check — only Name is strictly required for manual upload ─────
+    if (!rawName) {
       invalidRows.push({
         'Name':          rawName,
         'SKU':           sku,
@@ -115,7 +114,7 @@ export async function processManualFile(file, apiKey, onProgress) {
         'Variant Image': img1,
         'Stock':         stock,
         'Status':        status,
-        'Report':        missing.join(' | '),
+        'Report':        'Name missing',
       })
       continue
     }
@@ -187,18 +186,21 @@ export async function processManualFile(file, apiKey, onProgress) {
       '**Package Length(cm)':     length,
       '*Package Width (cm)':      width,
       '*Package Height(cm)':      height,
-      'Clothing Size':            '',
-      'Color':                    '',
+      'Clothing Size':            size,
+      'Color':                    color,
       'Model':                    '',
       'Age Group':                '',
-      'Size':                     '',
+      'Size':                     size,
       'Shoe Size':                '',
       'Bedding Size':             '',
       '**Seller SKU':             sku,
       '**Parent Sku':             parentSku,
       '*Variant Image':           img1,
       '**Current Stock Qty':      stock,
-      'Price':                    price,
+      '**Price(MRP)':             price,
+      'Special Price':            specialPrice,
+      'Special Price Start Date': spStart,
+      'Special Price End Date':   spEnd,
       'status':                   status,
       'Cartup Category Path':     cartupPath,
       'Report':                   reportNote,
