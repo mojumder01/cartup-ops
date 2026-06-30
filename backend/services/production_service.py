@@ -367,14 +367,33 @@ def process_daraz_files(price_b, basic_b, weight_b, skuimg_b, attr_b=None):
     return _build_excel(output_rows)
 
 def process_manual_upload(input_bytes):
+    """
+    Reads a manual product Excel file, cleans cell values, and returns
+    the same data as a clean Excel. Full AI processing is done client-side
+    via manualProcessor.js — this endpoint is kept as a server-side fallback.
+    """
     wb = load_workbook(io.BytesIO(input_bytes), data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
+
     out_wb = Workbook()
     out_ws = out_wb.active
-    for row in rows:
+    out_ws.title = 'product'
+
+    for ri, row in enumerate(rows):
         out_ws.append([_v(c) for c in row])
+        if ri == 0:
+            for ci in range(1, len(row) + 1):
+                cell = out_ws.cell(row=1, column=ci)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill('solid', start_color='D9D9D9')
+                cell.alignment = Alignment(horizontal='center', wrap_text=True)
+
+    for ci in range(1, (len(rows[0]) if rows else 1) + 1):
+        out_ws.column_dimensions[get_column_letter(ci)].width = 22
+    out_ws.freeze_panes = 'A2'
+
     buf = io.BytesIO()
     out_wb.save(buf)
     return buf.getvalue()
