@@ -16,7 +16,7 @@ const SECTIONS = [
   { name: 'Product Description', color: 'FFFCE4D6', cols: 5  },
   { name: 'Service',             color: 'FFFFF2CC', cols: 4  },
   { name: 'Delivery',            color: 'FFDDEBF7', cols: 4  },
-  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 11 },
+  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 15 },
   { name: 'Extra',               color: 'FFEDEDED', cols: 4  },
 ]
 
@@ -32,6 +32,7 @@ const OUTPUT_COLS = [
   '**Package Weight (kg)','**Package Length(cm)','*Package Width (cm)','*Package Height(cm)',
   'Clothing Size','Color','Model','Age Group','Size','Shoe Size','Bedding Size',
   '**Seller SKU','**Parent Sku','*Variant Image','**Current Stock Qty',
+  '**Price(MRP)','Special Price','Special Price Start Date','Special Price End Date',
   'status','Cartup Category Path','Variations Combo','Report'
 ]
 
@@ -296,6 +297,10 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       '**Parent Sku':             pid,
       '*Variant Image':           String(s['Images1'] || '').trim(),
       '**Current Stock Qty':      String(row['*Quantity'] || '').trim(),
+      '**Price(MRP)':            String(row['**Price(MRP)'] || row['Price'] || '').trim(),
+      'Special Price':            String(row['Special Price'] || row['SpecialPrice'] || '').trim(),
+      'Special Price Start Date': String(row['Special Price Start Date'] || '').trim(),
+      'Special Price End Date':   String(row['Special Price End Date'] || '').trim(),
       'status':                   status,
       'Cartup Category Path':     cartupPath,
       'Variations Combo':         combo,
