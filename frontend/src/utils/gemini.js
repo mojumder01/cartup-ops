@@ -162,57 +162,98 @@ export async function processProductAI(name, highlights, description, apiKey) {
   return { name: r.name || localName, highlights: r.highlights || highlights, description: r.description || description }
 }
 
+// Common English words that match too many unrelated category paths
+const STOP_WORDS = new Set([
+  'the','and','for','with','from','this','that','are','was','has',
+  'not','but','can','all','new','one','its','our','use','any','may',
+  'dry','wet','hot','cold','cell','smart','mini','plus','pro','max',
+  'set','kit','box','bag','top','big','fit','air','oil','gel','pad',
+])
+
 // ── Batch category match — one API call for up to 10 products ────────────────
 export async function matchCategoriesBatch(products, cartupCategories, apiKey) {
-  // products: [{pid, name}]
-  // returns: {pid: {id, path, reason} | null}
+  // returns: {pid: {id, path} | {__error__: msg}}
   if (!apiKey || !products.length) return {}
 
-  // Collect keywords from ALL product names to build combined category pool
+  // Build path-to-id lookup for fallback matching
+  const pathToId = {}
+  for (const c of cartupCategories) pathToId[c.path.toLowerCase()] = c.id
+
+  // Collect meaningful keywords (exclude stop words and short words)
   const allWords = new Set()
   for (const p of products) {
     p.name.toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 2)
+      .filter(w => w.length > 3 && !STOP_WORDS.has(w))
       .forEach(w => allWords.add(w))
   }
 
+  // Filter categories by keyword match
   let filtered = cartupCategories.filter(c =>
     [...allWords].some(w => c.path.toLowerCase().includes(w))
   )
-  // Fallback to first 400 if poor match
-  const pool = filtered.length >= products.length * 3 ? filtered.slice(0, 250) : cartupCategories.slice(0, 400)
+  // Broaden if too few matches
+  if (filtered.length < 10) {
+    const shorter = [...allWords].filter(w => w.length > 2 && !STOP_WORDS.has(w))
+    filtered = cartupCategories.filter(c =>
+      shorter.some(w => c.path.toLowerCase().includes(w))
+    )
+  }
+  const pool = filtered.length >= 5 ? filtered.slice(0, 200) : cartupCategories.slice(0, 300)
   const catList = pool.map(c => `${c.id}|${c.path}`).join('\n')
 
   const productBlock = products.map((p, i) => `${i + 1}. (pid:"${p.pid}") "${p.name}"`).join('\n')
 
-  const prompt = `Match each product to the BEST category from the list below.
-Reply ONLY with a JSON array, no markdown, no explanation.
+  const prompt = `You are a product categorization assistant.
+Match each product to the single BEST category ID from the list.
+Respond ONLY with a JSON array. No markdown, no explanation.
 
 Products:
 ${productBlock}
 
-Categories (ID|Path):
+Category list (ID|Full Path):
 ${catList}
 
-Return ONLY: [{"pid":"...","id":"...","path":"..."},...]`
+Required output format — one object per product:
+[{"pid":"<exact pid from above>","id":"<category ID number>","path":"<full category path>"}]`
 
   try {
     const result = await callGemini(prompt, apiKey)
+    if (!result) return { __error__: 'Empty response from Gemini' }
+
     const clean = result.replace(/```json|```/g, '').trim()
-    const match = clean.match(/\[[\s\S]*\]/)
-    if (!match) throw new Error('No JSON array in response')
+    const match = clean.match(/\[[\s\S]*?\]/)
+    if (!match) return { __error__: `No JSON array found. Response: ${clean.slice(0, 80)}` }
+
     const parsed = JSON.parse(match[0])
     const out = {}
     for (let i = 0; i < parsed.length; i++) {
       const item = parsed[i]
-      const pid = item.pid || products[i]?.pid
-      if (pid && item.id) out[pid] = { id: String(item.id), path: item.path || '' }
+      const pid = String(item.pid || products[i]?.pid || '')
+      if (!pid) continue
+
+      // Accept id from response, or look up by path if id missing/invalid
+      let id = String(item.id || item.category_id || item.categoryId || '')
+      const path = item.path || item.category_path || ''
+
+      if (!id && path) {
+        id = pathToId[path.toLowerCase()] || ''
+      }
+      // Verify id exists in our category list
+      const validCat = pool.find(c => c.id === id)
+      if (validCat) {
+        out[pid] = { id, path: validCat.path }
+      } else if (path) {
+        // Try fuzzy path match
+        const lower = path.toLowerCase()
+        const found = pool.find(c => c.path.toLowerCase() === lower)
+        if (found) out[pid] = { id: found.id, path: found.path }
+      }
     }
     return out
-  } catch {
-    return {}
+  } catch (e) {
+    return { __error__: e.message || 'Unknown error' }
   }
 }
 
