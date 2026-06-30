@@ -67,6 +67,7 @@ export async function processManualFile(file, apiKey, onProgress) {
 
   const cartupCategories = getCartupCategories()
   const outputRows = []
+  const invalidRows = []
   const total = rows.length
 
   for (let i = 0; i < rows.length; i++) {
@@ -96,8 +97,26 @@ export async function processManualFile(file, apiKey, onProgress) {
     const width     = col(row, 'package width', '*package width (cm)', 'width')
     const height    = col(row, 'package height', '*package height(cm)', 'height')
 
-    if (!rawName) {
-      outputRows.push({ ...Object.fromEntries(OUTPUT_COLS.map(c => [c, ''])), Report: 'Skipped — no Name' })
+    // ── Validity check ────────────────────────────────────────────────────────
+    const missing = []
+    if (!rawName) missing.push('Name missing')
+    if (!price)   missing.push('Price missing')
+    if (!img1)    missing.push('Image 1 missing')
+    // variant image = img1 for manual (same field)
+    if (!img1)    {} // already caught above
+
+    if (missing.length > 0) {
+      invalidRows.push({
+        'Name':          rawName,
+        'SKU':           sku,
+        'Parent SKU':    parentSku,
+        'Price':         price,
+        'Image 1':       img1,
+        'Variant Image': img1,
+        'Stock':         stock,
+        'Status':        status,
+        'Report':        missing.join(' | '),
+      })
       continue
     }
 
@@ -187,41 +206,47 @@ export async function processManualFile(file, apiKey, onProgress) {
   }
 
   onProgress('Building Excel output...')
-  return buildExcel(outputRows)
+  return buildExcel(outputRows, invalidRows)
 }
 
-function buildExcel(rows) {
+function buildExcel(rows, invalidRows = []) {
   const wb = XLSX.utils.book_new()
-  const wsData = []
 
-  // Row 1: section headers
+  // ── Sheet 1: product (valid, AI-processed) ──────────────────────────────────
+  const wsData = []
   const secRow = []
   for (const sec of SECTIONS) {
     secRow.push(sec.name)
     for (let i = 1; i < sec.cols; i++) secRow.push('')
   }
-  // extra cols (Price, status, path, report)
   secRow.push('Extra', '', '', '')
   wsData.push(secRow)
-
-  // Row 2: column headers
   wsData.push(OUTPUT_COLS)
-
-  // Data rows
   for (const r of rows) {
     wsData.push(OUTPUT_COLS.map(col => r[col] ?? ''))
   }
 
   const ws = XLSX.utils.aoa_to_sheet(wsData)
-
   ws['!cols'] = OUTPUT_COLS.map(col => {
     if (col.includes('Name') || col.includes('Path') || col.includes('Report')) return { wch: 50 }
     if (col.includes('Image') || col.includes('Highlights') || col.includes('Description')) return { wch: 40 }
     return { wch: 20 }
   })
-
   ws['!freeze'] = { xSplit: 0, ySplit: 2 }
-
   XLSX.utils.book_append_sheet(wb, ws, 'product')
+
+  // ── Sheet 2: invalid (missing required fields) ──────────────────────────────
+  if (invalidRows.length > 0) {
+    const invCols = ['Name','SKU','Parent SKU','Price','Image 1','Variant Image','Stock','Status','Report']
+    const invData = [invCols]
+    for (const r of invalidRows) {
+      invData.push(invCols.map(c => r[c] ?? ''))
+    }
+    const wsInv = XLSX.utils.aoa_to_sheet(invData)
+    wsInv['!cols'] = invCols.map(c => c === 'Report' ? { wch: 55 } : c === 'Name' ? { wch: 40 } : { wch: 20 })
+    wsInv['!freeze'] = { xSplit: 0, ySplit: 1 }
+    XLSX.utils.book_append_sheet(wb, wsInv, 'invalid')
+  }
+
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
 }
