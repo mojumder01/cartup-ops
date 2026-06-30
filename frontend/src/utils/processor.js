@@ -257,14 +257,14 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const sku    = String(row['SellerSKU'] || '').trim()
     const combo  = String(row['Variations Combo'] || '').trim()
     const status = String(row['status'] || '').trim()
-    const price  = String(row['**Price(MRP)'] || row['Price'] || '').trim()
+    const price  = String(row['*Price'] || row['**Price(MRP)'] || row['Price'] || '').trim()
 
     const b = basicDict[pid] || {}
     const f = freightDict[pid] || {}
     const s = skuDict[sku] || {}
 
     const img1         = String(b['*Product Images1'] || '').trim()
-    const variantImage = String(s['Images1'] || '').trim()
+    const variantImage = String(s['Images1'] || img1 || '').trim()
 
     // ── Validity check ────────────────────────────────────────────────────────
     const missing = []
@@ -371,9 +371,9 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       '*Variant Image':           variantImage,
       '**Current Stock Qty':      String(row['*Quantity'] || '').trim(),
       '**Price(MRP)':             price,
-      'Special Price':            String(row['Special Price'] || row['SpecialPrice'] || '').trim(),
-      'Special Price Start Date': String(row['Special Price Start Date'] || '').trim(),
-      'Special Price End Date':   String(row['Special Price End Date'] || '').trim(),
+      'Special Price':            String(row['SpecialPrice'] || row['Special Price'] || '').trim(),
+      'Special Price Start Date': String(row['SpecialPrice Start'] || row['Special Price Start Date'] || '').trim(),
+      'Special Price End Date':   String(row['SpecialPrice End'] || row['Special Price End Date'] || '').trim(),
       'status':                   status,
       'Cartup Category Path':     cartupPath,
       'Variations Combo':         combo,
