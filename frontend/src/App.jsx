@@ -3,6 +3,9 @@ import { useAuth } from './hooks/useAuth'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Production from './pages/Production'
+import DarazUpload from './pages/DarazUpload'
+import ManualUpload from './pages/ManualUpload'
+import Profile from './pages/Profile'
 import Layout from './components/Layout'
 
 function PrivateRoute({ children }) {
@@ -17,7 +20,12 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
         <Route index element={<Dashboard />} />
-        <Route path="production" element={<Production />} />
+        <Route path="production" element={<Production />}>
+          <Route index element={<Navigate to="daraz" replace />} />
+          <Route path="daraz"  element={<DarazUpload />} />
+          <Route path="manual" element={<ManualUpload />} />
+        </Route>
+        <Route path="profile" element={<Profile />} />
       </Route>
     </Routes>
   )

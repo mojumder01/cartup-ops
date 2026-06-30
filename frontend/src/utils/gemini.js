@@ -1,5 +1,5 @@
 const GEMINI_MODEL = 'gemini-2.5-flash'
-const DELAY_MS = 7000  // safer delay
+const DELAY_MS = 7000
 const MAX_RETRIES = 3
 
 export function getApiKey() {
@@ -10,11 +10,71 @@ export function saveApiKey(key) {
   localStorage.setItem('gemini_api_key', key)
 }
 
+const TYPO_MAP = {
+  'Febric':'Fabric','Fabrics':'Fabric','Fabirc':'Fabric',
+  'Jearsy':'Jersey','Jersy':'Jersey','Jearsey':'Jersey',
+  'Lenth':'Length','Lenght':'Length',
+  'Comfotable':'Comfortable','Comfortble':'Comfortable','Confortable':'Comfortable',
+  'Cottan':'Cotton','Coton':'Cotton','Cottton':'Cotton',
+  'Poleyster':'Polyester','Polister':'Polyester','Polyster':'Polyester','Poliyester':'Polyester',
+  'Woaman':'Women','Weman':'Women','Woomen':'Women',
+  'Mens':"Men's",'Womens':"Women's",
+  'Shrt':'Shirt','Shrit':'Shirt',
+  'Troser':'Trouser','Trousar':'Trouser','Trousser':'Trouser',
+  'Pent':'Pant','Pents':'Pants',
+  'Sleveless':'Sleeveless','Sleevless':'Sleeveless','Slevless':'Sleeveless',
+  'Fullsleeve':'Full Sleeve','Halfsleeve':'Half Sleeve',
+  'Jeens':'Jeans','Jens':'Jeans',
+  'Kurthi':'Kurti','Kurtee':'Kurti',
+  'Sari':'Saree','Orgnza':'Organza',
+  'Chifon':'Chiffon','Chiffone':'Chiffon',
+  'Gorgette':'Georgette','Gorget':'Georgette',
+  'Embroidary':'Embroidery','Embrodery':'Embroidery','Embroidrey':'Embroidery',
+  'Collor':'Color','Colour':'Color',
+  'Desing':'Design','Dezign':'Design',
+  'Beautifull':'Beautiful','Beutiful':'Beautiful',
+  'Qualiy':'Quality','Qualty':'Quality',
+  'Premiun':'Premium','Primium':'Premium',
+  'Fashoin':'Fashion','Fassion':'Fashion',
+  'Stylesh':'Stylish','Stlyish':'Stylish',
+  'Packege':'Package','Pakage':'Package',
+  'Orginal':'Original','Orignal':'Original',
+  'Guarntee':'Guarantee','Guarentee':'Guarantee',
+  'Warrenty':'Warranty','Waranty':'Warranty',
+  'Dupata':'Dupatta','Duptta':'Dupatta',
+  'Kamiz':'Kameez','Anarkalli':'Anarkali',
+  'Lehnga':'Lehenga','Lahenga':'Lehenga','Palaso':'Palazzo',
+  'Prited':'Printed','Stiched':'Stitched','Unstiched':'Unstitched',
+  'Embelished':'Embellished','Sequened':'Sequined','Nekline':'Neckline',
+  'Jaquard':'Jacquard','Viscouse':'Viscose','Rayan':'Rayon',
+  'Spandix':'Spandex','Lycre':'Lycra','Deniim':'Denim',
+  'Cordruoy':'Corduroy','Flanel':'Flannel','Flece':'Fleece',
+  'Hoody':'Hoodie','Sweathshirt':'Sweatshirt','Tracksuite':'Tracksuit',
+  'Tshirt':'T-Shirt','Oversize':'Oversized','Ovesized':'Oversized',
+  'Boyfreind':'Boyfriend','Streetware':'Streetwear',
+  'Bloues':'Blouse','Salwaar':'Salwar','Shalwar':'Salwar',
+}
+
+export function localFixName(name) {
+  if (!name) return name
+  let result = name
+  for (const [wrong, right] of Object.entries(TYPO_MAP)) {
+    result = result.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), (match) => {
+      if (match === match.toUpperCase()) return right.toUpperCase()
+      if (match[0] === match[0].toUpperCase()) return right.charAt(0).toUpperCase() + right.slice(1)
+      return right
+    })
+  }
+  result = result.replace(/\b(\w+)(\s+\1)+\b/gi, '$1')
+  result = result.replace(/\s{2,}/g, ' ').trim()
+  result = result.replace(/^[\s\-–—]+|[\s\-–—]+$/g, '').trim()
+  return result
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
   await sleep(DELAY_MS)
-
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
@@ -26,62 +86,58 @@ async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
       })
     }
   )
-
   if (res.status === 429) {
-    if (retries > 0) {
-      await sleep(15000) // wait 15s on rate limit before retry
-      return callGemini(prompt, apiKey, retries - 1)
-    }
+    if (retries > 0) { await sleep(15000); return callGemini(prompt, apiKey, retries - 1) }
     throw new Error('Gemini rate limit — please wait a minute and try again')
   }
-
   if (!res.ok) throw new Error(`Gemini error: ${res.status}`)
   const data = await res.json()
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
-// Combined single-call processor: fixes name + highlights + description together
-// This cuts 3-4 API calls per product down to 1
 export async function processProductAI(name, highlights, description, apiKey) {
-  if (!apiKey) return { name, highlights, description }
+  const localName = localFixName(name || '')
+  if (!apiKey) return { name: localName, highlights, description }
 
-  const prompt = `You are cleaning e-commerce product data. Process this product and return ONLY a JSON object, no markdown, no explanation.
+  const prompt = `You are cleaning e-commerce product data. Return ONLY a JSON object, no markdown, no explanation.
 
 RULES:
-1. "name": Fix spelling errors in the product name. Remove only exact duplicate consecutive words. Do NOT change anything else, do NOT add words.
-2. "highlights": Return HTML using only <ul><li> tags, no <img> tags, no other tags.
-   - If highlights input is empty and description is empty: create highlights using ONLY the name. Do not invent specifications.
-   - If highlights input is empty but description exists: create highlights from name + description. Use only given info, do not add specs.
-   - If highlights input exists: fix grammar/spelling, strip to only <ul><li> tags, remove <img> tags.
-3. "description": Return HTML using only <p> tags, no <img> tags, no other tags.
-   - If description input is empty and highlights is empty: create description using ONLY the name.
-   - If description input is empty but highlights exists: create description from name + highlights. Use only given info, do not add specs.
-   - If description input exists: fix grammar/spelling, strip to only <p> tags, remove <img> tags.
+1. "name": Fix remaining spelling errors. Remove only exact duplicate consecutive words. Do NOT add words or change product type/color/attributes.
+2. "highlights": Return HTML using ONLY <ul><li> tags.
+   - Remove ALL non-Latin characters (Bengali, Chinese, Japanese, Arabic, etc.)
+   - Remove encoding artifacts: Â, â€™, Ã, â€", ï¿½, etc.
+   - Remove hashtags (#word) and keyword-spam items
+   - Remove duplicate <li> items and empty <li> items. Remove all <img> tags.
+   - If empty after cleaning or was empty: create 3-5 bullets from name + description ONLY. Never invent specs.
+3. "description": Return HTML using ONLY <p> tags.
+   - Remove ALL non-Latin characters and encoding artifacts
+   - Remove all <img> tags
+   - If contains boilerplate ("The seller offers...", "We provide...", "Contact us...", "Visit our store..."): replace with 2-3 sentence product-specific text from name + highlights ONLY
+   - If empty: create 2-3 sentences from name + highlights ONLY
 
-Never invent specifications, materials, sizes, or features not present in the given inputs.
+CRITICAL: NEVER add information not in the given inputs. NEVER invent materials, specs, features.
 
 Input:
-Name: ${name || '(empty)'}
+Name: ${localName || '(empty)'}
 Highlights: ${highlights || '(empty)'}
 Description: ${description || '(empty)'}
 
-Return ONLY this JSON shape: {"name":"...","highlights":"...","description":"..."}`
+Return ONLY: {"name":"...","highlights":"...","description":"..."}`
 
   try {
     const result = await callGemini(prompt, apiKey)
     const clean = result.replace(/```json|```/g, '').trim()
     const parsed = JSON.parse(clean)
     return {
-      name: parsed.name || name,
-      highlights: parsed.highlights || highlights,
+      name:        parsed.name        || localName,
+      highlights:  parsed.highlights  || highlights,
       description: parsed.description || description,
     }
   } catch {
-    return { name, highlights, description }
+    return { name: localName, highlights, description }
   }
 }
 
-// Match category by product name
 export async function matchCategory(productName, cartupCategories, apiKey) {
   if (!apiKey || !productName) return null
   const catList = cartupCategories.slice(0, 150).map(c => `${c.id}|${c.path}`).join('\n')
@@ -96,6 +152,25 @@ ${catList}`
     const clean = result.replace(/```json|```/g, '').trim()
     return JSON.parse(clean)
   } catch { return null }
+}
+
+export async function fixName(name, apiKey) {
+  const local = localFixName(name || '')
+  if (!apiKey) return local
+  const { name: fixed } = await processProductAI(local, '', '', apiKey)
+  return fixed || local
+}
+
+export async function fixHighlights(highlights, name, description, apiKey) {
+  if (!apiKey) return highlights
+  const { highlights: fixed } = await processProductAI(name, highlights, description, apiKey)
+  return fixed || highlights
+}
+
+export async function fixDescription(description, name, highlights, apiKey) {
+  if (!apiKey) return description
+  const { description: fixed } = await processProductAI(name, highlights, description, apiKey)
+  return fixed || description
 }
 
 export async function testConnection(apiKey) {
