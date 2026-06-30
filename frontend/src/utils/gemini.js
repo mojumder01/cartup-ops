@@ -1,6 +1,7 @@
 const GEMINI_MODEL = 'gemini-2.5-flash'
-const DELAY_MS = 7000
+const DELAY_MS = 1000      // reduced from 7000
 const MAX_RETRIES = 3
+const CONCURRENCY = 3      // parallel API calls
 
 export function getApiKey() {
   return localStorage.getItem('gemini_api_key') || ''
@@ -82,7 +83,7 @@ async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+        generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
       })
     }
   )
@@ -95,13 +96,26 @@ async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
-export async function processProductAI(name, highlights, description, apiKey) {
-  const localName = localFixName(name || '')
-  if (!apiKey) return { name: localName, highlights, description }
+// ── Batch process up to 5 products in ONE API call ───────────────────────────
+export async function processProductsBatch(products, apiKey) {
+  // products: [{pid, name, highlights, description}]
+  // returns: {pid: {name, highlights, description}}
+  if (!products.length) return {}
 
-  const prompt = `You are cleaning e-commerce product data. Return ONLY a JSON object, no markdown, no explanation.
+  // Local fix first
+  const localFixed = products.map(p => ({ ...p, name: localFixName(p.name || '') }))
 
-RULES:
+  if (!apiKey) {
+    return Object.fromEntries(localFixed.map(p => [p.pid, { name: p.name, highlights: p.highlights, description: p.description }]))
+  }
+
+  const inputBlock = localFixed.map((p, i) =>
+    `Product ${i + 1} (id: "${p.pid}"):\nName: ${p.name || '(empty)'}\nHighlights: ${p.highlights || '(empty)'}\nDescription: ${p.description || '(empty)'}`
+  ).join('\n\n')
+
+  const prompt = `You are cleaning e-commerce product data. Process ALL ${products.length} products below and return ONLY a JSON array, no markdown, no explanation.
+
+RULES for each product:
 1. "name": Fix remaining spelling errors. Remove only exact duplicate consecutive words. Do NOT add words or change product type/color/attributes.
 2. "highlights": Return HTML using ONLY <ul><li> tags.
    - Remove ALL non-Latin characters (Bengali, Chinese, Japanese, Arabic, etc.)
@@ -110,34 +124,45 @@ RULES:
    - Remove duplicate <li> items and empty <li> items. Remove all <img> tags.
    - If empty after cleaning or was empty: create 3-5 bullets from name + description ONLY. Never invent specs.
 3. "description": Return HTML using ONLY <p> tags.
-   - Remove ALL non-Latin characters and encoding artifacts
-   - Remove all <img> tags
-   - If contains boilerplate ("The seller offers...", "We provide...", "Contact us...", "Visit our store..."): replace with 2-3 sentence product-specific text from name + highlights ONLY
-   - If empty: create 2-3 sentences from name + highlights ONLY
+   - Remove ALL non-Latin characters and encoding artifacts. Remove all <img> tags.
+   - If contains boilerplate ("The seller offers...", "We provide...", "Contact us..."): replace with 2-3 sentence product-specific text from name + highlights ONLY.
+   - If empty: create 2-3 sentences from name + highlights ONLY.
 
-CRITICAL: NEVER add information not in the given inputs. NEVER invent materials, specs, features.
+CRITICAL: NEVER add info not in the given inputs. NEVER invent materials, specs, features.
 
-Input:
-Name: ${localName || '(empty)'}
-Highlights: ${highlights || '(empty)'}
-Description: ${description || '(empty)'}
+${inputBlock}
 
-Return ONLY: {"name":"...","highlights":"...","description":"..."}`
+Return ONLY a JSON array with ${products.length} objects, preserving the "pid" field:
+[{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
 
   try {
     const result = await callGemini(prompt, apiKey)
     const clean = result.replace(/```json|```/g, '').trim()
     const parsed = JSON.parse(clean)
-    return {
-      name:        parsed.name        || localName,
-      highlights:  parsed.highlights  || highlights,
-      description: parsed.description || description,
+    const map = {}
+    for (const item of parsed) {
+      if (item.pid) map[item.pid] = { name: item.name, highlights: item.highlights, description: item.description }
     }
+    // Fill any missing with local-fixed version
+    for (const p of localFixed) {
+      if (!map[p.pid]) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description }
+    }
+    return map
   } catch {
-    return { name: localName, highlights, description }
+    return Object.fromEntries(localFixed.map(p => [p.pid, { name: p.name, highlights: p.highlights, description: p.description }]))
   }
 }
 
+// ── Single product (used by manualProcessor) ──────────────────────────────────
+export async function processProductAI(name, highlights, description, apiKey) {
+  const localName = localFixName(name || '')
+  if (!apiKey) return { name: localName, highlights, description }
+  const result = await processProductsBatch([{ pid: '__single__', name: localName, highlights, description }], apiKey)
+  const r = result['__single__'] || {}
+  return { name: r.name || localName, highlights: r.highlights || highlights, description: r.description || description }
+}
+
+// ── Category match ────────────────────────────────────────────────────────────
 export async function matchCategory(productName, cartupCategories, apiKey) {
   if (!apiKey || !productName) return null
   const catList = cartupCategories.slice(0, 150).map(c => `${c.id}|${c.path}`).join('\n')
@@ -152,6 +177,20 @@ ${catList}`
     const clean = result.replace(/```json|```/g, '').trim()
     return JSON.parse(clean)
   } catch { return null }
+}
+
+// ── Run async tasks with max concurrency ─────────────────────────────────────
+export async function runConcurrent(tasks, concurrency = CONCURRENCY) {
+  const results = []
+  let idx = 0
+  async function worker() {
+    while (idx < tasks.length) {
+      const i = idx++
+      results[i] = await tasks[i]()
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker))
+  return results
 }
 
 export async function fixName(name, apiKey) {

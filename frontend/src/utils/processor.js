@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { processProductAI, matchCategory } from './gemini'
+import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -163,21 +163,104 @@ export async function processDarazFiles(files, apiKey, onProgress) {
   }
 
   const cartupCategories = getCartupCategories()
+  const BATCH_SIZE = 5
+
+  // ── Step 1: Collect unique PIDs and their content ──────────────────────────
+  const uniquePids = {}
+  for (const row of priceRows) {
+    const pid  = String(row['Product ID'] || '').trim()
+    const name = String(row['*Product Name(English)'] || '').trim()
+    if (pid && !uniquePids[pid]) {
+      const b = basicDict[pid] || {}
+      uniquePids[pid] = {
+        pid,
+        name,
+        highlights:  cleanHighlights(String(b['*Highlights'] || '')),
+        description: cleanDescription(String(b['Main Description'] || '')),
+      }
+    }
+  }
+  const pidList = Object.values(uniquePids)
+
+  // ── Step 2: AI — batch process unique PIDs (5 per call, CONCURRENCY parallel) ─
+  const aiCache = {}   // pid → {name, highlights, description}
+  if (apiKey) {
+    const batches = []
+    for (let i = 0; i < pidList.length; i += BATCH_SIZE) {
+      batches.push(pidList.slice(i, i + BATCH_SIZE))
+    }
+    const total_batches = batches.length
+    let done = 0
+    const tasks = batches.map((batch, bi) => async () => {
+      onProgress(`AI processing products ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}... (batch ${bi + 1}/${total_batches})`)
+      const result = await processProductsBatch(batch, apiKey)
+      Object.assign(aiCache, result)
+      done += batch.length
+    })
+    await runConcurrent(tasks, 3)
+  } else {
+    // No AI — local fix + basic fallback
+    for (const p of pidList) {
+      let { name, highlights, description } = p
+      name = localFixName(name)
+      if (!highlights && !description) {
+        highlights  = `<ul><li>${name}</li></ul>`
+        description = `<p>${name}</p>`
+      } else if (!highlights) {
+        const text = description.replace(/<[^>]+>/g, ' ').trim()
+        highlights = `<ul><li>${name}</li><li>${text.slice(0, 200)}</li></ul>`
+      } else if (!description) {
+        const text = highlights.replace(/<[^>]+>/g, ' ').trim()
+        description = `<p>${name}. ${text.slice(0, 300)}</p>`
+      }
+      aiCache[p.pid] = { name, highlights, description }
+    }
+  }
+
+  // ── Step 3: Collect unique unmapped catIds for AI category match ────────────
+  const catMatchCache = {}  // catId → {cartupId, cartupPath, tags, reportNote}
+  const unmappedCats = [...new Set(
+    priceRows
+      .map(r => String(r['catId'] || '').trim())
+      .filter(cat => cat && !mystery_cats.includes(cat) && !daraz_to_cartup[cat])
+  )]
+
+  if (apiKey && unmappedCats.length) {
+    onProgress(`AI matching ${unmappedCats.length} unmapped categories...`)
+    const catTasks = unmappedCats.map(cat => async () => {
+      const sampleRow = priceRows.find(r => String(r['catId'] || '').trim() === cat)
+      const sampleName = String(sampleRow?.['*Product Name(English)'] || '').trim()
+      if (!sampleName) { catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat}` }; return }
+      const matched = await matchCategory(sampleName, cartupCategories, apiKey)
+      if (matched) {
+        const cid = matched.id || ''
+        catMatchCache[cat] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: `[AI] ${matched.reason || 'AI matched'}` }
+      } else {
+        catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat}` }
+      }
+    })
+    await runConcurrent(catTasks, 3)
+  }
+
+  // ── Step 4: Build output rows ───────────────────────────────────────────────
   const outputRows = []
   const total = priceRows.length
 
   for (let i = 0; i < priceRows.length; i++) {
     const row = priceRows[i]
-    onProgress(`Processing row ${i + 1} of ${total}...`)
+    if (i % 10 === 0) onProgress(`Building output row ${i + 1} of ${total}...`)
 
     const pid   = String(row['Product ID'] || '').trim()
     const cat   = String(row['catId'] || '').trim()
-    const name  = String(row['*Product Name(English)'] || '').trim()
     const sku   = String(row['SellerSKU'] || '').trim()
     const combo = String(row['Variations Combo'] || '').trim()
     const status = String(row['status'] || '').trim()
 
     const brand = brandDict[pid] || 'No Brand'
+    const ai    = aiCache[pid] || { name: String(row['*Product Name(English)'] || '').trim(), highlights: '', description: '' }
+    const fixedName = ai.name
+    const highlights  = ai.highlights
+    const description = ai.description
 
     // Category mapping
     let cartupId = '', cartupPath = '', tags = '', reportNote = ''
@@ -191,52 +274,10 @@ export async function processDarazFiles(files, apiKey, onProgress) {
         cartupPath = cartup_map[cartupId]?.path || ''
         tags = cartup_map[cartupId]?.tags || ''
         reportNote = manual_cats.includes(cat) ? `Manually mapped (Daraz catId=${cat})` : 'OK'
+      } else if (catMatchCache[cat]) {
+        ;({ cartupId, cartupPath, tags, reportNote } = catMatchCache[cat])
       } else {
-        // AI category match
-        if (apiKey && name) {
-          onProgress(`AI matching category for: ${name.slice(0, 40)}...`)
-          const matched = await matchCategory(name, cartupCategories, apiKey)
-          if (matched) {
-            cartupId   = matched.id || ''
-            cartupPath = matched.path || ''
-            tags       = cartup_map[cartupId]?.tags || ''
-            reportNote = `[AI] ${matched.reason || 'AI matched'}`
-          } else {
-            reportNote = `No category match for Daraz catId=${cat}`
-          }
-        } else {
-          reportNote = `No category match for Daraz catId=${cat}`
-        }
-      }
-    }
-
-    const applicable = cat_variant_map[cartupId] || []
-    const b = basicDict[pid] || {}
-    const f = freightDict[pid] || {}
-    const s = skuDict[sku] || {}
-
-    // Content cleanup (basic, before AI)
-    let highlights  = cleanHighlights(String(b['*Highlights'] || ''))
-    let description = cleanDescription(String(b['Main Description'] || ''))
-    let fixedName = name
-
-    if (apiKey) {
-      onProgress(`AI processing ${i + 1}/${total}: ${name.slice(0, 30)}...`)
-      const result = await processProductAI(name, highlights, description, apiKey)
-      fixedName   = result.name
-      highlights  = result.highlights
-      description = result.description
-    } else {
-      // No AI — basic logic
-      if (!highlights && !description) {
-        highlights  = `<ul><li>${fixedName}</li></ul>`
-        description = `<p>${fixedName}</p>`
-      } else if (!highlights) {
-        const text = description.replace(/<[^>]+>/g, ' ').trim()
-        highlights = `<ul><li>${fixedName}</li><li>${text.slice(0, 200)}</li></ul>`
-      } else if (!description) {
-        const text = highlights.replace(/<[^>]+>/g, ' ').trim()
-        description = `<p>${fixedName}. ${text.slice(0, 300)}</p>`
+        reportNote = `No category match for Daraz catId=${cat}`
       }
     }
 
