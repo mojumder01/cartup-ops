@@ -1,345 +1,106 @@
-import * as XLSX from 'xlsx'
-import MAPPINGS from './mappings.json'
-import { processProductAI, matchCategory } from './gemini'
+const GEMINI_MODEL = 'gemini-2.0-flash-lite'
+const DELAY_MS = 4500  // ~13 requests/min, safe under free tier (15 RPM)
+const MAX_RETRIES = 3
 
-const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
+export function getApiKey() {
+  return localStorage.getItem('gemini_api_key') || ''
+}
 
-const VARIANT_COLS = [
-  'Clothing Materials','Shoe Material','Bag Material','Dial Materials',
-  'Strap Materials','Main Materials','Recommended Age','Watch TYespe',
-  'Clothing Size','Age Group','Shoe Size','Size','Color','Bedding Size','Model'
-]
+export function saveApiKey(key) {
+  localStorage.setItem('gemini_api_key', key)
+}
 
-const SECTIONS = [
-  { name: 'Basic Information',   color: 'FFD9E1F2', cols: 15 },
-  { name: 'Product Attribute',   color: 'FFE2EFDA', cols: 8  },
-  { name: 'Product Description', color: 'FFFCE4D6', cols: 5  },
-  { name: 'Service',             color: 'FFFFF2CC', cols: 4  },
-  { name: 'Delivery',            color: 'FFDDEBF7', cols: 4  },
-  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 15 },
-  { name: 'Extra',               color: 'FFEDEDED', cols: 4  },
-]
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
-const OUTPUT_COLS = [
-  '**Category Id','**Name (English)','Name (Bengali)',
-  '**Product Image 1','Product Image 2','Product Image 3','Product Image 4',
-  'Product Image 5','Product Image 6','Product Image 7','Product Image 8',
-  'VideoUrl','**Brand','**Unit','Tags',
-  'Clothing Materials','Shoe Material','Bag Material','Dial Materials',
-  'Strap Materials','Recommended Age','Watch Type','Main Materials',
-  'Highlights(English)','Highlights(Bengali)','Description (Bengali)','Description (English)',"What's in the box",
-  'Warranty Policy(English)','Warranty Policy(Bangla)','Warranty Type','Warranty Period',
-  '**Package Weight (kg)','**Package Length(cm)','*Package Width (cm)','*Package Height(cm)',
-  'Clothing Size','Color','Model','Age Group','Size','Shoe Size','Bedding Size',
-  '**Seller SKU','**Parent Sku','*Variant Image','**Current Stock Qty',
-  '**Price(MRP)','Special Price','Special Price Start Date','Special Price End Date',
-  'status','Cartup Category Path','Variations Combo','Report'
-]
+async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
+  await sleep(DELAY_MS)
 
-function readSheet(file, sheetName) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = e => {
-      try {
-        const wb = XLSX.read(e.target.result, { type: 'array' })
-        const ws = sheetName ? wb.Sheets[sheetName] : wb.Sheets[wb.SheetNames[0]]
-        if (!ws) { reject(new Error(`Sheet "${sheetName}" not found`)); return }
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
-        resolve(rows)
-      } catch(err) { reject(err) }
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+      })
     }
-    reader.onerror = reject
-    reader.readAsArrayBuffer(file)
-  })
-}
+  )
 
-function readAllSheets(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = e => {
-      try {
-        const wb = XLSX.read(e.target.result, { type: 'array' })
-        const result = {}
-        for (const name of wb.SheetNames) {
-          const ws = wb.Sheets[name]
-          result[name] = XLSX.utils.sheet_to_json(ws, { defval: '', range: 1 })
-        }
-        resolve(result)
-      } catch(err) { reject(err) }
+  if (res.status === 429) {
+    if (retries > 0) {
+      await sleep(15000) // wait 15s on rate limit before retry
+      return callGemini(prompt, apiKey, retries - 1)
     }
-    reader.onerror = reject
-    reader.readAsArrayBuffer(file)
-  })
-}
-
-function cleanHtml(html, allowedTags) {
-  if (!html) return ''
-  // Remove img tags
-  let clean = String(html).replace(/<img[^>]*>/gi, '')
-  // Remove disallowed tags but keep content
-  const allowed = allowedTags.join('|')
-  clean = clean.replace(new RegExp(`<(?!\/?(?:${allowed})(?:\s|>|\/))([^>]*)>`, 'gi'), '')
-  return clean.trim()
-}
-
-function cleanHighlights(html) {
-  if (!html) return ''
-  const clean = cleanHtml(html, ['ul','li'])
-  if (clean.includes('<li>')) return clean
-  // Extract text and wrap
-  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  if (!text) return ''
-  const lines = text.split(/[•\n]/).map(l => l.trim()).filter(Boolean)
-  return '<ul>' + lines.map(l => `<li>${l}</li>`).join('') + '</ul>'
-}
-
-function cleanDescription(html) {
-  if (!html) return ''
-  const clean = cleanHtml(html, ['p'])
-  if (clean.includes('<p>')) return clean
-  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  return text ? `<p>${text}</p>` : ''
-}
-
-function parseVariations(combo, applicable) {
-  const result = Object.fromEntries(VARIANT_COLS.map(c => [c, '']))
-  if (!combo) return result
-  const parts = combo.split(',')
-  const color = parts[0]?.trim() || ''
-  const sizeVal = parts.slice(1).join(',').trim() || 'Yes'
-  if (applicable?.includes('Color')) result['Color'] = color
-  if (sizeVal) {
-    if (applicable?.includes('Shoe Size')) result['Shoe Size'] = sizeVal
-    else if (applicable?.includes('Clothing Size')) result['Clothing Size'] = sizeVal
-    else if (applicable?.includes('Bedding Size')) result['Bedding Size'] = sizeVal
-    else if (applicable?.includes('Size')) result['Size'] = sizeVal
-    else result['Size'] = sizeVal
+    throw new Error('Gemini rate limit — please wait a minute and try again')
   }
-  return result
+
+  if (!res.ok) throw new Error(`Gemini error: ${res.status}`)
+  const data = await res.json()
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 }
 
-function getCartupCategories() {
-  return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
-}
+// Combined single-call processor: fixes name + highlights + description together
+// This cuts 3-4 API calls per product down to 1
+export async function processProductAI(name, highlights, description, apiKey) {
+  if (!apiKey) return { name, highlights, description }
 
-export async function processDarazFiles(files, apiKey, onProgress) {
-  onProgress('Reading files...')
+  const prompt = `You are cleaning e-commerce product data. Process this product and return ONLY a JSON object, no markdown, no explanation.
 
-  const [priceRows, basicRows, freightRows, skuimgRows] = await Promise.all([
-    readSheet(files.price, 'template'),
-    readSheet(files.basic, 'template'),
-    readSheet(files.weight, 'template'),
-    readSheet(files.skuimg, 'template'),
-  ])
+RULES:
+1. "name": Fix spelling errors in the product name. Remove only exact duplicate consecutive words. Do NOT change anything else, do NOT add words.
+2. "highlights": Return HTML using only <ul><li> tags, no <img> tags, no other tags.
+   - If highlights input is empty and description is empty: create highlights using ONLY the name. Do not invent specifications.
+   - If highlights input is empty but description exists: create highlights from name + description. Use only given info, do not add specs.
+   - If highlights input exists: fix grammar/spelling, strip to only <ul><li> tags, remove <img> tags.
+3. "description": Return HTML using only <p> tags, no <img> tags, no other tags.
+   - If description input is empty and highlights is empty: create description using ONLY the name.
+   - If description input is empty but highlights exists: create description from name + highlights. Use only given info, do not add specs.
+   - If description input exists: fix grammar/spelling, strip to only <p> tags, remove <img> tags.
 
-  let brandDict = {}
-  if (files.attr) {
-    const attrSheets = await readAllSheets(files.attr)
-    for (const [sheetName, rows] of Object.entries(attrSheets)) {
-      if (sheetName === 'INDEX') continue
-      for (const row of rows) {
-        const pid = String(row['Product ID'] || '').trim()
-        const brand = String(row['*Brand'] || row['Brand'] || '').trim()
-        if (pid && !brandDict[pid]) brandDict[pid] = brand || 'No Brand'
-      }
+Never invent specifications, materials, sizes, or features not present in the given inputs.
+
+Input:
+Name: ${name || '(empty)'}
+Highlights: ${highlights || '(empty)'}
+Description: ${description || '(empty)'}
+
+Return ONLY this JSON shape: {"name":"...","highlights":"...","description":"..."}`
+
+  try {
+    const result = await callGemini(prompt, apiKey)
+    const clean = result.replace(/```json|```/g, '').trim()
+    const parsed = JSON.parse(clean)
+    return {
+      name: parsed.name || name,
+      highlights: parsed.highlights || highlights,
+      description: parsed.description || description,
     }
+  } catch {
+    return { name, highlights, description }
   }
-
-  // Build lookup dicts
-  const basicDict = {}
-  for (const r of basicRows) {
-    const pid = String(r['Product ID'] || '').trim()
-    if (pid && !basicDict[pid]) basicDict[pid] = r
-  }
-  const freightDict = {}
-  for (const r of freightRows) {
-    const pid = String(r['Product ID'] || '').trim()
-    if (pid && !freightDict[pid]) freightDict[pid] = r
-  }
-  const skuDict = {}
-  for (const r of skuimgRows) {
-    const sku = String(r['SellerSKU'] || '').trim()
-    if (sku && !skuDict[sku]) skuDict[sku] = r
-  }
-
-  const cartupCategories = getCartupCategories()
-  const outputRows = []
-  const total = priceRows.length
-
-  for (let i = 0; i < priceRows.length; i++) {
-    const row = priceRows[i]
-    onProgress(`Processing row ${i + 1} of ${total}...`)
-
-    const pid   = String(row['Product ID'] || '').trim()
-    const cat   = String(row['catId'] || '').trim()
-    const name  = String(row['*Product Name(English)'] || '').trim()
-    const sku   = String(row['SellerSKU'] || '').trim()
-    const combo = String(row['Variations Combo'] || '').trim()
-    const status = String(row['status'] || '').trim()
-
-    const brand = brandDict[pid] || 'No Brand'
-
-    // Category mapping
-    let cartupId = '', cartupPath = '', tags = '', reportNote = ''
-    const isMystery = mystery_cats.includes(cat)
-
-    if (isMystery) {
-      reportNote = 'Mystery/Surprise Box — no category. Manual review needed.'
-    } else {
-      cartupId = daraz_to_cartup[cat] || ''
-      if (cartupId) {
-        cartupPath = cartup_map[cartupId]?.path || ''
-        tags = cartup_map[cartupId]?.tags || ''
-        reportNote = manual_cats.includes(cat) ? `Manually mapped (Daraz catId=${cat})` : 'OK'
-      } else {
-        // AI category match
-        if (apiKey && name) {
-          onProgress(`AI matching category for: ${name.slice(0, 40)}...`)
-          const matched = await matchCategory(name, cartupCategories, apiKey)
-          if (matched) {
-            cartupId   = matched.id || ''
-            cartupPath = matched.path || ''
-            tags       = cartup_map[cartupId]?.tags || ''
-            reportNote = `[AI] ${matched.reason || 'AI matched'}`
-          } else {
-            reportNote = `No category match for Daraz catId=${cat}`
-          }
-        } else {
-          reportNote = `No category match for Daraz catId=${cat}`
-        }
-      }
-    }
-
-    const applicable = cat_variant_map[cartupId] || []
-    const b = basicDict[pid] || {}
-    const f = freightDict[pid] || {}
-    const s = skuDict[sku] || {}
-
-    // Content cleanup (basic, before AI)
-    let highlights  = cleanHighlights(String(b['*Highlights'] || ''))
-    let description = cleanDescription(String(b['Main Description'] || ''))
-    let fixedName = name
-
-    if (apiKey) {
-      onProgress(`AI processing ${i + 1}/${total}: ${name.slice(0, 30)}...`)
-      const result = await processProductAI(name, highlights, description, apiKey)
-      fixedName   = result.name
-      highlights  = result.highlights
-      description = result.description
-    } else {
-      // No AI — basic logic
-      if (!highlights && !description) {
-        highlights  = `<ul><li>${fixedName}</li></ul>`
-        description = `<p>${fixedName}</p>`
-      } else if (!highlights) {
-        const text = description.replace(/<[^>]+>/g, ' ').trim()
-        highlights = `<ul><li>${fixedName}</li><li>${text.slice(0, 200)}</li></ul>`
-      } else if (!description) {
-        const text = highlights.replace(/<[^>]+>/g, ' ').trim()
-        description = `<p>${fixedName}. ${text.slice(0, 300)}</p>`
-      }
-    }
-
-    const vr = parseVariations(combo, applicable)
-    const warrantyPolicy = String(b['Warranty Policy'] || '').trim()
-    const warrantyTypeCol = b['*Warranty Type'] !== undefined ? '*Warranty Type' : 'Warranty Type'
-
-    const images = Array.from({length: 8}, (_, i) => {
-      const k = i === 0 ? '*Product Images1' : `Product Images${i + 1}`
-      return String(b[k] || '').trim()
-    })
-
-    outputRows.push({
-      '**Category Id':            cartupId,
-      '**Name (English)':         fixedName,
-      'Name (Bengali)':           fixedName,
-      '**Product Image 1':        images[0], 'Product Image 2': images[1],
-      'Product Image 3':          images[2], 'Product Image 4': images[3],
-      'Product Image 5':          images[4], 'Product Image 6': images[5],
-      'Product Image 7':          images[6], 'Product Image 8': images[7],
-      'VideoUrl':                 '',
-      '**Brand':                  brand,
-      '**Unit':                   'pcs',
-      'Tags':                     tags,
-      'Clothing Materials':       vr['Clothing Materials'],
-      'Shoe Material':            vr['Shoe Material'],
-      'Bag Material':             vr['Bag Material'],
-      'Dial Materials':           vr['Dial Materials'],
-      'Strap Materials':          vr['Strap Materials'],
-      'Recommended Age':          vr['Recommended Age'],
-      'Watch Type':               vr['Watch TYespe'],
-      'Main Materials':           vr['Main Materials'],
-      'Highlights(English)':      highlights,
-      'Highlights(Bengali)':      highlights,
-      'Description (Bengali)':    description,
-      'Description (English)':    description,
-      "What's in the box":        `1* ${fixedName}`,
-      'Warranty Policy(English)': warrantyPolicy,
-      'Warranty Policy(Bangla)':  warrantyPolicy,
-      'Warranty Type':            String(b[warrantyTypeCol] || '').trim(),
-      'Warranty Period':          String(b['Warranty'] || '').trim(),
-      '**Package Weight (kg)':    String(f['*Package Weight (kg)'] || '').trim(),
-      '**Package Length(cm)':     String(f['*Package Length (cm)'] || '').trim(),
-      '*Package Width (cm)':      String(f['*Package Width (cm)'] || '').trim(),
-      '*Package Height(cm)':      String(f['*Package Height (cm)'] || '').trim(),
-      'Clothing Size':            vr['Clothing Size'],
-      'Color':                    vr['Color'],
-      'Model':                    vr['Model'],
-      'Age Group':                vr['Age Group'],
-      'Size':                     vr['Size'],
-      'Shoe Size':                vr['Shoe Size'],
-      'Bedding Size':             vr['Bedding Size'],
-      '**Seller SKU':             sku,
-      '**Parent Sku':             pid,
-      '*Variant Image':           String(s['Images1'] || '').trim(),
-      '**Current Stock Qty':      String(row['*Quantity'] || '').trim(),
-      '**Price(MRP)':            String(row['**Price(MRP)'] || row['Price'] || '').trim(),
-      'Special Price':            String(row['Special Price'] || row['SpecialPrice'] || '').trim(),
-      'Special Price Start Date': String(row['Special Price Start Date'] || '').trim(),
-      'Special Price End Date':   String(row['Special Price End Date'] || '').trim(),
-      'status':                   status,
-      'Cartup Category Path':     cartupPath,
-      'Variations Combo':         combo,
-      'Report':                   reportNote,
-    })
-  }
-
-  onProgress('Building Excel output...')
-  return buildExcel(outputRows)
 }
 
-function buildExcel(rows) {
-  const wb = XLSX.utils.book_new()
-  const wsData = []
+// Match category by product name
+export async function matchCategory(productName, cartupCategories, apiKey) {
+  if (!apiKey || !productName) return null
+  const catList = cartupCategories.slice(0, 150).map(c => `${c.id}|${c.path}`).join('\n')
+  const prompt = `Match this product to the best category. Reply ONLY with JSON, no markdown: {"id":"...","path":"...","reason":"..."}
 
-  // Row 1: section headers
-  const secRow = []
-  for (const sec of SECTIONS) {
-    secRow.push(sec.name)
-    for (let i = 1; i < sec.cols; i++) secRow.push('')
-  }
-  wsData.push(secRow)
+Product: "${productName}"
 
-  // Row 2: column headers
-  wsData.push(OUTPUT_COLS)
+Categories (ID|Path):
+${catList}`
+  try {
+    const result = await callGemini(prompt, apiKey)
+    const clean = result.replace(/```json|```/g, '').trim()
+    return JSON.parse(clean)
+  } catch { return null }
+}
 
-  // Data rows
-  for (const r of rows) {
-    wsData.push(OUTPUT_COLS.map(col => r[col] ?? ''))
-  }
-
-  const ws = XLSX.utils.aoa_to_sheet(wsData)
-
-  // Column widths
-  ws['!cols'] = OUTPUT_COLS.map((col, i) => {
-    if (i === 2 || i === 3) return { wch: 50 }
-    if (col === 'Report' || col === 'Cartup Category Path') return { wch: 45 }
-    return { wch: 20 }
-  })
-
-  // Freeze row 3
-  ws['!freeze'] = { xSplit: 0, ySplit: 2 }
-
-  XLSX.utils.book_append_sheet(wb, ws, 'product')
-  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+export async function testConnection(apiKey) {
+  try {
+    await callGemini('Say "ok"', apiKey, 0)
+    return true
+  } catch { return false }
 }
