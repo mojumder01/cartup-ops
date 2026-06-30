@@ -348,13 +348,15 @@ export async function processManualFile(file, apiKey, onProgress) {
 
       const results = await matchCategoriesBatch(batchProducts, cartupCategories, apiKey)
 
+      const batchError = results.__error__ || ''
       for (const p of batchProducts) {
         const matched = results[p.pid]
         if (matched && matched.id) {
           const cid = matched.id
           catMatchCache[p.pid] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: '[AI] Category matched' }
         } else {
-          catMatchCache[p.pid] = { cartupId: '', cartupPath: '', tags: '', reportNote: 'No category match found' }
+          const reason = batchError ? `API error: ${batchError}` : 'No category match found'
+          catMatchCache[p.pid] = { cartupId: '', cartupPath: '', tags: '', reportNote: reason }
         }
       }
     }
