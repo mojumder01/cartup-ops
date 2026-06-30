@@ -1,5 +1,5 @@
-const GEMINI_MODEL = 'gemini-2.5-flash'
-const DELAY_MS = 1000      // reduced from 7000
+const GEMINI_MODEL = 'gemini-3.1-flash-lite'
+const DELAY_MS = 2000
 const MAX_RETRIES = 3
 const CONCURRENCY = 3      // parallel API calls
 
