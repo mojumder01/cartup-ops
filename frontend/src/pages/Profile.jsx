@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { getApiKey, saveApiKey, testConnection } from '../utils/gemini'
-import { User, Key, CheckCircle, XCircle, Loader, Zap } from 'lucide-react'
+import { User, Key, CheckCircle, XCircle, Loader, Zap, AlertTriangle } from 'lucide-react'
 
 export default function Profile() {
   const { user } = useAuth()
@@ -18,8 +18,8 @@ export default function Profile() {
   const handleTest = async () => {
     if (!apiKeyInput.trim()) return
     setTestStatus('testing')
-    const ok = await testConnection(apiKeyInput.trim())
-    setTestStatus(ok ? 'ok' : 'fail')
+    const result = await testConnection(apiKeyInput.trim())
+    setTestStatus(result)
   }
 
   const handleClear = () => {
@@ -120,17 +120,21 @@ export default function Profile() {
             disabled={!apiKeyInput.trim() || testStatus === 'testing'}
             style={{
               padding:'9px 18px', background:'none',
-              border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:13,
-              cursor: apiKeyInput.trim() ? 'pointer' : 'not-allowed', color:'#718096',
+              border:`1.5px solid ${testStatus === 'ok' ? '#bbf7d0' : testStatus === 'rate_limited' ? '#fde68a' : testStatus === 'fail' ? '#fecaca' : '#e2e8f0'}`,
+              borderRadius:7, fontSize:13,
+              cursor: apiKeyInput.trim() ? 'pointer' : 'not-allowed',
+              color: testStatus === 'ok' ? '#16a34a' : testStatus === 'rate_limited' ? '#d97706' : testStatus === 'fail' ? '#dc2626' : '#718096',
               display:'flex', alignItems:'center', gap:6,
             }}
           >
-            {testStatus === 'testing' && <Loader size={13} style={{ animation:'spin 1s linear infinite' }} />}
-            {testStatus === 'ok'      && <CheckCircle size={13} color='#16a34a' />}
-            {testStatus === 'fail'    && <XCircle size={13} color='#dc2626' />}
-            {testStatus === 'testing' ? 'Testing...'
-              : testStatus === 'ok'   ? 'Connected'
-              : testStatus === 'fail' ? 'Failed — check key'
+            {testStatus === 'testing'      && <Loader size={13} style={{ animation:'spin 1s linear infinite' }} />}
+            {testStatus === 'ok'           && <CheckCircle size={13} color='#16a34a' />}
+            {testStatus === 'rate_limited' && <AlertTriangle size={13} color='#d97706' />}
+            {testStatus === 'fail'         && <XCircle size={13} color='#dc2626' />}
+            {testStatus === 'testing'      ? 'Testing...'
+              : testStatus === 'ok'        ? 'Connected'
+              : testStatus === 'rate_limited' ? 'Rate limited — key is valid'
+              : testStatus === 'fail'      ? 'Failed — check key'
               : 'Test Connection'}
           </button>
 
