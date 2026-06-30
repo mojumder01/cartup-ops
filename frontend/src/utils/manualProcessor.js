@@ -117,7 +117,7 @@ export async function processManualFile(file, apiKey, onProgress) {
   const expandedRows   = []   // one entry per output row (after color×size expansion)
 
   for (const row of rows) {
-    const rawName      = col(row, '**name (english)', 'name (english)', 'name', 'product name', '*product name', 'product name (english)', '*product name(english)', 'title')
+    const rawName      = col(row, 'name*', '**name (english)', 'name (english)', 'name', 'product name', '*product name', 'product name (english)', '*product name(english)', 'title')
     const rawHl        = col(row, 'highlights', '*highlights', 'highlight', 'key features', 'features')
     const rawDesc      = col(row, 'description', 'main description', '*description', 'product description', 'desc')
     const price        = col(row, '**price(mrp)', 'price(mrp)', 'mrp', 'price', '*price', 'sale price', 'selling price')
@@ -139,10 +139,10 @@ export async function processManualFile(file, apiKey, onProgress) {
     const img7         = col(row, 'product image 7', 'image 7', 'image7')
     const img8         = col(row, 'product image 8', 'image 8', 'image8')
     const warranty     = col(row, 'warranty policy', 'warranty', 'warranty period', 'warranty type')
-    const weight       = col(row, '**package weight (kg)', '*package weight (kg)', 'package weight', 'weight(kg)', 'weight')
-    const length       = col(row, '**package length(cm)', '*package length(cm)', 'package length', 'length(cm)', 'length')
-    const width        = col(row, '*package width (cm)', 'package width', 'width(cm)', 'width')
-    const height       = col(row, '*package height(cm)', 'package height', 'height(cm)', 'height')
+    const weight       = col(row, '**package weight (kg)', '*package weight (kg)', 'package weight', 'weight(kg)', 'weight (kg)', 'weight')
+    const length       = col(row, '**package length(cm)', '*package length(cm)', 'package length', 'length(cm)', 'length (cm)', 'length')
+    const width        = col(row, '*package width (cm)', 'package width', 'width(cm)', 'width (cm)', 'width')
+    const height       = col(row, '*package height(cm)', 'package height', 'height(cm)', 'height (cm)', 'height')
 
     if (!rawName) {
       invalidRows.push({ 'Name':'', 'SKU':'', 'Parent SKU':parentSku, 'Price':price, 'Image 1':img1, 'Stock':stock, 'Status':status, 'Report':'Name missing' })
