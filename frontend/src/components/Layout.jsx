@@ -77,7 +77,7 @@ export default function Layout() {
           )}
 
           {navItem('/qc',         CheckSquare, 'QC',         true)}
-          {navItem('/visual',     Image,       'Visual',     true)}
+          {navItem('/visual',     Image,       'Visual',     false)}
           {navItem('/governance', Shield,      'Governance', true)}
         </nav>
 
