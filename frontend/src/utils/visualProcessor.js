@@ -38,36 +38,31 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
     readSheet(basicFile),
   ])
 
-  // Build image map: parentSku → { color → [img1..img8], noColor → [img1..img8] }
+  // Build skuimg lookup: SellerSKU → row
+  // Also build parentSku → [{ sellerSku, color, skuImg }]
   onProgress('Mapping SKU images...')
-  const imageMap = {}  // parentSku → array of { color, imgs[] }
+
+  const skuDict = {}       // sellerSku → skuimg row
+  const parentEntries = {} // parentSku → [{ sellerSku, color, skuImg }]
 
   for (const row of skuimgRows) {
-    const parentSku = col(row,
-      'parent sku', 'parentsku', 'parent_sku', 'parent id', 'parentid',
-      '**parent sku', '*parent sku',
-    )
     const sellerSku = col(row,
-      'seller sku', 'sellersku', 'seller_sku', 'sku', '**seller sku', '*seller sku',
+      'sellersku', 'seller sku', 'seller_sku', 'sku', '**seller sku', '*seller sku',
+    )
+    const parentSku = col(row,
+      'parent sku', 'parentsku', 'parent_sku', 'parent id', '**parent sku', '*parent sku',
     )
     const color = col(row, 'color', 'colour', '*color')
+    // Variant image from skuimg file — same column name as Daraz: Images1
+    const skuImg = col(row, 'images1', 'image1', 'image 1', '*product images1', 'variant image', 'variantimage')
 
-    const imgs = [
-      col(row, 'image 1','image1','**product image 1','*product image 1','product image 1','img1','image url','main image'),
-      col(row, 'image 2','image2','product image 2','img2'),
-      col(row, 'image 3','image3','product image 3','img3'),
-      col(row, 'image 4','image4','product image 4','img4'),
-      col(row, 'image 5','image5','product image 5','img5'),
-      col(row, 'image 6','image6','product image 6','img6'),
-      col(row, 'image 7','image7','product image 7','img7'),
-      col(row, 'image 8','image8','product image 8','img8'),
-    ]
+    if (sellerSku) skuDict[sellerSku] = row
 
     const pid = parentSku || (sellerSku ? sellerSku.split('_')[0] : '')
     if (!pid) continue
 
-    if (!imageMap[pid]) imageMap[pid] = []
-    imageMap[pid].push({ color, sellerSku, imgs })
+    if (!parentEntries[pid]) parentEntries[pid] = []
+    parentEntries[pid].push({ sellerSku, color, skuImg })
   }
 
   // Build output rows from basic file
@@ -81,35 +76,48 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
     )
     if (!parentSku) continue
 
-    const entries = imageMap[parentSku]
+    // Images from basic file (same logic as Daraz processor)
+    const basicImages = Array.from({ length: 8 }, (_, idx) => {
+      if (idx === 0) return col(row, '*product images1', 'product images1', 'product image 1', '*product image 1', 'image 1', 'image1', 'images1', 'main image')
+      return col(row, `product images${idx + 1}`, `product image ${idx + 1}`, `image ${idx + 1}`, `image${idx + 1}`)
+    })
+
+    const entries = parentEntries[parentSku]
+
     if (!entries || !entries.length) {
-      // No image data found — output one empty row
+      // No skuimg data — one row, no variant image for color, fallback img1
       outputRows.push({
-        'Parent SKU': parentSku,
-        'Seller SKU': parentSku,
-        'Image 1': '', 'Image 2': '', 'Image 3': '', 'Image 4': '',
-        'Image 5': '', 'Image 6': '', 'Image 7': '', 'Image 8': '',
-        'Variant Image': '',
+        'Parent SKU':    parentSku,
+        'Seller SKU':    parentSku,
+        'Image 1':       basicImages[0], 'Image 2': basicImages[1],
+        'Image 3':       basicImages[2], 'Image 4': basicImages[3],
+        'Image 5':       basicImages[4], 'Image 6': basicImages[5],
+        'Image 7':       basicImages[6], 'Image 8': basicImages[7],
+        'Variant Image': basicImages[0],
         'Variant Combo': '',
       })
       continue
     }
 
     for (const entry of entries) {
-      const variantCombo = entry.color ? `Color:${entry.color}` : ''
-      const sellerSku = entry.sellerSku || (entry.color ? `${parentSku}_${entry.color}` : parentSku)
+      const hasColor = !!entry.color
+      const variantCombo = hasColor ? `Color:${entry.color}` : ''
+      const sellerSku = entry.sellerSku || (hasColor ? `${parentSku}_${entry.color}` : parentSku)
+
+      // Same rule as Daraz:
+      // skuImg present → use it as variant image
+      // no skuImg + color variant → leave empty (missing)
+      // no skuImg + no color → fallback to basic Image 1
+      const variantImage = entry.skuImg || (hasColor ? '' : basicImages[0])
+
       outputRows.push({
-        'Parent SKU':   parentSku,
-        'Seller SKU':   sellerSku,
-        'Image 1':      entry.imgs[0] || '',
-        'Image 2':      entry.imgs[1] || '',
-        'Image 3':      entry.imgs[2] || '',
-        'Image 4':      entry.imgs[3] || '',
-        'Image 5':      entry.imgs[4] || '',
-        'Image 6':      entry.imgs[5] || '',
-        'Image 7':      entry.imgs[6] || '',
-        'Image 8':      entry.imgs[7] || '',
-        'Variant Image': entry.imgs[0] || '',
+        'Parent SKU':    parentSku,
+        'Seller SKU':    sellerSku,
+        'Image 1':       basicImages[0], 'Image 2': basicImages[1],
+        'Image 3':       basicImages[2], 'Image 4': basicImages[3],
+        'Image 5':       basicImages[4], 'Image 6': basicImages[5],
+        'Image 7':       basicImages[6], 'Image 8': basicImages[7],
+        'Variant Image': variantImage,
         'Variant Combo': variantCombo,
       })
     }
