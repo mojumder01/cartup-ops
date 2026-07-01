@@ -78,29 +78,42 @@ function saveCheckpoint(file, checks, state) {
 }
 
 // ── Category helpers ──────────────────────────────────────────────────────────
-const STOP_WORDS = new Set([
-  'the','and','for','with','from','this','that','are','was','has',
-  'not','but','can','all','new','one','its','our','use','any','may',
-  'dry','wet','hot','cold','cell','smart','mini','plus','pro','max',
-  'set','kit','box','bag','top','big','fit','air','oil','gel','pad',
+const ALL_CATS = Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+
+const SKIP_TOKENS = new Set([
+  'the','and','for','with','from','this','that','are','was','has','not','but',
+  'can','all','new','one','its','our','use','any','may','accessories','products',
 ])
 
-function getCartupCategories() {
-  return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+function tokenize(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !SKIP_TOKENS.has(t))
 }
 
-function buildCategoryPool(names, cats) {
-  const allWords = new Set()
-  for (const n of names) {
-    n.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
-      .filter(w => w.length > 3 && !STOP_WORDS.has(w)).forEach(w => allWords.add(w))
+function scorePath(pathTokens, queryTokens) {
+  let score = 0
+  for (const q of queryTokens) {
+    for (const p of pathTokens) {
+      if (p === q) { score += 2; break }
+      else if (p.includes(q) || q.includes(p)) { score += 1; break }
+    }
   }
-  let filtered = cats.filter(c => [...allWords].some(w => c.path.toLowerCase().includes(w)))
-  if (filtered.length < 10) {
-    const shorter = [...allWords].filter(w => w.length > 2 && !STOP_WORDS.has(w))
-    filtered = cats.filter(c => shorter.some(w => c.path.toLowerCase().includes(w)))
+  return score
+}
+
+function topCandidates(descriptions, n = 15) {
+  // descriptions: [{sku, text}] — free-text category descriptions from AI step 1
+  // returns {sku → [{id, path}]} top n candidates per product
+  const result = {}
+  for (const { sku, text } of descriptions) {
+    const qTokens = tokenize(text)
+    if (!qTokens.length) { result[sku] = ALL_CATS.slice(0, n); continue }
+    const scored = ALL_CATS.map(c => ({
+      ...c,
+      score: scorePath(tokenize(c.path), qTokens),
+    })).sort((a, b) => b.score - a.score)
+    result[sku] = scored.slice(0, n)
   }
-  return filtered.length >= 5 ? filtered.slice(0, 150) : cats.slice(0, 250)
+  return result
 }
 
 // ── Individual pass batch functions ──────────────────────────────────────────
@@ -173,44 +186,64 @@ Return ONLY a JSON array, no markdown:
 
 async function batchCategory(products, apiKey) {
   // products: [{sku, name}]
-  const cats = getCartupCategories()
-  const pathToId = {}
-  for (const c of cats) pathToId[c.path.toLowerCase()] = c.id
-  const pool = buildCategoryPool(products.map(p => p.name), cats)
-
-  const inputBlock = products.map((p, i) =>
+  // Step 1: Ask AI to describe the best category in free text
+  const step1Input = products.map((p, i) =>
     `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name || '(empty)'}`
   ).join('\n\n')
 
-  const prompt = `You are a product data governance assistant. For EACH product:
-Match to the best CartUp category from the list below.
+  const step1Prompt = `For EACH product below, write the most specific e-commerce category it belongs to in plain English (e.g. "uninterrupted power supply", "fishing line", "baby hip carrier"). Be specific, not generic.
 
 PRODUCTS:
-${inputBlock}
+${step1Input}
 
-CATEGORIES (ID|Path):
-${pool.map(c => `${c.id}|${c.path}`).join('\n')}
+Return ONLY a JSON array, no markdown:
+[{"sku":"...","category_description":"..."}]`
+
+  let descriptions = []
+  try {
+    const raw1 = await callGemini(step1Prompt, apiKey)
+    const clean1 = raw1.replace(/```json|```/g, '').trim()
+    const arr1 = JSON.parse(clean1.match(/\[[\s\S]*\]/)[0])
+    descriptions = arr1.map((item, i) => ({
+      sku: String(item.sku || products[i]?.sku || ''),
+      text: item.category_description || products[i]?.name || '',
+    }))
+  } catch {
+    descriptions = products.map(p => ({ sku: p.sku, text: p.name }))
+  }
+
+  // Step 2: Local token-match to get top 15 candidates per product
+  const candidates = topCandidates(descriptions)
+
+  // Step 3: Ask AI to pick best from the small candidate list
+  const step2Input = products.map((p, i) => {
+    const pool = candidates[p.sku] || []
+    return `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name}\nCandidates (ID|Path):\n${pool.map(c => `${c.id}|${c.path}`).join('\n')}`
+  }).join('\n\n')
+
+  const step2Prompt = `For EACH product, pick the single best matching category from its candidate list.
+
+${step2Input}
 
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","category_id":"...","category_path":"..."}]`
 
   try {
-    const raw = await callGemini(prompt, apiKey)
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
+    const raw2 = await callGemini(step2Prompt, apiKey)
+    const clean2 = raw2.replace(/```json|```/g, '').trim()
+    const arr2 = JSON.parse(clean2.match(/\[[\s\S]*\]/)[0])
     const map = {}
-    for (let i = 0; i < arr.length; i++) {
-      const item = arr[i]
+    for (let i = 0; i < arr2.length; i++) {
+      const item = arr2[i]
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
-      let catId = String(item.category_id || '')
-      const catPath = item.category_path || ''
-      if (!catId && catPath) catId = pathToId[catPath.toLowerCase()] || ''
-      const validCat = pool.find(c => c.id === catId)
+      const catId = String(item.category_id || '')
+      const pool = candidates[sku] || []
+      const validCat = ALL_CATS.find(c => c.id === catId) || pool.find(c => c.id === catId)
       map[sku] = {
         category_id:    validCat ? catId : '',
         category_path:  validCat ? validCat.path : '',
-        category_error: validCat ? '' : (catId ? `Unknown: ${catId}` : 'No match'),
+        category_error: validCat ? '' : (catId ? `Unknown ID: ${catId}` : 'No match'),
       }
     }
     for (const p of products) {
