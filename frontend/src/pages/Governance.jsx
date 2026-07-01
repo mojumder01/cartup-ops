@@ -15,11 +15,11 @@ const CHECK_DEFS = [
   { key:'category',    label:'Category',    desc:'Match to CartUp category (same mapping as Production)',         note:'Source: Name',               color:'#7c3aed', bg:'#ede9fe',  icon:Tag          },
 ]
 
-const PASS_LABELS = {
-  'Name / Weight / Category': { color:'#4f46e5', keys:['name','weight','category'] },
-  'Highlights':               { color:'#15803d', keys:['highlights'] },
-  'Description':              { color:'#b45309', keys:['description'] },
+const CHECK_COLORS = {
+  name:'#4f46e5', weight:'#0369a1', category:'#7c3aed',
+  highlights:'#15803d', description:'#b45309',
 }
+const PASS_ORDER = ['name','weight','category','highlights','description']
 
 function FileInputBox({ onChange, checkpoint }) {
   const [fileName, setFileName] = useState('')
@@ -56,30 +56,37 @@ function Toggle({ enabled, onToggle, color }) {
   )
 }
 
-function PassProgress({ info }) {
+function PassProgress({ info, checks }) {
   if (!info || !info.total) return null
   const pct = Math.round((info.done / info.total) * 100)
-  const passColor = Object.values(PASS_LABELS).find(p => p.keys.some(k => info.label?.toLowerCase().includes(k)))?.color || '#4f46e5'
+  const enabledPasses = PASS_ORDER.filter(k => checks?.[k])
+  const currentKey = enabledPasses[info.pass - 1]
+  const passColor = CHECK_COLORS[currentKey] || '#4f46e5'
 
   return (
     <div>
       {/* Pass pills */}
       {info.totalPasses > 0 && (
-        <div style={{ display:'flex', gap:6, marginBottom:10 }}>
-          {Array.from({ length: info.totalPasses }, (_, i) => (
-            <div key={i} style={{
-              padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600,
-              background: i + 1 < info.pass ? '#dcfce7' : i + 1 === info.pass ? passColor : '#f1f5f9',
-              color: i + 1 < info.pass ? '#15803d' : i + 1 === info.pass ? '#fff' : '#94a3b8',
-            }}>
-              {i + 1 < info.pass ? `✓ Pass ${i + 1}` : `Pass ${i + 1}${i + 1 === info.pass ? ` — ${info.label}` : ''}`}
-            </div>
-          ))}
+        <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
+          {enabledPasses.map((key, i) => {
+            const done = i + 1 < info.pass
+            const active = i + 1 === info.pass
+            const col = CHECK_COLORS[key]
+            return (
+              <div key={key} style={{
+                padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600,
+                background: done ? '#dcfce7' : active ? col : '#f1f5f9',
+                color: done ? '#15803d' : active ? '#fff' : '#94a3b8',
+              }}>
+                {done ? `✓ ${key.charAt(0).toUpperCase()+key.slice(1)}` : `${active ? '▶ ' : ''}${key.charAt(0).toUpperCase()+key.slice(1)}`}
+              </div>
+            )
+          })}
         </div>
       )}
       {/* Bar */}
       <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'#64748b', marginBottom:4 }}>
-        <span>{info.done} / {info.total} products</span>
+        <span>{info.label} — {info.done} / {info.total} products</span>
         <span>{pct}%</span>
       </div>
       <div style={{ background:'#e2e8f0', borderRadius:999, height:8 }}>
@@ -186,15 +193,21 @@ export default function Governance() {
         <div style={{ ...card, padding:16, background:'#f8fafc' }}>
           <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:8, textTransform:'uppercase', letterSpacing:'0.4px' }}>Processing Order</div>
           <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', fontSize:12 }}>
-            {checks.name || checks.weight || checks.category
-              ? <span style={{ background:'#eef2ff', color:'#4f46e5', padding:'3px 10px', borderRadius:999, fontWeight:600 }}>Pass 1: Name{checks.weight?' + Weight':''}{ checks.category?' + Category':''}</span>
-              : null}
-            {(checks.name || checks.weight || checks.category) && checks.highlights && <span style={{ color:'#94a3b8' }}>→</span>}
-            {checks.highlights && <span style={{ background:'#dcfce7', color:'#15803d', padding:'3px 10px', borderRadius:999, fontWeight:600 }}>Pass {checks.name||checks.weight||checks.category?2:1}: Highlights</span>}
-            {checks.highlights && checks.description && <span style={{ color:'#94a3b8' }}>→</span>}
-            {checks.description && <span style={{ background:'#fef3c7', color:'#b45309', padding:'3px 10px', borderRadius:999, fontWeight:600 }}>Pass {[checks.name||checks.weight||checks.category, checks.highlights].filter(Boolean).length+1}: Description</span>}
+            {PASS_ORDER.filter(k => checks[k]).map((key, i, arr) => {
+              const bg = { name:'#eef2ff', weight:'#e0f2fe', category:'#ede9fe', highlights:'#dcfce7', description:'#fef3c7' }[key]
+              const color = CHECK_COLORS[key]
+              const label = { name:'Name', weight:'Weight', category:'Category', highlights:'Highlights', description:'Description' }[key]
+              return (
+                <span key={key} style={{ display:'flex', alignItems:'center', gap:6 }}>
+                  {i > 0 && <span style={{ color:'#94a3b8' }}>→</span>}
+                  <span style={{ background: bg, color, padding:'3px 10px', borderRadius:999, fontWeight:600 }}>
+                    Pass {i+1}: {label}
+                  </span>
+                </span>
+              )
+            })}
             {!anyChecked && <span style={{ color:'#94a3b8' }}>No checks enabled</span>}
-            <span style={{ color:'#94a3b8', marginLeft:4 }}>→ Output</span>
+            {anyChecked && <><span style={{ color:'#94a3b8' }}>→</span><span style={{ color:'#64748b', fontWeight:600 }}>Output</span></>}
           </div>
         </div>
 
@@ -231,7 +244,7 @@ export default function Governance() {
         {/* Progress */}
         {(status === 'processing' || status === 'paused') && passInfo?.total > 0 && (
           <div style={{ ...card, padding:16 }}>
-            <PassProgress info={passInfo}/>
+            <PassProgress info={passInfo} checks={checks}/>
           </div>
         )}
 
@@ -264,7 +277,12 @@ export default function Governance() {
                 cursor: !anyChecked || !file ? 'not-allowed' : 'pointer',
               }}>
               {checkpoint
-                ? <><Play size={15}/> Resume (Pass {checkpoint.passCompleted + 1})</>
+                ? (() => {
+                    const enabled = PASS_ORDER.filter(k => checks[k])
+                    const nextKey = enabled[checkpoint.passCompleted]
+                    const label = { name:'Name', weight:'Weight', category:'Category', highlights:'Highlights', description:'Description' }[nextKey] || `Pass ${checkpoint.passCompleted + 1}`
+                    return <><Play size={15}/> Resume — {label}</>
+                  })()
                 : <><Upload size={15}/> Run Governance Checks</>}
             </button>
           )}

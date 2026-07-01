@@ -66,7 +66,6 @@ export function loadCheckpoint(file) {
     const cp = JSON.parse(raw)
     if (cp.fileKey !== fileKey(file)) return null
     return cp
-    // shape: { fileKey, checks, passCompleted, pass1:{sku→entry}, pass2:{sku→hl}, pass3:{sku→desc}, total }
   } catch { return null }
 }
 
@@ -104,41 +103,22 @@ function buildCategoryPool(names, cats) {
   return filtered.length >= 5 ? filtered.slice(0, 150) : cats.slice(0, 250)
 }
 
-// ── Pass 1: Name + Weight + Category ─────────────────────────────────────────
-async function pass1Batch(products, checks, apiKey) {
-  // products: [{sku, name, existingCategory}]
-  const cats = getCartupCategories()
-  const pathToId = {}
-  for (const c of cats) pathToId[c.path.toLowerCase()] = c.id
-  const pool = checks.category ? buildCategoryPool(products.map(p => p.name), cats) : []
+// ── Individual pass batch functions ──────────────────────────────────────────
 
-  const tasks = []
-  if (checks.name)     tasks.push(`name: Remove duplicate/repeated words, translate any non-English to English. Keep ALL product info. Return cleaned English name only.`)
-  if (checks.weight)   tasks.push(`weight_kg: Realistic shipping weight in kg (number only e.g. 0.5).\nweight_confidence: Confidence 0-100.`)
-  if (checks.category) tasks.push(`category_id: Best matching ID from category list.\ncategory_path: Full path of matched category.`)
-
+async function batchName(products, apiKey) {
+  // products: [{sku, name}]
   const inputBlock = products.map((p, i) =>
     `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name || '(empty)'}`
   ).join('\n\n')
 
-  const catSection = checks.category ? `\nCATEGORIES (ID|Path):\n${pool.map(c => `${c.id}|${c.path}`).join('\n')}` : ''
-
-  const fieldTemplate = [
-    '"sku":"..."',
-    checks.name     && '"name":"..."',
-    checks.weight   && '"weight_kg":0.0,"weight_confidence":0',
-    checks.category && '"category_id":"...","category_path":"..."',
-  ].filter(Boolean).join(',')
-
-  const prompt = `You are a product data governance assistant. For EACH product perform ONLY:
-${tasks.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+  const prompt = `You are a product data governance assistant. For EACH product:
+Clean the product name: remove duplicate/repeated words, translate any non-English to English. Keep ALL product info.
 
 PRODUCTS:
 ${inputBlock}
-${catSection}
 
 Return ONLY a JSON array, no markdown:
-[{${fieldTemplate}}]`
+[{"sku":"...","name":"..."}]`
 
   try {
     const raw = await callGemini(prompt, apiKey)
@@ -149,45 +129,100 @@ Return ONLY a JSON array, no markdown:
       const item = arr[i]
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
-      const entry = {}
-      if (checks.name)     entry.name = applyReplacements(item.name || products[i]?.name || '')
-      if (checks.weight)   { entry.weight_kg = item.weight_kg ?? ''; entry.weight_confidence = item.weight_confidence ?? '' }
-      if (checks.category) {
-        let catId = String(item.category_id || '')
-        const catPath = item.category_path || ''
-        if (!catId && catPath) catId = pathToId[catPath.toLowerCase()] || ''
-        const validCat = pool.find(c => c.id === catId)
-        entry.category_id    = validCat ? catId : ''
-        entry.category_path  = validCat ? validCat.path : ''
-        entry.category_error = validCat ? '' : (catId ? `Unknown: ${catId}` : 'No category returned')
-      }
-      map[sku] = entry
+      map[sku] = applyReplacements(item.name || products[i]?.name || '')
     }
-    for (const p of products) {
-      if (!map[p.sku]) {
-        const e = {}
-        if (checks.name)     e.name = p.name
-        if (checks.weight)   { e.weight_kg = ''; e.weight_confidence = '' }
-        if (checks.category) { e.category_id = ''; e.category_path = ''; e.category_error = 'Missing from response' }
-        map[p.sku] = e
-      }
-    }
+    for (const p of products) { if (!map[p.sku]) map[p.sku] = p.name }
     return map
-  } catch (err) {
-    const map = {}
-    for (const p of products) {
-      const e = { _error: err.message }
-      if (checks.name)     e.name = p.name
-      if (checks.weight)   { e.weight_kg = ''; e.weight_confidence = '' }
-      if (checks.category) { e.category_id = ''; e.category_path = ''; e.category_error = err.message }
-      map[p.sku] = e
-    }
-    return map
+  } catch {
+    return Object.fromEntries(products.map(p => [p.sku, p.name]))
   }
 }
 
-// ── Pass 2: Highlights (uses cleaned name + original description) ─────────────
-async function pass2Batch(products, apiKey) {
+async function batchWeight(products, apiKey) {
+  // products: [{sku, name}]
+  const inputBlock = products.map((p, i) =>
+    `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name || '(empty)'}`
+  ).join('\n\n')
+
+  const prompt = `You are a product data governance assistant. For EACH product:
+Estimate realistic shipping weight in kg based on the product name.
+
+PRODUCTS:
+${inputBlock}
+
+Return ONLY a JSON array, no markdown:
+[{"sku":"...","weight_kg":0.0,"weight_confidence":0}]`
+
+  try {
+    const raw = await callGemini(prompt, apiKey)
+    const clean = raw.replace(/```json|```/g, '').trim()
+    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
+    const map = {}
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i]
+      const sku = String(item.sku || products[i]?.sku || '')
+      if (!sku) continue
+      map[sku] = { weight_kg: item.weight_kg ?? '', weight_confidence: item.weight_confidence ?? '' }
+    }
+    for (const p of products) { if (!map[p.sku]) map[p.sku] = { weight_kg: '', weight_confidence: '' } }
+    return map
+  } catch {
+    return Object.fromEntries(products.map(p => [p.sku, { weight_kg: '', weight_confidence: '' }]))
+  }
+}
+
+async function batchCategory(products, apiKey) {
+  // products: [{sku, name}]
+  const cats = getCartupCategories()
+  const pathToId = {}
+  for (const c of cats) pathToId[c.path.toLowerCase()] = c.id
+  const pool = buildCategoryPool(products.map(p => p.name), cats)
+
+  const inputBlock = products.map((p, i) =>
+    `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name || '(empty)'}`
+  ).join('\n\n')
+
+  const prompt = `You are a product data governance assistant. For EACH product:
+Match to the best CartUp category from the list below.
+
+PRODUCTS:
+${inputBlock}
+
+CATEGORIES (ID|Path):
+${pool.map(c => `${c.id}|${c.path}`).join('\n')}
+
+Return ONLY a JSON array, no markdown:
+[{"sku":"...","category_id":"...","category_path":"..."}]`
+
+  try {
+    const raw = await callGemini(prompt, apiKey)
+    const clean = raw.replace(/```json|```/g, '').trim()
+    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
+    const map = {}
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i]
+      const sku = String(item.sku || products[i]?.sku || '')
+      if (!sku) continue
+      let catId = String(item.category_id || '')
+      const catPath = item.category_path || ''
+      if (!catId && catPath) catId = pathToId[catPath.toLowerCase()] || ''
+      const validCat = pool.find(c => c.id === catId)
+      map[sku] = {
+        category_id:    validCat ? catId : '',
+        category_path:  validCat ? validCat.path : '',
+        category_error: validCat ? '' : (catId ? `Unknown: ${catId}` : 'No match'),
+      }
+    }
+    for (const p of products) {
+      if (!map[p.sku]) map[p.sku] = { category_id: '', category_path: '', category_error: 'Missing from response' }
+    }
+    return map
+  } catch (err) {
+    return Object.fromEntries(products.map(p => [p.sku, { category_id: '', category_path: '', category_error: err.message }]))
+  }
+}
+
+async function batchHighlights(products, apiKey) {
   // products: [{sku, cleanedName, description}]
   const inputBlock = products.map((p, i) =>
     `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.cleanedName || '(empty)'}\nDescription: ${p.description || '(empty)'}`
@@ -217,17 +252,14 @@ Return ONLY a JSON array, no markdown:
       if (!sku) continue
       map[sku] = applyReplacements(item.highlights || '')
     }
-    for (const p of products) {
-      if (!map[p.sku]) map[p.sku] = ''
-    }
+    for (const p of products) { if (!map[p.sku]) map[p.sku] = '' }
     return map
   } catch {
     return Object.fromEntries(products.map(p => [p.sku, '']))
   }
 }
 
-// ── Pass 3: Description (uses cleaned name + fixed highlights) ────────────────
-async function pass3Batch(products, apiKey) {
+async function batchDescription(products, apiKey) {
   // products: [{sku, cleanedName, fixedHighlights}]
   const inputBlock = products.map((p, i) =>
     `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.cleanedName || '(empty)'}\nHighlights: ${p.fixedHighlights || '(empty)'}`
@@ -257,16 +289,14 @@ Return ONLY a JSON array, no markdown:
       if (!sku) continue
       map[sku] = applyReplacements(item.description || '')
     }
-    for (const p of products) {
-      if (!map[p.sku]) map[p.sku] = ''
-    }
+    for (const p of products) { if (!map[p.sku]) map[p.sku] = '' }
     return map
   } catch {
     return Object.fromEntries(products.map(p => [p.sku, '']))
   }
 }
 
-// ── Run a pass with batching + checkpoint + pause support ─────────────────────
+// ── Run a single pass with batching + checkpoint + pause ──────────────────────
 async function runPass(passNum, totalPasses, label, products, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress) {
   const pending = products.filter(p => !alreadyDone.has(p.sku))
   const results = {}
@@ -275,23 +305,26 @@ async function runPass(passNum, totalPasses, label, products, batchFn, alreadyDo
 
   let done = products.length - pending.length
 
+  onProgress({ pass: passNum, totalPasses, label, done, total })
+
   for (const batch of batches) {
     if (signal?.paused) {
       saveCheckpoint(file, checks, { ...cpState, passCompleted: passNum - 1 })
       return { paused: true, results, done, total }
     }
 
-    onProgress({
-      pass: passNum, totalPasses, label,
-      done: done + (products.length - pending.length),
-      total,
-    })
-
     const batchResult = await batchFn(batch)
     Object.assign(results, batchResult)
     done += batch.length
 
-    saveCheckpoint(file, checks, { ...cpState, passCompleted: passNum - 1, [`pass${passNum}Results`]: { ...cpState[`pass${passNum}Results`], ...results } })
+    onProgress({ pass: passNum, totalPasses, label, done, total })
+
+    const passKey = `pass${passNum}Results`
+    saveCheckpoint(file, checks, {
+      ...cpState,
+      passCompleted: passNum - 1,
+      [passKey]: { ...(cpState[passKey] || {}), ...results },
+    })
   }
 
   return { paused: false, results }
@@ -299,11 +332,11 @@ async function runPass(passNum, totalPasses, label, products, batchFn, alreadyDo
 
 // ── Main export ───────────────────────────────────────────────────────────────
 export async function processGovernanceFile(file, checks, apiKey, onProgress, signal) {
-  onProgress({ pass:0, totalPasses:0, label:'Reading file...', done:0, total:0 })
+  onProgress({ pass: 0, totalPasses: 0, label: 'Reading file...', done: 0, total: 0 })
   const rows = await readSheet(file)
   if (!rows.length) throw new Error('File is empty')
 
-  // Parse
+  // Parse products
   const products = []
   const invalidRows = []
   for (const row of rows) {
@@ -314,104 +347,103 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
     if (!sku)  { invalidRows.push({ SKU: '(no SKU)', Issue: 'SKU ID missing' }); continue }
     products.push({
       sku, name,
-      description:      col(row,'description','main description','product description','desc'),
-      highlights:       col(row,'highlights','*highlights','highlight','key features'),
-      existingCategory: col(row,'category','category id','category path','catid'),
+      description: col(row,'description','main description','product description','desc'),
+      highlights:  col(row,'highlights','*highlights','highlight','key features'),
     })
   }
 
   if (!products.length) throw new Error('No valid rows found (Name and SKU ID required)')
   const total = products.length
 
-  // Determine how many passes are needed
-  const needPass1 = checks.name || checks.weight || checks.category
-  const needPass2 = checks.highlights
-  const needPass3 = checks.description
-  const totalPasses = [needPass1, needPass2, needPass3].filter(Boolean).length
+  // Build ordered pass list based on enabled checks
+  // Ordered: name → weight → category → highlights → description
+  // highlights uses cleanedName; description uses cleanedName + fixedHighlights
+  const PASS_ORDER = ['name', 'weight', 'category', 'highlights', 'description']
+  const enabledPasses = PASS_ORDER.filter(k => checks[k])
+  const totalPasses = enabledPasses.length
 
   // Load checkpoint
   const cp = loadCheckpoint(file) || {}
   const passCompleted = cp.passCompleted || 0
-  let pass1Results = cp.pass1Results || {}
-  let pass2Results = cp.pass2Results || {}
-  let pass3Results = cp.pass3Results || {}
+
+  // Results keyed by check name
+  const results = {
+    name:        cp.nameResults       || {},
+    weight:      cp.weightResults     || {},
+    category:    cp.categoryResults   || {},
+    highlights:  cp.highlightsResults || {},
+    description: cp.descriptionResults|| {},
+  }
 
   let passNum = 0
 
-  // ── Pass 1: Name / Weight / Category ─────────────────────────────────────
-  if (needPass1) {
+  for (const checkKey of enabledPasses) {
     passNum++
-    if (passCompleted < 1) {
-      const done1 = new Set(Object.keys(pass1Results))
-      const res = await runPass(
-        passNum, totalPasses, 'Name / Weight / Category',
-        products,
-        batch => pass1Batch(batch, checks, apiKey),
-        done1, file, checks,
-        { total, pass1Results, pass2Results, pass3Results },
-        total, signal, onProgress,
-      )
-      Object.assign(pass1Results, res.results)
-      if (res.paused) return { paused: true, done: res.done, total }
-      saveCheckpoint(file, checks, { total, passCompleted: 1, pass1Results, pass2Results, pass3Results })
-    }
-  }
+    if (passCompleted >= passNum) continue  // already done
 
-  // ── Pass 2: Highlights ────────────────────────────────────────────────────
-  if (needPass2) {
-    passNum++
-    if (passCompleted < 2) {
-      const done2 = new Set(Object.keys(pass2Results))
-      const pass2Products = products.map(p => ({
-        sku: p.sku,
-        cleanedName:  (checks.name ? pass1Results[p.sku]?.name : null) || p.name,
-        description:  p.description,
-      }))
-      const res = await runPass(
-        passNum, totalPasses, 'Highlights',
-        pass2Products,
-        batch => pass2Batch(batch, apiKey),
-        done2, file, checks,
-        { total, passCompleted: 1, pass1Results, pass2Results, pass3Results },
-        total, signal, onProgress,
-      )
-      Object.assign(pass2Results, res.results)
-      if (res.paused) return { paused: true, done: res.done, total }
-      saveCheckpoint(file, checks, { total, passCompleted: 2, pass1Results, pass2Results, pass3Results })
-    }
-  }
+    const alreadyDone = new Set(Object.keys(results[checkKey]))
+    const label = { name:'Name', weight:'Weight', category:'Category', highlights:'Highlights', description:'Description' }[checkKey]
 
-  // ── Pass 3: Description ───────────────────────────────────────────────────
-  if (needPass3) {
-    passNum++
-    if (passCompleted < 3) {
-      const done3 = new Set(Object.keys(pass3Results))
-      const pass3Products = products.map(p => ({
+    // Build input list for this pass
+    let passProducts
+    if (checkKey === 'highlights') {
+      passProducts = products.map(p => ({
         sku: p.sku,
-        cleanedName:    (checks.name ? pass1Results[p.sku]?.name : null) || p.name,
-        fixedHighlights:(checks.highlights ? pass2Results[p.sku] : null) || p.highlights,
+        cleanedName: results.name[p.sku] || p.name,
+        description: p.description,
       }))
-      const res = await runPass(
-        passNum, totalPasses, 'Description',
-        pass3Products,
-        batch => pass3Batch(batch, apiKey),
-        done3, file, checks,
-        { total, passCompleted: 2, pass1Results, pass2Results, pass3Results },
-        total, signal, onProgress,
-      )
-      Object.assign(pass3Results, res.results)
-      if (res.paused) return { paused: true, done: res.done, total }
+    } else if (checkKey === 'description') {
+      passProducts = products.map(p => ({
+        sku: p.sku,
+        cleanedName:    results.name[p.sku] || p.name,
+        fixedHighlights: results.highlights[p.sku] || p.highlights,
+      }))
+    } else {
+      passProducts = products.map(p => ({ sku: p.sku, name: results.name[p.sku] || p.name }))
     }
+
+    const batchFn = {
+      name:        batch => batchName(batch, apiKey),
+      weight:      batch => batchWeight(batch, apiKey),
+      category:    batch => batchCategory(batch, apiKey),
+      highlights:  batch => batchHighlights(batch, apiKey),
+      description: batch => batchDescription(batch, apiKey),
+    }[checkKey]
+
+    const cpState = {
+      total,
+      passCompleted: passNum - 1,
+      nameResults:        results.name,
+      weightResults:      results.weight,
+      categoryResults:    results.category,
+      highlightsResults:  results.highlights,
+      descriptionResults: results.description,
+    }
+
+    const res = await runPass(passNum, totalPasses, label, passProducts, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress)
+    Object.assign(results[checkKey], res.results)
+
+    if (res.paused) return { paused: true, done: res.done, total }
+
+    saveCheckpoint(file, checks, {
+      total,
+      passCompleted: passNum,
+      nameResults:        results.name,
+      weightResults:      results.weight,
+      categoryResults:    results.category,
+      highlightsResults:  results.highlights,
+      descriptionResults: results.description,
+    })
   }
 
   // All passes done
   clearCheckpoint()
   onProgress({ pass: totalPasses, totalPasses, label: 'Building output...', done: total, total })
 
-  return { paused: false, output: buildOutput(products, checks, pass1Results, pass2Results, pass3Results, invalidRows) }
+  return { paused: false, output: buildOutput(products, checks, results, invalidRows) }
 }
 
-function buildOutput(products, checks, pass1, pass2, pass3, invalidRows) {
+function buildOutput(products, checks, results, invalidRows) {
   const cols = ['SKU ID', 'Original Name']
   if (checks.name)        cols.push('Name (Cleaned)')
   if (checks.weight)      cols.push('Weight (kg)', 'Weight Confidence')
@@ -421,16 +453,17 @@ function buildOutput(products, checks, pass1, pass2, pass3, invalidRows) {
   cols.push('Report')
 
   const outputRows = products.map(p => {
-    const r1 = pass1[p.sku] || {}
-    const row = { 'SKU ID': p.sku, 'Original Name': p.name, 'Report': r1._error || 'OK' }
-    if (checks.name)        row['Name (Cleaned)']   = r1.name || p.name
-    if (checks.weight)      { row['Weight (kg)'] = r1.weight_kg; row['Weight Confidence'] = r1.weight_confidence }
-    if (checks.highlights)  row['Highlights']       = pass2[p.sku] || ''
-    if (checks.description) row['Description']      = pass3[p.sku] || ''
+    const w = results.weight[p.sku] || {}
+    const cat = results.category[p.sku] || {}
+    const row = { 'SKU ID': p.sku, 'Original Name': p.name, 'Report': 'OK' }
+    if (checks.name)        row['Name (Cleaned)']     = results.name[p.sku] || p.name
+    if (checks.weight)      { row['Weight (kg)'] = w.weight_kg ?? ''; row['Weight Confidence'] = w.weight_confidence ?? '' }
+    if (checks.highlights)  row['Highlights']         = results.highlights[p.sku] || ''
+    if (checks.description) row['Description']        = results.description[p.sku] || ''
     if (checks.category) {
-      row['Category ID']   = r1.category_id || ''
-      row['Category Path'] = r1.category_path || ''
-      row['Category Note'] = r1.category_error || 'Matched'
+      row['Category ID']   = cat.category_id || ''
+      row['Category Path'] = cat.category_path || ''
+      row['Category Note'] = cat.category_error || 'Matched'
     }
     return row
   })
@@ -439,17 +472,17 @@ function buildOutput(products, checks, pass1, pass2, pass3, invalidRows) {
   const wsData = [cols, ...outputRows.map(r => cols.map(c => r[c] ?? ''))]
   const ws = XLSX.utils.aoa_to_sheet(wsData)
   ws['!cols'] = cols.map(c =>
-    c.includes('Name') || c.includes('Path') || c.includes('Highlights') || c.includes('Description') ? { wch:60 }
-    : c === 'SKU ID' ? { wch:24 } : { wch:18 }
+    c.includes('Name') || c.includes('Path') || c.includes('Highlights') || c.includes('Description') ? { wch: 60 }
+    : c === 'SKU ID' ? { wch: 24 } : { wch: 18 }
   )
-  ws['!freeze'] = { xSplit:0, ySplit:1 }
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
   XLSX.utils.book_append_sheet(wb, ws, 'governance')
 
   if (invalidRows.length) {
-    const invCols = ['SKU','Issue']
+    const invCols = ['SKU', 'Issue']
     const wsInv = XLSX.utils.aoa_to_sheet([invCols, ...invalidRows.map(r => invCols.map(c => r[c] ?? ''))])
     XLSX.utils.book_append_sheet(wb, wsInv, 'invalid')
   }
 
-  return XLSX.write(wb, { bookType:'xlsx', type:'array' })
+  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
 }
