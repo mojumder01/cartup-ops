@@ -82,34 +82,44 @@ const ALL_CATS = Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path
 
 const SKIP_TOKENS = new Set([
   'the','and','for','with','from','this','that','are','was','has','not','but',
-  'can','all','new','one','its','our','use','any','may','accessories','products',
+  'can','all','new','one','its','our','use','any','may','products','other',
+  'size','color','type','pack','pcs','piece','pieces','set','kit',
 ])
 
 function tokenize(text) {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !SKIP_TOKENS.has(t))
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter(t => t.length > 1 && !SKIP_TOKENS.has(t))
 }
 
-function scorePath(pathTokens, queryTokens) {
+function scorePathWeighted(cat, queryTokens) {
+  const segments = cat.path.split('>').map(s => s.trim())
+  const leaf = segments[segments.length - 1]
+  const leafTokens = tokenize(leaf)
+  const fullTokens = tokenize(cat.path)
+
   let score = 0
   for (const q of queryTokens) {
-    for (const p of pathTokens) {
-      if (p === q) { score += 2; break }
-      else if (p.includes(q) || q.includes(p)) { score += 1; break }
-    }
+    // Exact match in leaf: highest weight
+    if (leafTokens.includes(q)) { score += 6; continue }
+    // Partial match in leaf
+    if (leafTokens.some(t => t.includes(q) || q.includes(t))) { score += 3; continue }
+    // Exact match anywhere in path
+    if (fullTokens.includes(q)) { score += 2; continue }
+    // Partial match in path
+    if (fullTokens.some(t => t.includes(q) || q.includes(t))) { score += 1 }
   }
   return score
 }
 
-function topCandidates(descriptions, n = 15) {
-  // descriptions: [{sku, text}] — free-text category descriptions from AI step 1
-  // returns {sku → [{id, path}]} top n candidates per product
+function topCandidates(items, n = 25) {
+  // items: [{sku, queries: [string, ...]}] — multiple search queries per product
   const result = {}
-  for (const { sku, text } of descriptions) {
-    const qTokens = tokenize(text)
-    if (!qTokens.length) { result[sku] = ALL_CATS.slice(0, n); continue }
+  for (const { sku, queries } of items) {
+    const allQueryTokens = [...new Set(queries.flatMap(q => tokenize(q)))]
+    if (!allQueryTokens.length) { result[sku] = ALL_CATS.slice(0, n); continue }
     const scored = ALL_CATS.map(c => ({
       ...c,
-      score: scorePath(tokenize(c.path), qTokens),
+      score: scorePathWeighted(c, allQueryTokens),
     })).sort((a, b) => b.score - a.score)
     result[sku] = scored.slice(0, n)
   }
@@ -186,42 +196,60 @@ Return ONLY a JSON array, no markdown:
 
 async function batchCategory(products, apiKey) {
   // products: [{sku, name}]
-  // Step 1: Ask AI to describe the best category in free text
-  const step1Input = products.map((p, i) =>
-    `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name || '(empty)'}`
-  ).join('\n\n')
 
-  const step1Prompt = `For EACH product below, write the most specific e-commerce category it belongs to in plain English (e.g. "uninterrupted power supply", "fishing line", "baby hip carrier"). Be specific, not generic.
+  // ── Step 1: AI gives 3 targeted search queries per product ────────────────
+  const step1Input = products.map((p, i) =>
+    `Product ${i + 1} (sku:"${p.sku}"): ${p.name || '(empty)'}`
+  ).join('\n')
+
+  const step1Prompt = `You are an e-commerce marketplace category expert for CartUp.pk (Pakistan, similar to Daraz).
+
+For EACH product, think like a BUYER clicking through the website menu. Give 3 category search phrases:
+- "leaf": the most specific sub-category leaf name only (e.g. "trimmers groomers clippers", "uninterrupted power supply", "rechargeable flashlights", "stickers labels", "prayer accessories", "colanders food strainers")
+- "branch": the parent department/section (e.g. "mens care shaving grooming", "computer accessories", "work lights", "school office equipment", "muslim wear", "kitchen utensils")
+- "alt": one alternative leaf if unsure
+
+CRITICAL RULES:
+- Hair Trimmer/Clipper → leaf: "trimmers groomers clippers", NOT "hair accessories"
+- USB Rechargeable Lighter → leaf: "lighters", branch: "cigars cigarettes groceries"
+- Coin/Button Cell Battery for Watch → leaf: "watch accessories" or "batteries electrical tools"
+- Calculator (Citizen, office) → leaf: "calculators", branch: "school office equipment stationery"
+- Janamaz/Prayer Mat → leaf: "prayer accessories", branch: "muslim wear fashion"
+- PUBG/Mobile Game Controller → leaf: "console accessories other gaming", NOT "playstation"
+- Storage Organizer (door/room) → leaf: "space savers storage organisation"
+- Sticker/Label (warning/hologram) → leaf: "stickers labels", branch: "school office stationery"
+- Water Pump (garden/car wash) → leaf: "hoses pipes fixtures plumbing"
+- Rechargeable Battery (12V, UPS) → leaf: "batteries electrical tools diy" NOT automotive
 
 PRODUCTS:
 ${step1Input}
 
 Return ONLY a JSON array, no markdown:
-[{"sku":"...","category_description":"..."}]`
+[{"sku":"...","leaf":"...","branch":"...","alt":"..."}]`
 
-  let descriptions = []
+  let queryItems = []
   try {
     const raw1 = await callGemini(step1Prompt, apiKey)
     const clean1 = raw1.replace(/```json|```/g, '').trim()
     const arr1 = JSON.parse(clean1.match(/\[[\s\S]*\]/)[0])
-    descriptions = arr1.map((item, i) => ({
+    queryItems = arr1.map((item, i) => ({
       sku: String(item.sku || products[i]?.sku || ''),
-      text: item.category_description || products[i]?.name || '',
+      queries: [item.leaf || '', item.branch || '', item.alt || '', products[i]?.name || ''].filter(Boolean),
     }))
   } catch {
-    descriptions = products.map(p => ({ sku: p.sku, text: p.name }))
+    queryItems = products.map(p => ({ sku: p.sku, queries: [p.name] }))
   }
 
-  // Step 2: Local token-match to get top 15 candidates per product
-  const candidates = topCandidates(descriptions)
+  // ── Step 2: Local weighted token scoring → top 25 candidates per product ──
+  const candidates = topCandidates(queryItems)
 
-  // Step 3: Ask AI to pick best from the small candidate list
+  // ── Step 3: AI picks best match from 25 candidates ────────────────────────
   const step2Input = products.map((p, i) => {
     const pool = candidates[p.sku] || []
-    return `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.name}\nCandidates (ID|Path):\n${pool.map(c => `${c.id}|${c.path}`).join('\n')}`
+    return `Product ${i + 1} (sku:"${p.sku}"): ${p.name}\nCandidates:\n${pool.map(c => `  ${c.id} | ${c.path}`).join('\n')}`
   }).join('\n\n')
 
-  const step2Prompt = `For EACH product, pick the single best matching category from its candidate list.
+  const step2Prompt = `For EACH product below, pick the SINGLE most specific and accurate category from its candidate list. Choose the deepest/most specific match. If none fits well, pick the closest.
 
 ${step2Input}
 
@@ -238,8 +266,7 @@ Return ONLY a JSON array, no markdown:
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
       const catId = String(item.category_id || '')
-      const pool = candidates[sku] || []
-      const validCat = ALL_CATS.find(c => c.id === catId) || pool.find(c => c.id === catId)
+      const validCat = ALL_CATS.find(c => c.id === catId)
       map[sku] = {
         category_id:    validCat ? catId : '',
         category_path:  validCat ? validCat.path : '',
