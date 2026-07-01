@@ -1,8 +1,9 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini'
+import { applyReplacements } from './wordReplacements'
 
-const { cartup_map } = MAPPINGS
+const { cartup_map, cat_variant_map } = MAPPINGS
 
 const SECTIONS = [
   { name: 'Basic Information',   color: 'FFD9E1F2', cols: 15 },
@@ -340,6 +341,16 @@ export async function processManualFile(file, apiKey, onProgress) {
     }
   }
 
+  // Apply word replacements to name, highlights, description
+  for (const pid of Object.keys(aiCache)) {
+    const c = aiCache[pid]
+    aiCache[pid] = {
+      name:        applyReplacements(c.name),
+      highlights:  applyReplacements(c.highlights),
+      description: applyReplacements(c.description),
+    }
+  }
+
   // ── Step 4: Build output rows ─────────────────────────────────────────────
   onProgress('Building output rows...')
   const outputRows = []
@@ -350,6 +361,12 @@ export async function processManualFile(file, apiKey, onProgress) {
     const productName = ai.name || uniqueProducts[r.pid]?.name || ''
     const highlights = ensureHtmlHighlights(ai.highlights, productName)
     const description = ensureHtmlDescription(ai.description, productName)
+
+    // Determine which variant columns apply for this category
+    const applicable = cat.cartupId ? (cat_variant_map[cat.cartupId] || []) : (
+      // No category matched — fall back: put color in Color, size in Clothing Size
+      [...(r.colorVal ? ['Color'] : []), ...(r.sizeVal ? ['Clothing Size'] : [])]
+    )
 
     outputRows.push({
       '**Category Id':            cat.cartupId,
@@ -388,12 +405,12 @@ export async function processManualFile(file, apiKey, onProgress) {
       '**Package Length(cm)':     r.length,
       '*Package Width (cm)':      r.width,
       '*Package Height(cm)':      r.height,
-      'Clothing Size':            r.sizeVal,
-      'Color':                    r.colorVal,
+      'Clothing Size':            (applicable.includes('Clothing Size') ? r.sizeVal : ''),
+      'Color':                    (applicable.includes('Color') ? r.colorVal : ''),
       'Model':                    '',
       'Age Group':                '',
-      'Size':                     r.sizeVal,
-      'Shoe Size':                '',
+      'Size':                     (applicable.includes('Size') ? r.sizeVal : ''),
+      'Shoe Size':                (applicable.includes('Shoe Size') ? r.sizeVal : ''),
       'Bedding Size':             '',
       '**Seller SKU':             r.sellerSku,
       '**Parent Sku':             r.parentSku,

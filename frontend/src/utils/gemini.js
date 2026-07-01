@@ -137,8 +137,8 @@ export async function processAndCategoriseBatch(products, cartupCategories, apiK
 
   const prompt = `You are an e-commerce product data processor. For EACH product below:
 1. Clean the name: fix typos, remove duplicate words. Do NOT change product type/color/attributes.
-2. highlights: Return <ul><li> HTML. Remove non-Latin chars, artifacts, hashtags, empty items. If empty: create 3-5 bullets from name only.
-3. description: Return <p> HTML. Remove non-Latin chars, boilerplate. If empty: write 2 sentences from name only.
+2. highlights: Convert ALL existing specs/features into <ul><li> HTML bullets. KEEP EVERY piece of information — do NOT summarize, merge, or drop any spec. Remove only: non-Latin chars, hashtags, clearly empty items. If input is empty, create bullets from the name only.
+3. description: Convert ALL existing text into clean <p> HTML paragraphs. PRESERVE ALL information — do NOT summarize or shorten. Remove only: non-Latin chars, obvious boilerplate ("click add to cart", "contact us" etc). If input is empty, write 2 sentences from the name only.
 4. category_id + category_path: Pick the BEST matching category from the list below.
 
 PRODUCTS:
@@ -201,7 +201,7 @@ export async function processProductsBatch(products, apiKey) {
     `Product ${i + 1} (id: "${p.pid}"):\nName: ${p.name || '(empty)'}\nHighlights: ${p.highlights || '(empty)'}\nDescription: ${p.description || '(empty)'}`
   ).join('\n\n')
   const prompt = `You are cleaning e-commerce product data. Process ALL ${products.length} products below and return ONLY a JSON array, no markdown, no explanation.
-RULES: 1. name: fix typos, remove duplicate words. 2. highlights: <ul><li> HTML, remove non-Latin/artifacts, if empty create 3-5 bullets from name. 3. description: <p> HTML, remove boilerplate, if empty write 2 sentences from name.
+RULES: 1. name: fix typos, remove duplicate words. 2. highlights: <ul><li> HTML — KEEP ALL specs/features, do NOT summarize or drop any information, remove only non-Latin chars/hashtags/empty items; if empty create bullets from name. 3. description: <p> HTML — PRESERVE ALL existing text, do NOT shorten, remove only non-Latin chars and obvious boilerplate ("click add to cart" etc); if empty write 2 sentences from name.
 ${inputBlock}
 Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
   try {

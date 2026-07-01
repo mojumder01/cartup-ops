@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
+import { applyReplacements } from './wordReplacements'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -214,6 +215,16 @@ export async function processDarazFiles(files, apiKey, onProgress) {
         description = `<p>${name}. ${text.slice(0, 300)}</p>`
       }
       aiCache[p.pid] = { name, highlights, description }
+    }
+  }
+
+  // Apply word replacements to name, highlights, description
+  for (const pid of Object.keys(aiCache)) {
+    const c = aiCache[pid]
+    aiCache[pid] = {
+      name:        applyReplacements(c.name),
+      highlights:  applyReplacements(c.highlights),
+      description: applyReplacements(c.description),
     }
   }
 
