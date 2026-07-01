@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import { getApiKey } from '../utils/gemini'
 import { processGovernanceFile, loadCheckpoint, clearCheckpoint } from '../utils/governanceProcessor'
 import {
@@ -8,12 +8,18 @@ import {
 } from 'lucide-react'
 
 const CHECK_DEFS = [
-  { key:'name',        label:'Name',        desc:'Remove duplicates, translate to English, fix typos',                   note:'Source: Name',               color:'#4f46e5', bg:'#eef2ff',  icon:Type        },
-  { key:'weight',      label:'Weight',      desc:'Estimate shipping weight (kg) with AI confidence score',               note:'Source: Name',               color:'#0369a1', bg:'#e0f2fe',  icon:Weight      },
-  { key:'highlights',  label:'Highlights',  desc:'Fix/recreate <ul><li> — preserves ALL specs, no add/remove',          note:'Source: Name + Description', color:'#15803d', bg:'#dcfce7',  icon:AlignLeft   },
-  { key:'description', label:'Description', desc:'Fix/recreate <p> — preserves ALL specs, no add/remove',               note:'Source: Name + Highlights',  color:'#b45309', bg:'#fef3c7',  icon:AlignJustify},
-  { key:'category',    label:'Category',    desc:'Match to CartUp category using AI (same mapping as Production)',       note:'Source: Name',               color:'#7c3aed', bg:'#ede9fe',  icon:Tag         },
+  { key:'name',        label:'Name',        desc:'Remove duplicates, translate to English, fix typos',            note:'Source: Name',               color:'#4f46e5', bg:'#eef2ff',  icon:Type         },
+  { key:'weight',      label:'Weight',      desc:'Estimate shipping weight (kg) with confidence score',           note:'Source: Name',               color:'#0369a1', bg:'#e0f2fe',  icon:Weight       },
+  { key:'highlights',  label:'Highlights',  desc:'Fix/recreate <ul><li> — all specs preserved, no add/remove',   note:'Source: cleaned Name + Desc', color:'#15803d', bg:'#dcfce7',  icon:AlignLeft    },
+  { key:'description', label:'Description', desc:'Fix/recreate <p> — all specs preserved, no add/remove',        note:'Source: cleaned Name + HL',   color:'#b45309', bg:'#fef3c7',  icon:AlignJustify },
+  { key:'category',    label:'Category',    desc:'Match to CartUp category (same mapping as Production)',         note:'Source: Name',               color:'#7c3aed', bg:'#ede9fe',  icon:Tag          },
 ]
+
+const PASS_LABELS = {
+  'Name / Weight / Category': { color:'#4f46e5', keys:['name','weight','category'] },
+  'Highlights':               { color:'#15803d', keys:['highlights'] },
+  'Description':              { color:'#b45309', keys:['description'] },
+}
 
 function FileInputBox({ onChange, checkpoint }) {
   const [fileName, setFileName] = useState('')
@@ -22,8 +28,7 @@ function FileInputBox({ onChange, checkpoint }) {
       <label style={{
         display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
         border:`1.5px dashed ${fileName ? '#16a34a' : '#e2e8f0'}`,
-        borderRadius:8, cursor:'pointer',
-        background: fileName ? '#dcfce7' : '#fafafa',
+        borderRadius:8, cursor:'pointer', background: fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept=".xlsx" style={{ display:'none' }}
           onChange={e => { const f = e.target.files[0]; if(f){ setFileName(f.name); onChange(f) } }}
@@ -35,9 +40,8 @@ function FileInputBox({ onChange, checkpoint }) {
       </label>
       {checkpoint && fileName && (
         <div style={{ marginTop:8, padding:'8px 12px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:7, fontSize:12, color:'#92400e', display:'flex', alignItems:'center', gap:8 }}>
-          <RotateCcw size={13} />
-          Checkpoint found: <strong>{checkpoint.done}/{checkpoint.total}</strong> products already processed.
-          Re-run will resume from where it stopped.
+          <RotateCcw size={13}/>
+          Checkpoint found — Pass {checkpoint.passCompleted} of {['name','weight','category'].some(k => checkpoint.checks?.[k]) ? 1 : 0} completed, <strong>{checkpoint.total}</strong> products total. Resume will continue from here.
         </div>
       )}
     </div>
@@ -52,16 +56,34 @@ function Toggle({ enabled, onToggle, color }) {
   )
 }
 
-function ProgressBar({ done, total }) {
-  const pct = total ? Math.round((done / total) * 100) : 0
+function PassProgress({ info }) {
+  if (!info || !info.total) return null
+  const pct = Math.round((info.done / info.total) * 100)
+  const passColor = Object.values(PASS_LABELS).find(p => p.keys.some(k => info.label?.toLowerCase().includes(k)))?.color || '#4f46e5'
+
   return (
     <div>
+      {/* Pass pills */}
+      {info.totalPasses > 0 && (
+        <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+          {Array.from({ length: info.totalPasses }, (_, i) => (
+            <div key={i} style={{
+              padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:600,
+              background: i + 1 < info.pass ? '#dcfce7' : i + 1 === info.pass ? passColor : '#f1f5f9',
+              color: i + 1 < info.pass ? '#15803d' : i + 1 === info.pass ? '#fff' : '#94a3b8',
+            }}>
+              {i + 1 < info.pass ? `✓ Pass ${i + 1}` : `Pass ${i + 1}${i + 1 === info.pass ? ` — ${info.label}` : ''}`}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* Bar */}
       <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'#64748b', marginBottom:4 }}>
-        <span>{done} / {total} products</span>
+        <span>{info.done} / {info.total} products</span>
         <span>{pct}%</span>
       </div>
       <div style={{ background:'#e2e8f0', borderRadius:999, height:8 }}>
-        <div style={{ width:`${pct}%`, background:'#4f46e5', borderRadius:999, height:8, transition:'width 0.3s' }} />
+        <div style={{ width:`${pct}%`, background: passColor, borderRadius:999, height:8, transition:'width 0.3s' }}/>
       </div>
     </div>
   )
@@ -69,27 +91,22 @@ function ProgressBar({ done, total }) {
 
 export default function Governance() {
   const apiKey = getApiKey()
-  const [file, setFile]             = useState(null)
+  const [file, setFile]           = useState(null)
   const [checkpoint, setCheckpoint] = useState(null)
-  const [checks, setChecks]         = useState({ name:true, weight:true, highlights:true, description:true, category:true })
-  const [status, setStatus]         = useState('')   // '' | 'processing' | 'paused' | 'success' | 'error'
-  const [progress, setProgress]     = useState('')
-  const [progCount, setProgCount]   = useState({ done:0, total:0 })
-  const [error, setError]           = useState('')
-  const signalRef                   = useRef({ paused: false })
+  const [checks, setChecks]       = useState({ name:true, weight:true, highlights:true, description:true, category:true })
+  const [status, setStatus]       = useState('')
+  const [passInfo, setPassInfo]   = useState(null)
+  const [error, setError]         = useState('')
+  const signalRef                 = useRef({ paused:false })
 
   const toggleCheck = key => setChecks(c => ({ ...c, [key]: !c[key] }))
   const anyChecked  = Object.values(checks).some(Boolean)
 
   const handleFileChange = f => {
-    setFile(f)
-    setStatus('')
-    setError('')
-    setProgress('')
-    setProgCount({ done:0, total:0 })
+    setFile(f); setStatus(''); setError(''); setPassInfo(null)
     const cp = loadCheckpoint(f)
     setCheckpoint(cp)
-    if (cp) setChecks(cp.checks)   // restore toggle state from checkpoint
+    if (cp?.checks) setChecks(cp.checks)
   }
 
   const handleRun = async () => {
@@ -101,59 +118,47 @@ export default function Governance() {
     try {
       const result = await processGovernanceFile(
         file, checks, apiKey,
-        msg => {
-          setProgress(msg)
-          // Parse "Processing X–Y of Z" to update progress bar
-          const m = msg.match(/Processing (\d+)[–-](\d+) of (\d+)/)
-          if (m) setProgCount({ done: parseInt(m[2]), total: parseInt(m[3]) })
-        },
+        info => setPassInfo(info),
         signalRef.current,
       )
 
       if (result.paused) {
         setStatus('paused')
-        setProgCount({ done: result.done, total: result.total })
-        setProgress('')
         setCheckpoint(loadCheckpoint(file))
         return
       }
 
-      // Download output
       const blob = new Blob([result.output], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href = url; a.download = 'cartup_governance_output.xlsx'; a.click()
       URL.revokeObjectURL(url)
-      setStatus('success'); setProgress(''); setCheckpoint(null)
+      setStatus('success'); setCheckpoint(null)
 
     } catch(e) {
-      setStatus('error'); setError(e.message); setProgress('')
+      setStatus('error'); setError(e.message)
     }
   }
 
   const handlePause = () => {
     signalRef.current.paused = true
-    setProgress('Pausing after current batch...')
+    setPassInfo(p => p ? { ...p, label: 'Pausing after this batch...' } : p)
   }
 
   const handleClearCheckpoint = () => {
-    clearCheckpoint()
-    setCheckpoint(null)
-    setStatus('')
-    setProgCount({ done:0, total:0 })
+    clearCheckpoint(); setCheckpoint(null); setStatus(''); setPassInfo(null)
   }
 
   const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:24, marginBottom:16 }
 
   return (
     <div>
-      {/* Header */}
       <div style={{ background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'20px 32px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <Shield size={20} color='#4f46e5' />
+          <Shield size={20} color='#4f46e5'/>
           <div>
             <h1 style={{ fontSize:17, fontWeight:700, color:'#1a202c', margin:0 }}>Governance</h1>
-            <p style={{ fontSize:12, color:'#718096', margin:0 }}>Check and fix product data quality — supports large files with resume</p>
+            <p style={{ fontSize:12, color:'#718096', margin:0 }}>Sequential passes — Name first, then Highlights, then Description</p>
           </div>
         </div>
       </div>
@@ -166,58 +171,71 @@ export default function Governance() {
             Input File <span style={{ color:'#dc2626' }}>*</span>
           </div>
           <div style={{ fontSize:11, color:'#94a3b8', marginBottom:10 }}>
-            Required columns: <code style={{ background:'#f1f5f9', padding:'1px 5px', borderRadius:3 }}>Name</code> and <code style={{ background:'#f1f5f9', padding:'1px 5px', borderRadius:3 }}>SKU ID</code>.
+            Required: <code style={{ background:'#f1f5f9', padding:'1px 5px', borderRadius:3 }}>Name</code> and <code style={{ background:'#f1f5f9', padding:'1px 5px', borderRadius:3 }}>SKU ID</code>.
             Optional: Description, Highlights
           </div>
-          <FileInputBox onChange={handleFileChange} checkpoint={checkpoint} />
+          <FileInputBox onChange={handleFileChange} checkpoint={checkpoint}/>
           {checkpoint && (
-            <button onClick={handleClearCheckpoint} style={{ marginTop:8, background:'none', border:'none', fontSize:11, color:'#94a3b8', cursor:'pointer', padding:0, textDecoration:'underline' }}>
+            <button onClick={handleClearCheckpoint} style={{ marginTop:6, background:'none', border:'none', fontSize:11, color:'#94a3b8', cursor:'pointer', padding:0, textDecoration:'underline' }}>
               Clear checkpoint &amp; start fresh
             </button>
           )}
         </div>
 
+        {/* Pipeline info */}
+        <div style={{ ...card, padding:16, background:'#f8fafc' }}>
+          <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:8, textTransform:'uppercase', letterSpacing:'0.4px' }}>Processing Order</div>
+          <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', fontSize:12 }}>
+            {checks.name || checks.weight || checks.category
+              ? <span style={{ background:'#eef2ff', color:'#4f46e5', padding:'3px 10px', borderRadius:999, fontWeight:600 }}>Pass 1: Name{checks.weight?' + Weight':''}{ checks.category?' + Category':''}</span>
+              : null}
+            {(checks.name || checks.weight || checks.category) && checks.highlights && <span style={{ color:'#94a3b8' }}>→</span>}
+            {checks.highlights && <span style={{ background:'#dcfce7', color:'#15803d', padding:'3px 10px', borderRadius:999, fontWeight:600 }}>Pass {checks.name||checks.weight||checks.category?2:1}: Highlights</span>}
+            {checks.highlights && checks.description && <span style={{ color:'#94a3b8' }}>→</span>}
+            {checks.description && <span style={{ background:'#fef3c7', color:'#b45309', padding:'3px 10px', borderRadius:999, fontWeight:600 }}>Pass {[checks.name||checks.weight||checks.category, checks.highlights].filter(Boolean).length+1}: Description</span>}
+            {!anyChecked && <span style={{ color:'#94a3b8' }}>No checks enabled</span>}
+            <span style={{ color:'#94a3b8', marginLeft:4 }}>→ Output</span>
+          </div>
+        </div>
+
         {/* Check toggles */}
         <div style={card}>
-          <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px', marginBottom:14 }}>
-            Checks to Run
-          </div>
+          <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px', marginBottom:14 }}>Checks</div>
           <div style={{ display:'grid', gap:10 }}>
             {CHECK_DEFS.map(({ key, label, desc, note, color, bg, icon: Icon }) => (
               <div key={key} style={{
                 display:'flex', alignItems:'center', gap:14, padding:'12px 14px', borderRadius:10,
                 background: checks[key] ? bg : '#f8fafc',
-                border:`1.5px solid ${checks[key] ? color + '33' : '#e2e8f0'}`,
+                border:`1.5px solid ${checks[key] ? color+'33' : '#e2e8f0'}`,
                 transition:'all 0.15s',
               }}>
                 <div style={{ width:34, height:34, borderRadius:8, background: checks[key] ? color+'18' : '#f1f5f9', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                  <Icon size={16} color={checks[key] ? color : '#94a3b8'} />
+                  <Icon size={16} color={checks[key] ? color : '#94a3b8'}/>
                 </div>
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:13, fontWeight:600, color: checks[key] ? '#1a202c' : '#94a3b8' }}>{label}</div>
                   <div style={{ fontSize:11, color: checks[key] ? '#64748b' : '#cbd5e1', marginTop:1 }}>{desc}</div>
                   <div style={{ fontSize:10, color: checks[key] ? color : '#cbd5e1', marginTop:2, fontStyle:'italic' }}>{note} · AI</div>
                 </div>
-                <Toggle enabled={checks[key]} onToggle={() => toggleCheck(key)} color={color} />
+                <Toggle enabled={checks[key]} onToggle={() => toggleCheck(key)} color={color}/>
               </div>
             ))}
           </div>
           {!apiKey && (
             <div style={{ marginTop:12, padding:'8px 12px', background:'#fef3c7', border:'1px solid #fde68a', borderRadius:8, fontSize:12, color:'#92400e' }}>
-              No API key set — AI checks will be skipped. Add key in Profile &amp; Settings.
+              No API key — AI checks skipped. Add key in Profile &amp; Settings.
             </div>
           )}
         </div>
 
-        {/* Progress bar — visible while processing or paused */}
-        {(status === 'processing' || status === 'paused') && progCount.total > 0 && (
+        {/* Progress */}
+        {(status === 'processing' || status === 'paused') && passInfo?.total > 0 && (
           <div style={{ ...card, padding:16 }}>
-            <ProgressBar done={progCount.done} total={progCount.total} />
-            {progress && <div style={{ fontSize:12, color:'#64748b', marginTop:8 }}>{progress}</div>}
+            <PassProgress info={passInfo}/>
           </div>
         )}
 
-        {/* Status messages */}
+        {/* Status */}
         {error && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:8, marginBottom:12 }}>
             <AlertCircle size={15} color='#dc2626'/><span style={{ fontSize:13, color:'#dc2626' }}>{error}</span>
@@ -226,16 +244,16 @@ export default function Governance() {
         {status === 'paused' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, marginBottom:12 }}>
             <Pause size={15} color='#d97706'/>
-            <span style={{ fontSize:13, color:'#92400e' }}>Paused — progress saved. Upload the same file and click Resume to continue.</span>
+            <span style={{ fontSize:13, color:'#92400e' }}>Paused — progress saved. Re-upload same file and click Resume.</span>
           </div>
         )}
         {status === 'success' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:'#f0fdf4', border:'1px solid #bbf7d0', borderRadius:8, marginBottom:12 }}>
-            <CheckCircle size={15} color='#16a34a'/><span style={{ fontSize:13, color:'#15803d', fontWeight:500 }}>Done — output file downloaded!</span>
+            <CheckCircle size={15} color='#16a34a'/><span style={{ fontSize:13, color:'#15803d', fontWeight:500 }}>All passes complete — output downloaded!</span>
           </div>
         )}
 
-        {/* Action buttons */}
+        {/* Buttons */}
         <div style={{ display:'flex', gap:10 }}>
           {status !== 'processing' && (
             <button onClick={handleRun} disabled={!anyChecked || !file}
@@ -245,27 +263,27 @@ export default function Governance() {
                 color:'#fff', border:'none', borderRadius:8, fontWeight:600, fontSize:14,
                 cursor: !anyChecked || !file ? 'not-allowed' : 'pointer',
               }}>
-              {checkpoint && status !== 'success'
-                ? <><Play size={15}/> Resume ({checkpoint.done}/{checkpoint.total} done)</>
+              {checkpoint
+                ? <><Play size={15}/> Resume (Pass {checkpoint.passCompleted + 1})</>
                 : <><Upload size={15}/> Run Governance Checks</>}
             </button>
           )}
           {status === 'processing' && (
-            <button onClick={handlePause}
-              style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 20px', background:'#fff', color:'#d97706', border:'1.5px solid #fde68a', borderRadius:8, fontWeight:600, fontSize:14, cursor:'pointer' }}>
-              <Pause size={15}/> Pause
-            </button>
-          )}
-          {status === 'processing' && (
-            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 20px', background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:8 }}>
-              <Loader size={14} color='#3b82f6' style={{ animation:'spin 1s linear infinite' }}/>
-              <span style={{ fontSize:13, color:'#1d4ed8' }}>Processing...</span>
-            </div>
+            <>
+              <button onClick={handlePause}
+                style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 20px', background:'#fff', color:'#d97706', border:'1.5px solid #fde68a', borderRadius:8, fontWeight:600, fontSize:14, cursor:'pointer' }}>
+                <Pause size={15}/> Pause
+              </button>
+              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 16px', background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:8 }}>
+                <Loader size={14} color='#3b82f6' style={{ animation:'spin 1s linear infinite' }}/>
+                <span style={{ fontSize:13, color:'#1d4ed8' }}>Processing...</span>
+              </div>
+            </>
           )}
         </div>
 
-        <div style={{ marginTop:12, fontSize:11, color:'#94a3b8' }}>
-          Progress is auto-saved after every 10 products. If the browser closes, re-upload the same file to resume.
+        <div style={{ marginTop:10, fontSize:11, color:'#94a3b8' }}>
+          Saves after every 10 products. Output downloads only when all passes complete.
         </div>
       </div>
 
