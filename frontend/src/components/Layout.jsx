@@ -80,7 +80,7 @@ export default function Layout() {
 
           {navItem('/visual',     Image,       'Visual',     false)}
           {navItem('/qc',         CheckSquare, 'QC',         true)}
-          {navItem('/governance', Shield,      'Governance', true)}
+          {navItem('/governance', Shield,      'Governance', false)}
         </nav>
 
         {/* Sidebar footer */}

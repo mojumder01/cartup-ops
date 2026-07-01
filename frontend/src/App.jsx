@@ -7,6 +7,7 @@ import DarazUpload from './pages/DarazUpload'
 import ManualUpload from './pages/ManualUpload'
 import Profile from './pages/Profile'
 import Visual from './pages/Visual'
+import Governance from './pages/Governance'
 import Layout from './components/Layout'
 
 function PrivateRoute({ children }) {
@@ -26,7 +27,8 @@ export default function App() {
           <Route path="daraz"  element={<DarazUpload />} />
           <Route path="manual" element={<ManualUpload />} />
         </Route>
-        <Route path="visual"  element={<Visual />} />
+        <Route path="visual"      element={<Visual />} />
+        <Route path="governance"  element={<Governance />} />
         <Route path="profile" element={<Profile />} />
       </Route>
     </Routes>
