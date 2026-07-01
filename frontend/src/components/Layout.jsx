@@ -52,14 +52,16 @@ export default function Layout() {
       {/* Sidebar */}
       <aside style={{ width:220, background:'#1e1b4b', display:'flex', flexDirection:'column', flexShrink:0 }}>
         {/* Logo */}
-        <div style={{ padding:'24px 20px 16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
-            <div style={{ fontSize:18, fontWeight:700, color:'#fff', letterSpacing:'-0.3px' }}>
-              CartUp <span style={{ color:'#818cf8' }}>Ops</span>
-            </div>
-            <span style={{ fontSize:10, color:'rgba(255,255,255,0.3)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
+        <div style={{ padding:'20px 20px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+          <img
+            src="https://cartup.com/new/cartup-logo-voucher.svg"
+            alt="CartUp"
+            style={{ height:32, display:'block', marginBottom:6 }}
+          />
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
+            <span style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
           </div>
-          <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)', marginTop:2 }}>Team Platform</div>
         </div>
 
         {/* Nav */}
@@ -76,8 +78,8 @@ export default function Layout() {
             </>
           )}
 
-          {navItem('/qc',         CheckSquare, 'QC',         true)}
           {navItem('/visual',     Image,       'Visual',     false)}
+          {navItem('/qc',         CheckSquare, 'QC',         true)}
           {navItem('/governance', Shield,      'Governance', true)}
         </nav>
 
@@ -116,6 +118,9 @@ export default function Layout() {
             <button onClick={handleLogout} style={{ background:'none', border:'none', color:'rgba(255,255,255,0.4)', padding:4, cursor:'pointer' }} title="Logout">
               <LogOut size={15} />
             </button>
+          </div>
+          <div style={{ marginTop:10, fontSize:10, color:'rgba(255,255,255,0.2)', textAlign:'center' }}>
+            built by muntasir
           </div>
         </div>
       </aside>
