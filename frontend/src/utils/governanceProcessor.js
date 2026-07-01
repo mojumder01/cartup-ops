@@ -6,6 +6,8 @@ const { cartup_map } = MAPPINGS
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
+const BATCH_SIZE = 10
+const CHECKPOINT_KEY = 'gov_checkpoint'
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
@@ -54,16 +56,49 @@ function col(row, ...keys) {
   return ''
 }
 
-function getCartupCategories() {
-  return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+function fileKey(file) {
+  return `${file.name}__${file.size}`
 }
 
+// ── Checkpoint helpers ────────────────────────────────────────────────────────
+export function loadCheckpoint(file) {
+  try {
+    const raw = localStorage.getItem(CHECKPOINT_KEY)
+    if (!raw) return null
+    const cp = JSON.parse(raw)
+    if (cp.fileKey !== fileKey(file)) return null
+    return cp  // { fileKey, checks, results:{sku→entry}, total, done }
+  } catch { return null }
+}
+
+export function clearCheckpoint() {
+  localStorage.removeItem(CHECKPOINT_KEY)
+}
+
+function saveCheckpoint(file, checks, results, total, done) {
+  try {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify({
+      fileKey: fileKey(file),
+      checks,
+      results,
+      total,
+      done,
+      savedAt: Date.now(),
+    }))
+  } catch {}
+}
+
+// ── Category pool ─────────────────────────────────────────────────────────────
 const STOP_WORDS = new Set([
   'the','and','for','with','from','this','that','are','was','has',
   'not','but','can','all','new','one','its','our','use','any','may',
   'dry','wet','hot','cold','cell','smart','mini','plus','pro','max',
   'set','kit','box','bag','top','big','fit','air','oil','gel','pad',
 ])
+
+function getCartupCategories() {
+  return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+}
 
 function buildCategoryPool(names, cartupCategories) {
   const allWords = new Set()
@@ -79,12 +114,8 @@ function buildCategoryPool(names, cartupCategories) {
   return filtered.length >= 5 ? filtered.slice(0, 150) : cartupCategories.slice(0, 250)
 }
 
-// One combined AI call per batch handling only enabled checks
+// ── Single batch AI call ──────────────────────────────────────────────────────
 async function governanceBatch(products, checks, apiKey) {
-  // products: [{sku, name, description, highlights, existingCategory}]
-  // checks: {name, weight, highlights, description, category}
-  // returns: {sku: {name?, weight_kg?, weight_score?, weight_confidence?, highlights?, description?, category_id?, category_path?, category_error?}}
-
   const cartupCategories = getCartupCategories()
   const pathToId = {}
   for (const c of cartupCategories) pathToId[c.path.toLowerCase()] = c.id
@@ -99,24 +130,30 @@ async function governanceBatch(products, checks, apiKey) {
     lines.push(`Name: ${p.name || '(empty)'}`)
     if (checks.highlights || checks.description) lines.push(`Description: ${p.description || '(empty)'}`)
     if (checks.description) lines.push(`Highlights: ${p.highlights || '(empty)'}`)
-    if (checks.category) lines.push(`Current Category: ${p.existingCategory || '(empty)'}`)
     return lines.join('\n')
   }).join('\n\n')
 
   const tasks = []
-  if (checks.name) tasks.push(`name: Fix duplicate words, remove redundant repeated phrases, translate any non-English words to English. KEEP all product information. Return cleaned English name only.`)
-  if (checks.weight) tasks.push(`weight_kg: Estimate realistic shipping weight in kg based on the product name (number only, e.g. 0.5).
-weight_confidence: Confidence score 0-100 for the weight estimate.`)
-  if (checks.highlights) tasks.push(`highlights: Using ONLY information from Name and Description — recreate as clean <ul><li> HTML bullet points. DO NOT add any information not present in the source. DO NOT remove any specification/feature/information. Fix formatting only.`)
-  if (checks.description) tasks.push(`description: Using ONLY information from Name and Highlights — recreate as clean <p> HTML paragraph(s). DO NOT add any information not present in the source. DO NOT remove any specification/feature/information. Fix formatting only.`)
-  if (checks.category) tasks.push(`category_id: Best matching category ID from the list below.
-category_path: Full path of the matched category.`)
+  if (checks.name)        tasks.push(`name: Remove duplicate/repeated words, translate any non-English words to English. Keep ALL product information. Return cleaned English name only.`)
+  if (checks.weight)      tasks.push(`weight_kg: Realistic shipping weight in kg (number only e.g. 0.5).\nweight_confidence: Confidence 0-100.`)
+  if (checks.highlights)  tasks.push(`highlights: Using ONLY information from Name and Description — recreate as clean <ul><li> HTML. DO NOT add or remove any specification/feature/information.`)
+  if (checks.description) tasks.push(`description: Using ONLY information from Name and Highlights — recreate as clean <p> HTML. DO NOT add or remove any specification/feature/information.`)
+  if (checks.category)    tasks.push(`category_id: Best matching ID from the category list below.\ncategory_path: Full path of the matched category.`)
 
   const catSection = checks.category
     ? `\nCATEGORIES (ID|Path):\n${pool.map(c => `${c.id}|${c.path}`).join('\n')}`
     : ''
 
-  const prompt = `You are a product data governance assistant. For EACH product below, perform ONLY the following tasks:
+  const fieldTemplate = [
+    '"sku":"..."',
+    checks.name        && '"name":"..."',
+    checks.weight      && '"weight_kg":0.0,"weight_confidence":0',
+    checks.highlights  && '"highlights":"..."',
+    checks.description && '"description":"..."',
+    checks.category    && '"category_id":"...","category_path":"..."',
+  ].filter(Boolean).join(',')
+
+  const prompt = `You are a product data governance assistant. For EACH product perform ONLY:
 ${tasks.map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
 PRODUCTS:
@@ -124,13 +161,13 @@ ${inputBlock}
 ${catSection}
 
 Return ONLY a JSON array, no markdown:
-[{"sku":"...",${checks.name ? '"name":"...",' : ''}${checks.weight ? '"weight_kg":0.0,"weight_confidence":0,' : ''}${checks.highlights ? '"highlights":"...",' : ''}${checks.description ? '"description":"...",' : ''}${checks.category ? '"category_id":"...","category_path":"...",' : ''}}]`
+[{${fieldTemplate}}]`
 
   try {
     const result = await callGemini(prompt, apiKey)
     const clean = result.replace(/```json|```/g, '').trim()
     const arrMatch = clean.match(/\[[\s\S]*\]/)
-    if (!arrMatch) throw new Error(`No JSON array in response`)
+    if (!arrMatch) throw new Error('No JSON array in response')
     const parsed = JSON.parse(arrMatch[0])
     const map = {}
 
@@ -138,15 +175,11 @@ Return ONLY a JSON array, no markdown:
       const item = parsed[i]
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
-
       const entry = {}
-      if (checks.name) entry.name = applyReplacements(item.name || products[i]?.name || '')
-      if (checks.weight) {
-        entry.weight_kg = item.weight_kg ?? ''
-        entry.weight_confidence = item.weight_confidence ?? ''
-      }
-      if (checks.highlights) entry.highlights = applyReplacements(item.highlights || '')
-      if (checks.description) entry.description = applyReplacements(item.description || '')
+      if (checks.name)        entry.name             = applyReplacements(item.name || products[i]?.name || '')
+      if (checks.weight)      { entry.weight_kg = item.weight_kg ?? ''; entry.weight_confidence = item.weight_confidence ?? '' }
+      if (checks.highlights)  entry.highlights       = applyReplacements(item.highlights || '')
+      if (checks.description) entry.description      = applyReplacements(item.description || '')
       if (checks.category) {
         let catId = String(item.category_id || '')
         const catPath = item.category_path || ''
@@ -158,37 +191,30 @@ Return ONLY a JSON array, no markdown:
       }
       map[sku] = entry
     }
-
-    // Fill missing
+    // Fill any missing
     for (const p of products) {
-      if (!map[p.sku]) {
-        const entry = {}
-        if (checks.name)        entry.name = p.name
-        if (checks.weight)      { entry.weight_kg = ''; entry.weight_confidence = '' }
-        if (checks.highlights)  entry.highlights = p.highlights || ''
-        if (checks.description) entry.description = p.description || ''
-        if (checks.category)    { entry.category_id = ''; entry.category_path = ''; entry.category_error = 'Missing from AI response' }
-        map[p.sku] = entry
-      }
+      if (!map[p.sku]) map[p.sku] = buildFallback(p, checks, 'Missing from AI response')
     }
     return map
   } catch (e) {
-    const errMsg = e.message
     const map = {}
-    for (const p of products) {
-      const entry = { _error: errMsg }
-      if (checks.name)        entry.name = p.name
-      if (checks.weight)      { entry.weight_kg = ''; entry.weight_confidence = '' }
-      if (checks.highlights)  entry.highlights = p.highlights || ''
-      if (checks.description) entry.description = p.description || ''
-      if (checks.category)    { entry.category_id = ''; entry.category_path = ''; entry.category_error = errMsg }
-      map[p.sku] = entry
-    }
+    for (const p of products) map[p.sku] = buildFallback(p, checks, e.message)
     return map
   }
 }
 
-export async function processGovernanceFile(file, checks, apiKey, onProgress) {
+function buildFallback(p, checks, error) {
+  const entry = { _error: error }
+  if (checks.name)        entry.name             = p.name
+  if (checks.weight)      { entry.weight_kg = ''; entry.weight_confidence = '' }
+  if (checks.highlights)  entry.highlights       = p.highlights || ''
+  if (checks.description) entry.description      = p.description || ''
+  if (checks.category)    { entry.category_id = ''; entry.category_path = ''; entry.category_error = error }
+  return entry
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+export async function processGovernanceFile(file, checks, apiKey, onProgress, signal) {
   onProgress('Reading file...')
   const rows = await readSheet(file)
   if (!rows.length) throw new Error('File is empty')
@@ -201,8 +227,7 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress) {
     const sku  = col(row, 'sku id', 'skuid', 'sku', 'seller sku', 'sellersku', 'id', 'product id')
     if (!name && !sku) continue
     if (!name) { invalidRows.push({ SKU: sku, Issue: 'Name missing' }); continue }
-    if (!sku)  { invalidRows.push({ SKU: sku || '(no SKU)', Issue: 'SKU ID missing' }); continue }
-
+    if (!sku)  { invalidRows.push({ SKU: '(no SKU)', Issue: 'SKU ID missing' }); continue }
     products.push({
       sku,
       name,
@@ -214,33 +239,52 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress) {
 
   if (!products.length) throw new Error('No valid rows found (Name and SKU ID required)')
 
-  const BATCH_SIZE = 5
-  const resultCache = {}
+  // Load checkpoint — skip already-processed SKUs
+  const cp = loadCheckpoint(file)
+  const resultCache = cp ? { ...cp.results } : {}
+  const alreadyDone = new Set(Object.keys(resultCache))
+  const pending = products.filter(p => !alreadyDone.has(p.sku))
 
-  if (apiKey) {
+  const total = products.length
+  let done = total - pending.length
+
+  if (done > 0) onProgress(`Resuming — ${done}/${total} already done, continuing...`)
+
+  if (apiKey && pending.length > 0) {
     const batches = []
-    for (let i = 0; i < products.length; i += BATCH_SIZE) batches.push(products.slice(i, i + BATCH_SIZE))
+    for (let i = 0; i < pending.length; i += BATCH_SIZE) batches.push(pending.slice(i, i + BATCH_SIZE))
 
     for (let bi = 0; bi < batches.length; bi++) {
+      // Check if paused/cancelled
+      if (signal?.paused) {
+        // Save checkpoint and stop — do NOT generate output yet
+        saveCheckpoint(file, checks, resultCache, total, done)
+        return { paused: true, done, total }
+      }
+
       const batch = batches[bi]
-      onProgress(`Processing ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, products.length)} of ${products.length}...`)
+      onProgress(`Processing ${done + 1}–${Math.min(done + batch.length, total)} of ${total}...`)
       const results = await governanceBatch(batch, checks, apiKey)
       Object.assign(resultCache, results)
+      done += batch.length
+
+      // Save checkpoint after every batch
+      saveCheckpoint(file, checks, resultCache, total, done)
     }
-  } else {
-    for (const p of products) {
-      const entry = {}
-      if (checks.name)        entry.name = p.name
-      if (checks.weight)      { entry.weight_kg = ''; entry.weight_confidence = '' }
-      if (checks.highlights)  entry.highlights = p.highlights || ''
-      if (checks.description) entry.description = p.description || ''
-      if (checks.category)    { entry.category_id = ''; entry.category_path = ''; entry.category_error = 'No API key' }
-      resultCache[p.sku] = entry
+  } else if (!apiKey) {
+    for (const p of pending) {
+      resultCache[p.sku] = buildFallback(p, checks, 'No API key')
     }
   }
 
-  // Build output columns
-  onProgress('Building output...')
+  // All done — clear checkpoint and build output
+  clearCheckpoint()
+
+  onProgress('Building output file...')
+  return { paused: false, output: buildOutput(products, resultCache, checks, invalidRows) }
+}
+
+function buildOutput(products, resultCache, checks, invalidRows) {
   const baseCols = ['SKU ID', 'Original Name']
   if (checks.name)        baseCols.push('Name (Cleaned)')
   if (checks.weight)      baseCols.push('Weight (kg)', 'Weight Confidence')
@@ -251,16 +295,12 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress) {
 
   const outputRows = products.map(p => {
     const r = resultCache[p.sku] || {}
-    const row = {
-      'SKU ID':        p.sku,
-      'Original Name': p.name,
-      'Report':        r._error || 'OK',
-    }
-    if (checks.name)        row['Name (Cleaned)']     = r.name || p.name
+    const row = { 'SKU ID': p.sku, 'Original Name': p.name, 'Report': r._error || 'OK' }
+    if (checks.name)        row['Name (Cleaned)']   = r.name || p.name
     if (checks.weight)      { row['Weight (kg)'] = r.weight_kg; row['Weight Confidence'] = r.weight_confidence }
-    if (checks.highlights)  row['Highlights']         = r.highlights || ''
-    if (checks.description) row['Description']        = r.description || ''
-    if (checks.category)    {
+    if (checks.highlights)  row['Highlights']       = r.highlights || ''
+    if (checks.description) row['Description']      = r.description || ''
+    if (checks.category) {
       row['Category ID']   = r.category_id || ''
       row['Category Path'] = r.category_path || ''
       row['Category Note'] = r.category_error || 'Matched'
@@ -268,7 +308,6 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress) {
     return row
   })
 
-  // Build Excel
   const wb = XLSX.utils.book_new()
   const wsData = [baseCols, ...outputRows.map(r => baseCols.map(c => r[c] ?? ''))]
   const ws = XLSX.utils.aoa_to_sheet(wsData)
