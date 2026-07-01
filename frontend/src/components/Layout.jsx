@@ -83,51 +83,52 @@ export default function Layout() {
           {navItem('/governance', Shield,      'Governance', true)}
         </nav>
 
-        {/* Footer */}
-        <div style={{ padding:'12px 20px 16px', borderTop:'1px solid rgba(255,255,255,0.08)' }}>
-          {/* Profile link */}
-          <NavLink to="/profile"
-            style={({ isActive }) => ({
-              display:'flex', alignItems:'center', gap:8,
-              padding:'8px 0 10px',
-              color: isActive ? '#c7d2fe' : 'rgba(255,255,255,0.45)',
-              textDecoration:'none', fontSize:12,
-              borderBottom:'1px solid rgba(255,255,255,0.07)',
-              marginBottom:10,
-            })}
-          >
-            <UserCircle size={14} />
-            <span>Profile &amp; Settings</span>
-          </NavLink>
-
-          {/* User row */}
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{
-              width:32, height:32, borderRadius:'50%', background:'rgba(99,102,241,0.4)',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              color:'#c7d2fe', fontWeight:700, fontSize:13, flexShrink:0,
-            }}>
-              {(user?.name || user?.email || 'U')[0].toUpperCase()}
-            </div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ color:'#fff', fontSize:12, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                {user?.name || user?.email}
-              </div>
-              <div style={{ color:'rgba(255,255,255,0.4)', fontSize:11 }}>{user?.team || 'Member'}</div>
-            </div>
-            <button onClick={handleLogout} style={{ background:'none', border:'none', color:'rgba(255,255,255,0.4)', padding:4, cursor:'pointer' }} title="Logout">
-              <LogOut size={15} />
-            </button>
-          </div>
-          <div style={{ marginTop:10, fontSize:10, color:'rgba(255,255,255,0.2)', textAlign:'center' }}>
+        {/* Sidebar footer */}
+        <div style={{ padding:'12px 20px 14px', borderTop:'1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ fontSize:10, color:'rgba(255,255,255,0.2)', textAlign:'center' }}>
             built by muntasir
           </div>
         </div>
       </aside>
 
       {/* Main */}
-      <main style={{ flex:1, overflow:'auto' }}>
-        <Outlet />
+      <main style={{ flex:1, overflow:'auto', display:'flex', flexDirection:'column' }}>
+        {/* Top bar */}
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'flex-end',
+          padding:'10px 24px', borderBottom:'1px solid #e2e8f0',
+          background:'#fff', gap:12, flexShrink:0,
+        }}>
+          <NavLink to="/profile"
+            style={({ isActive }) => ({
+              display:'flex', alignItems:'center', gap:7,
+              textDecoration:'none', fontSize:12,
+              color: isActive ? '#4f46e5' : '#64748b',
+              fontWeight: isActive ? 600 : 400,
+            })}
+          >
+            <div style={{
+              width:30, height:30, borderRadius:'50%', background: '#eef2ff',
+              display:'flex', alignItems:'center', justifyContent:'center',
+              color:'#4f46e5', fontWeight:700, fontSize:13, flexShrink:0,
+            }}>
+              {(user?.name || user?.email || 'U')[0].toUpperCase()}
+            </div>
+            <div style={{ lineHeight:1.3 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:'#1a202c', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {user?.name || user?.email}
+              </div>
+              <div style={{ fontSize:11, color:'#94a3b8' }}>Profile &amp; Settings</div>
+            </div>
+          </NavLink>
+          <button onClick={handleLogout} title="Logout"
+            style={{ background:'none', border:'1px solid #e2e8f0', borderRadius:7, color:'#94a3b8', padding:'6px 8px', cursor:'pointer', display:'flex', alignItems:'center' }}>
+            <LogOut size={14} />
+          </button>
+        </div>
+        <div style={{ flex:1, overflow:'auto' }}>
+          <Outlet />
+        </div>
       </main>
     </div>
   )
