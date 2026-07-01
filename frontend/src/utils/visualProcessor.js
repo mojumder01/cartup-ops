@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 
 const OUTPUT_COLS = [
-  'Parent SKU', 'Seller SKU',
+  'Parent SKU', 'Product', 'Seller SKU',
   'Image 1', 'Image 2', 'Image 3', 'Image 4',
   'Image 5', 'Image 6', 'Image 7', 'Image 8',
   'Variant Image', 'Variant Combo',
@@ -38,87 +38,88 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
     readSheet(basicFile),
   ])
 
-  // Build skuimg lookup: SellerSKU → row
-  // Also build parentSku → [{ sellerSku, color, skuImg }]
-  onProgress('Mapping SKU images...')
-
-  const skuDict = {}       // sellerSku → skuimg row
-  const parentEntries = {} // parentSku → [{ sellerSku, color, skuImg }]
-
-  for (const row of skuimgRows) {
-    const sellerSku = col(row,
-      'sellersku', 'seller sku', 'seller_sku', 'sku', '**seller sku', '*seller sku',
-    )
-    const parentSku = col(row,
-      'parent sku', 'parentsku', 'parent_sku', 'parent id', '**parent sku', '*parent sku',
-    )
-    const color = col(row, 'color', 'colour', '*color')
-    // Variant image from skuimg file — same column name as Daraz: Images1
-    const skuImg = col(row, 'images1', 'image1', 'image 1', '*product images1', 'variant image', 'variantimage')
-
-    if (sellerSku) skuDict[sellerSku] = row
-
-    const pid = parentSku || (sellerSku ? sellerSku.split('_')[0] : '')
+  // Build basic lookup: productId → { name, images[8] }
+  onProgress('Mapping basic file...')
+  const basicDict = {}
+  for (const row of basicRows) {
+    const pid = col(row, 'product id', 'productid', 'parent sku', 'parentsku', 'parent id')
     if (!pid) continue
-
-    if (!parentEntries[pid]) parentEntries[pid] = []
-    parentEntries[pid].push({ sellerSku, color, skuImg })
+    const images = Array.from({ length: 8 }, (_, i) => {
+      if (i === 0) return col(row, '*product images1', 'product images1', 'product image 1', '*product image 1', 'image 1', 'image1', 'images1')
+      return col(row, `product images${i + 1}`, `product image ${i + 1}`, `image ${i + 1}`, `image${i + 1}`)
+    })
+    basicDict[pid] = {
+      name:   col(row, '*product name(english)', 'product name(english)', '*product name', 'name', 'product name'),
+      images,
+    }
   }
 
-  // Build output rows from basic file
+  // Group skuimg rows by productId
+  onProgress('Mapping SKU images...')
+  const skuGroups = {} // productId → [{ sellerSku, skuImages[8], variantCombo }]
+
+  for (const row of skuimgRows) {
+    const pid = col(row, 'product id', 'productid', 'parent sku', 'parentsku')
+    if (!pid) continue
+
+    const sellerSku    = col(row, 'sellersku', 'seller sku', 'seller_sku', 'shop sku', 'sku')
+    const variantCombo = col(row, 'variations combo', 'variationscombo', 'variant combo', 'variantcombo', 'color', 'colour')
+
+    const skuImages = Array.from({ length: 8 }, (_, i) =>
+      col(row, `images${i + 1}`, `image${i + 1}`, `image ${i + 1}`)
+    )
+
+    if (!skuGroups[pid]) skuGroups[pid] = []
+    skuGroups[pid].push({ sellerSku, skuImages, variantCombo })
+  }
+
+  // Build output rows
   onProgress('Building output rows...')
   const outputRows = []
 
+  // Iterate in basic file order
   for (const row of basicRows) {
-    const parentSku = col(row,
-      'parent sku', 'parentsku', 'parent_sku', 'parent id',
-      '**parent sku', '*parent sku',
-    )
-    if (!parentSku) continue
+    const pid = col(row, 'product id', 'productid', 'parent sku', 'parentsku', 'parent id')
+    if (!pid) continue
 
-    // Images from basic file (same logic as Daraz processor)
-    const basicImages = Array.from({ length: 8 }, (_, idx) => {
-      if (idx === 0) return col(row, '*product images1', 'product images1', 'product image 1', '*product image 1', 'image 1', 'image1', 'images1', 'main image')
-      return col(row, `product images${idx + 1}`, `product image ${idx + 1}`, `image ${idx + 1}`, `image${idx + 1}`)
-    })
-
-    const entries = parentEntries[parentSku]
+    const basic   = basicDict[pid] || { name: '', images: Array(8).fill('') }
+    const entries = skuGroups[pid]
 
     if (!entries || !entries.length) {
-      // No skuimg data — one row, no variant image for color, fallback img1
       outputRows.push({
-        'Parent SKU':    parentSku,
-        'Seller SKU':    parentSku,
-        'Image 1':       basicImages[0], 'Image 2': basicImages[1],
-        'Image 3':       basicImages[2], 'Image 4': basicImages[3],
-        'Image 5':       basicImages[4], 'Image 6': basicImages[5],
-        'Image 7':       basicImages[6], 'Image 8': basicImages[7],
-        'Variant Image': basicImages[0],
+        'Parent SKU':    pid,
+        'Product':       basic.name,
+        'Seller SKU':    pid,
+        'Image 1':       basic.images[0], 'Image 2': basic.images[1],
+        'Image 3':       basic.images[2], 'Image 4': basic.images[3],
+        'Image 5':       basic.images[4], 'Image 6': basic.images[5],
+        'Image 7':       basic.images[6], 'Image 8': basic.images[7],
+        'Variant Image': basic.images[0],
         'Variant Combo': '',
       })
       continue
     }
 
     for (const entry of entries) {
-      const hasColor = !!entry.color
-      const variantCombo = hasColor ? `Color:${entry.color}` : ''
-      const sellerSku = entry.sellerSku || (hasColor ? `${parentSku}_${entry.color}` : parentSku)
+      const hasVariant = !!entry.variantCombo
+      const skuImg     = entry.skuImages[0]
 
-      // Same rule as Daraz:
+      // Same rule as Daraz processor:
       // skuImg present → use it as variant image
-      // no skuImg + color variant → leave empty (missing)
-      // no skuImg + no color → fallback to basic Image 1
-      const variantImage = entry.skuImg || (hasColor ? '' : basicImages[0])
+      // variant exists but no skuImg → leave empty
+      // no variant → fallback to basic Image 1
+      const variantImage = skuImg || (hasVariant ? '' : basic.images[0])
 
       outputRows.push({
-        'Parent SKU':    parentSku,
-        'Seller SKU':    sellerSku,
-        'Image 1':       basicImages[0], 'Image 2': basicImages[1],
-        'Image 3':       basicImages[2], 'Image 4': basicImages[3],
-        'Image 5':       basicImages[4], 'Image 6': basicImages[5],
-        'Image 7':       basicImages[6], 'Image 8': basicImages[7],
+        'Parent SKU':    pid,
+        'Product':       basic.name,
+        'Seller SKU':    entry.sellerSku || pid,
+        'Image 1':       basic.images[0], 'Image 2': basic.images[1],
+        'Image 3':       basic.images[2], 'Image 4': basic.images[3],
+        'Image 5':       basic.images[4], 'Image 6': basic.images[5],
+        'Image 7':       basic.images[6], 'Image 8': basic.images[7],
         'Variant Image': variantImage,
-        'Variant Combo': variantCombo,
+        'Variant Combo': entry.variantCombo,
       })
     }
   }
@@ -129,7 +130,10 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
   const wsData = [OUTPUT_COLS, ...outputRows.map(r => OUTPUT_COLS.map(c => r[c] ?? ''))]
   const ws = XLSX.utils.aoa_to_sheet(wsData)
   ws['!cols'] = OUTPUT_COLS.map(c =>
-    c.includes('SKU') ? { wch: 28 } : c.includes('Image') || c.includes('Combo') ? { wch: 40 } : { wch: 20 }
+    c === 'Product' ? { wch: 50 }
+    : c.includes('SKU') ? { wch: 28 }
+    : c.includes('Image') || c.includes('Combo') ? { wch: 40 }
+    : { wch: 20 }
   )
   ws['!freeze'] = { xSplit: 0, ySplit: 1 }
   XLSX.utils.book_append_sheet(wb, ws, 'visual')

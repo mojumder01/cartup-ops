@@ -71,12 +71,12 @@ export default function Visual() {
         <div style={card}>
           <FileInput
             label="SKU Image File *"
-            hint="Columns: Parent SKU, Seller SKU, Color, Image 1–8"
+            hint="Columns: Product ID, SellerSKU, Variations Combo, Images1–8"
             onChange={f => setFiles(p => ({ ...p, skuimg: f }))}
           />
           <FileInput
             label="Basic File *"
-            hint="Columns: Parent SKU (drives output rows)"
+            hint="Columns: Product ID, *Product Name(English), *Product Images1–8"
             onChange={f => setFiles(p => ({ ...p, basic: f }))}
           />
 
@@ -124,7 +124,7 @@ export default function Visual() {
         <div style={{ ...card, marginTop:16 }}>
           <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px', marginBottom:12 }}>Output Columns</div>
           <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-            {['Parent SKU','Seller SKU','Image 1','Image 2','Image 3','Image 4','Image 5','Image 6','Image 7','Image 8','Variant Image','Variant Combo'].map(c => (
+            {['Parent SKU','Product','Seller SKU','Image 1','Image 2','Image 3','Image 4','Image 5','Image 6','Image 7','Image 8','Variant Image','Variant Combo'].map(c => (
               <span key={c} style={{ fontSize:11, padding:'3px 8px', background:'#f1f5f9', borderRadius:4, color:'#374151', fontFamily:'monospace' }}>{c}</span>
             ))}
           </div>
