@@ -77,9 +77,41 @@ function stripHtml(html) {
   return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+// ── Editable lists (localStorage) ─────────────────────────────────────────────
+const LISTS_KEY = 'qc_lists'
+export const DEFAULT_LISTS = {
+  competitors: [
+    'daraz','pickaboo','ajkerdeal','rokomari','evaly','othoba','bagdoom',
+    'alibaba','aliexpress','amazon','flipkart','ebay','shein','temu','walmart','lazada','shopee',
+  ],
+  restrictedKeywords: [
+    'viagra','sex toy','vibrator','dildo','condom','cigarette','vape','e-cigarette',
+    'casino','gambling','lottery','antibiotic','paracetamol','napa','tramadol','pistol','airgun','taser',
+  ],
+}
+export function getQcLists() {
+  try {
+    const raw = localStorage.getItem(LISTS_KEY)
+    if (!raw) return { ...DEFAULT_LISTS }
+    const saved = JSON.parse(raw)
+    return {
+      competitors: saved.competitors?.length ? saved.competitors : DEFAULT_LISTS.competitors,
+      restrictedKeywords: saved.restrictedKeywords?.length ? saved.restrictedKeywords : DEFAULT_LISTS.restrictedKeywords,
+    }
+  } catch { return { ...DEFAULT_LISTS } }
+}
+export function saveQcLists(lists) {
+  try { localStorage.setItem(LISTS_KEY, JSON.stringify(lists)) } catch {}
+}
+
 // ── Basic (non-AI) checks — instant ───────────────────────────────────────────
-export function basicChecks(row, checks) {
+export function basicChecks(row, checks, lists) {
   const issues = []
+  const name = row['Name (English)'] || ''
+  const allText = `${name} ${stripHtml(row['HighlightEn'])} ${stripHtml(row['DescriptionEn'])}`
+  const allTextLower = allText.toLowerCase()
+
+  if (checks.name && /[ঀ-৿]/.test(name)) issues.push('Name: contains Bangla characters in English name')
   if (checks.image && !row['Product Image1']) issues.push('Image: missing')
   if (checks.highlights) {
     if (/<img[\s>]/i.test(row['HighlightEn'] || '')) issues.push('Highlights: contains image (not allowed)')
@@ -92,6 +124,25 @@ export function basicChecks(row, checks) {
     else if (w <= 0) issues.push('Weight: must be > 0')
     else if (w > 100) issues.push(`Weight: unrealistic (${w} kg)`)
   }
+
+  if (checks.competitor && lists) {
+    for (const comp of lists.competitors) {
+      const re = new RegExp(`\\b${comp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+      if (re.test(allText)) { issues.push(`Competitor: '${comp}' found`); break }
+    }
+    const urlMatch = allText.match(/https?:\/\/[^\s<>"]+|www\.[^\s<>"]+/i)
+    if (urlMatch) issues.push(`Competitor: external link found (${urlMatch[0].slice(0, 40)})`)
+    const phoneMatch = allText.match(/\b01[3-9]\d{8}\b/)
+    if (phoneMatch) issues.push(`Competitor: phone number found (${phoneMatch[0]})`)
+  }
+
+  if (checks.restricted && lists) {
+    for (const kw of lists.restrictedKeywords) {
+      const re = new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+      if (re.test(allTextLower)) { issues.push(`Restricted: keyword '${kw}' found`); break }
+    }
+  }
+
   return issues
 }
 
@@ -184,18 +235,78 @@ Return ONLY a JSON array, no markdown:
   return map
 }
 
+async function checkRestrictedBatch(rows, apiKey, context) {
+  const input = rows.map((r, i) =>
+    `Product ${i + 1} (id:"${r['ProductId']}"): ${r['Name (English)']} — ${stripHtml(r['DescriptionEn']).slice(0, 200)}`
+  ).join('\n')
+  const prompt = `You are a marketplace compliance reviewer for a Bangladesh e-commerce site. For EACH product, check if it is PROHIBITED/RESTRICTED:
+- Medicine/drugs requiring prescription (vitamins & food supplements are ALLOWED)
+- Adult/sex products
+- Weapons (kitchen/utility knives are ALLOWED)
+- Tobacco, vape, e-cigarettes
+- Gambling items, lottery
+- Live animals, ivory, endangered species products
+If allowed, return empty string. If restricted, short reason.
+
+${input}
+
+Return ONLY a JSON array, no markdown:
+[{"id":"...","issue":""}]`
+  const arr = parseJsonArray(await callGemini(prompt, apiKey))
+  const map = {}
+  arr.forEach((it, i) => { map[String(it.id || rows[i]?.['ProductId'])] = (it.issue || '').trim() })
+  return map
+}
+
 export const QC_PASS_DEFS = [
   { key:'name',        label:'Name (Spelling)', fn: checkNameBatch,        prefix:'Name' },
   { key:'category',    label:'Category Match',  fn: checkCategoryBatch,    prefix:'Category' },
   { key:'highlights',  label:'Highlights',      fn: checkHighlightsBatch,  prefix:'Highlights' },
   { key:'description', label:'Description',     fn: checkDescriptionBatch, prefix:'Description' },
+  { key:'restricted',  label:'Restricted Items',fn: checkRestrictedBatch,  prefix:'Restricted' },
 ]
 
-// ── Run enabled AI passes sequentially ────────────────────────────────────────
-export async function runQcChecks(rows, apiKey, checks, context, onProgress, signal) {
-  const issuesByProduct = {}
-  const confidence = {}
-  for (const r of rows) issuesByProduct[r['ProductId']] = basicChecks(r, checks)
+// ── Checkpoint ────────────────────────────────────────────────────────────────
+const QC_CP_KEY = 'qc_checkpoint'
+function qcFileKey(file) { return `${file.name}__${file.size}` }
+
+export function loadQcCheckpoint(file) {
+  try {
+    const raw = localStorage.getItem(QC_CP_KEY)
+    if (!raw) return null
+    const cp = JSON.parse(raw)
+    if (file && cp.fileKey !== qcFileKey(file)) return null
+    return cp
+  } catch { return null }
+}
+export function clearQcCheckpoint() { localStorage.removeItem(QC_CP_KEY) }
+function saveQcCheckpoint(file, aiIssues, confidence) {
+  if (!file) return
+  try {
+    localStorage.setItem(QC_CP_KEY, JSON.stringify({ fileKey: qcFileKey(file), savedAt: Date.now(), aiIssues, confidence }))
+  } catch {}
+}
+
+// ── Run enabled AI passes sequentially (with checkpoint + resume) ─────────────
+export async function runQcChecks(rows, apiKey, checks, context, onProgress, signal, file) {
+  const lists = getQcLists()
+  const cp = file ? loadQcCheckpoint(file) : null
+  const aiIssues = cp?.aiIssues || {}       // {passKey: {pid: issueString ('' = checked, clean)}}
+  const confidence = cp?.confidence || {}
+
+  const buildResult = () => {
+    const issuesByProduct = {}
+    for (const r of rows) issuesByProduct[r['ProductId']] = basicChecks(r, checks, lists)
+    for (const pass of QC_PASS_DEFS) {
+      if (!checks[pass.key]) continue
+      const done = aiIssues[pass.key] || {}
+      for (const r of rows) {
+        const issue = done[r['ProductId']]
+        if (issue) issuesByProduct[r['ProductId']].push(`${pass.prefix}: ${issue.replace(new RegExp(`^${pass.prefix}:?\\s*`, 'i'), '')}`)
+      }
+    }
+    return issuesByProduct
+  }
 
   const passes = QC_PASS_DEFS.filter(p => checks[p.key])
   const totalPasses = passes.length
@@ -203,29 +314,35 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
 
   for (let p = 0; p < passes.length; p++) {
     const pass = passes[p]
-    let done = 0
-    onProgress({ pass: p + 1, totalPasses, label: pass.label, done, total })
+    const done = aiIssues[pass.key] || (aiIssues[pass.key] = {})
+    const pending = rows.filter(r => !(r['ProductId'] in done))
+    let doneCount = total - pending.length
+    onProgress({ pass: p + 1, totalPasses, label: pass.label, done: doneCount, total })
 
-    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      if (signal?.paused) return { paused: true, issuesByProduct, confidence }
-      const batch = rows.slice(i, i + BATCH_SIZE)
+    for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+      if (signal?.paused) {
+        saveQcCheckpoint(file, aiIssues, confidence)
+        return { paused: true, issuesByProduct: buildResult(), confidence }
+      }
+      const batch = pending.slice(i, i + BATCH_SIZE)
       try {
         const map = await pass.fn(batch, apiKey, context)
         for (const r of batch) {
           const pid = r['ProductId']
-          const issue = map[pid]
-          if (issue) issuesByProduct[pid].push(`${pass.prefix}: ${issue.replace(new RegExp(`^${pass.prefix}:?\\s*`, 'i'), '')}`)
+          done[pid] = map[pid] || ''
           if (map[pid + '__conf'] !== undefined) confidence[pid] = map[pid + '__conf']
         }
+        saveQcCheckpoint(file, aiIssues, confidence)
       } catch {
-        // batch failed — skip, don't block the pipeline
+        // batch failed — skip, don't block the pipeline (will retry on resume)
       }
-      done += batch.length
-      onProgress({ pass: p + 1, totalPasses, label: pass.label, done, total })
+      doneCount += batch.length
+      onProgress({ pass: p + 1, totalPasses, label: pass.label, done: doneCount, total })
     }
   }
 
-  return { paused: false, issuesByProduct, confidence }
+  clearQcCheckpoint()
+  return { paused: false, issuesByProduct: buildResult(), confidence }
 }
 
 // ── Output files (mergedIssues: {pid → [issue strings]}) ─────────────────────

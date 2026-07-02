@@ -3,11 +3,14 @@ import { getApiKey } from '../utils/gemini'
 import {
   QC_COLUMNS, readQcFile, uniqueByProductId, runQcChecks,
   buildQcViewFile, buildQcPassFile,
+  getQcLists, saveQcLists, DEFAULT_LISTS,
+  loadQcCheckpoint, clearQcCheckpoint,
 } from '../utils/qcProcessor'
 import {
   CheckSquare, FileSpreadsheet, CheckCircle, AlertCircle, Upload,
   Pause, Eye, X, Download, RefreshCw, Flag, Image as ImageIcon,
   Pencil, ChevronLeft, ChevronRight, MessageSquarePlus, Loader,
+  Trash2, Settings, RotateCcw, Undo2,
 } from 'lucide-react'
 
 const SHORT_COLS = {
@@ -27,7 +30,12 @@ const CHECK_TOGGLES = [
   { key:'highlights',  label:'Highlights' },
   { key:'description', label:'Description' },
   { key:'weight',      label:'Weight' },
+  { key:'restricted',  label:'Restricted' },
+  { key:'competitor',  label:'Competitor' },
 ]
+
+// two light alternating colors for variant groups
+const VG_COLORS = ['#eff6ff', '#fefce8']
 
 function download(buf, name) {
   const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
@@ -51,24 +59,37 @@ export default function QC() {
   const [editModal, setEditModal]     = useState(null)  // {pid, text}
   const [modal, setModal]       = useState(null)        // {col, index} — preview with prev/next
   const [comment, setComment]   = useState('')
-  const [checks, setChecks]     = useState({ name:true, category:true, image:true, highlights:true, description:true, weight:true })
+  const [checks, setChecks]     = useState({ name:true, category:true, image:true, highlights:true, description:true, weight:true, restricted:true, competitor:true })
   const [context, setContext]   = useState('')
   const [filters, setFilters]   = useState({})
   const [showFilters, setShowFilters] = useState(false)
   const [variantOk, setVariantOk]     = useState({})    // pid → true (manually checked OK)
+  const [removedIds, setRemovedIds]   = useState(new Set())
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [removeModal, setRemoveModal] = useState(false) // paste-list modal
+  const [removeText, setRemoveText]   = useState('')
+  const [listsModal, setListsModal]   = useState(null)  // {competitors, restrictedKeywords} strings
+  const [hasCheckpoint, setHasCheckpoint] = useState(false)
+  const [fileObj, setFileObj]   = useState(null)
   const [inputKey, setInputKey] = useState(0)
   const signalRef               = useRef({ paused:false })
 
-  const uniqueRows  = useMemo(() => rows ? uniqueByProductId(rows) : [], [rows])
+  const activeRows  = useMemo(() => (rows || []).filter(r => !removedIds.has(r['ProductId'])), [rows, removedIds])
+  const uniqueRows  = useMemo(() => uniqueByProductId(activeRows), [activeRows])
   const variantRows = useMemo(() => {
-    if (!rows) return []
     const counts = {}
-    for (const r of rows) counts[r['ProductId']] = (counts[r['ProductId']] || 0) + 1
-    return rows.filter(r => counts[r['ProductId']] > 1)
-  }, [rows])
+    for (const r of activeRows) counts[r['ProductId']] = (counts[r['ProductId']] || 0) + 1
+    return activeRows.filter(r => counts[r['ProductId']] > 1)
+  }, [activeRows])
+  // variant group parity for alternating colors
+  const variantGroupIdx = useMemo(() => {
+    const map = {}; let i = 0
+    for (const r of variantRows) if (!(r['ProductId'] in map)) map[r['ProductId']] = i++
+    return map
+  }, [variantRows])
   const checksRun   = Object.keys(issues).length > 0
 
-  const baseRows = view === 'unique' ? uniqueRows : view === 'variants' ? variantRows : (rows || [])
+  const baseRows = view === 'unique' ? uniqueRows : view === 'variants' ? variantRows : activeRows
   const displayRows = useMemo(() => {
     const active = Object.entries(filters).filter(([, v]) => v)
     if (!active.length) return baseRows
@@ -93,11 +114,12 @@ export default function QC() {
     const f = e.target.files[0]
     if (!f) return
     setError(''); setIssues({}); setManualFlags({}); setReportEdit({}); setVariantOk({})
-    setStatus(''); setPassInfo(null); setFilters({})
+    setStatus(''); setPassInfo(null); setFilters({}); setRemovedIds(new Set()); setSelectedIds(new Set())
     try {
       const parsed = await readQcFile(f)
       if (!parsed.length) { setError('No valid rows found (ProductId required)'); return }
-      setRows(parsed); setFileName(f.name)
+      setRows(parsed); setFileName(f.name); setFileObj(f)
+      setHasCheckpoint(!!loadQcCheckpoint(f))
     } catch(err) { setError('Failed to read file: ' + err.message) }
   }
 
@@ -106,17 +128,35 @@ export default function QC() {
     setError(''); setStatus('processing')
     signalRef.current = { paused:false }
     try {
-      const res = await runQcChecks(uniqueRows, apiKey, checks, context, setPassInfo, signalRef.current)
+      const res = await runQcChecks(uniqueRows, apiKey, checks, context, setPassInfo, signalRef.current, fileObj)
       setIssues(res.issuesByProduct)
       setStatus(res.paused ? 'paused' : 'done')
+      setHasCheckpoint(res.paused)
     } catch(err) { setStatus(''); setError(err.message) }
   }
 
   const handlePause = () => { signalRef.current.paused = true }
   const handleReset = () => {
-    setRows(null); setFileName(''); setIssues({}); setManualFlags({}); setReportEdit({})
-    setVariantOk({}); setStatus(''); setError(''); setPassInfo(null); setFilters({}); setInputKey(k => k + 1)
+    clearQcCheckpoint()
+    setRows(null); setFileName(''); setFileObj(null); setIssues({}); setManualFlags({}); setReportEdit({})
+    setVariantOk({}); setStatus(''); setError(''); setPassInfo(null); setFilters({})
+    setRemovedIds(new Set()); setSelectedIds(new Set()); setHasCheckpoint(false); setInputKey(k => k + 1)
   }
+
+  // ── Product remove ──
+  const toggleSelect = pid => setSelectedIds(s => {
+    const n = new Set(s); n.has(pid) ? n.delete(pid) : n.add(pid); return n
+  })
+  const removeSelected = () => {
+    setRemovedIds(r => new Set([...r, ...selectedIds]))
+    setSelectedIds(new Set())
+  }
+  const removeFromText = () => {
+    const ids = removeText.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
+    setRemovedIds(r => new Set([...r, ...ids]))
+    setRemoveText(''); setRemoveModal(false)
+  }
+  const undoRemove = () => setRemovedIds(new Set())
 
   const addManual = (pid, text) => {
     if (!text.trim()) return
@@ -253,6 +293,32 @@ export default function QC() {
                 style={btn(showFilters ? '#eef2ff' : '#fff', showFilters ? '#4f46e5' : '#64748b', showFilters ? '#c7d2fe' : '#e2e8f0')}>
                 Filter {Object.values(filters).filter(Boolean).length ? `(${Object.values(filters).filter(Boolean).length})` : ''}
               </button>
+
+              {/* Remove controls */}
+              {selectedIds.size > 0 && (
+                <button onClick={removeSelected} style={btn('#dc2626','#fff')}>
+                  <Trash2 size={13}/> Remove Selected ({selectedIds.size})
+                </button>
+              )}
+              <button onClick={() => setRemoveModal(true)} style={btn('#fff','#dc2626','#fecaca')}>
+                <Trash2 size={13}/> Remove by ID
+              </button>
+              {removedIds.size > 0 && (
+                <button onClick={undoRemove} style={btn('#fef2f2','#dc2626','#fecaca')} title="Undo all removals">
+                  <Undo2 size={13}/> Removed: {removedIds.size}
+                </button>
+              )}
+
+              <button onClick={() => { const l = getQcLists(); setListsModal({ competitors: l.competitors.join(', '), restrictedKeywords: l.restrictedKeywords.join(', ') }) }}
+                style={btn('#fff','#64748b','#e2e8f0')} title="Edit competitor & restricted keyword lists">
+                <Settings size={13}/> Lists
+              </button>
+
+              {hasCheckpoint && status !== 'processing' && (
+                <span style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'#92400e', background:'#fffbeb', border:'1px solid #fde68a', padding:'5px 10px', borderRadius:999 }}>
+                  <RotateCcw size={11}/> Checkpoint saved — Continue resumes
+                </span>
+              )}
               <div style={{ flex:1 }}/>
               {(checksRun || Object.keys(manualFlags).length > 0 || Object.keys(reportEdit).length > 0) && (
                 <>
@@ -281,8 +347,9 @@ export default function QC() {
                       const pid = r['ProductId']
                       const flagged = (manualFlags[pid] || []).some(x => x.startsWith('Variant:'))
                       const okd = variantOk[pid]
+                      const groupColor = VG_COLORS[(variantGroupIdx[pid] ?? 0) % 2]
                       return (
-                        <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: flagged ? '#fef2f2' : okd ? '#f0fdf4' : '#fff' }}>
+                        <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: flagged ? '#fef2f2' : okd ? '#f0fdf4' : groupColor }}>
                           <td style={{ padding:'6px 12px', color:'#94a3b8' }}>{i + 1}</td>
                           <td style={{ padding:'6px 12px', color:'#334155', fontWeight:600 }}>{pid}</td>
                           <td style={{ padding:'6px 12px', color:'#334155' }}>{r['VariantName']}</td>
@@ -326,6 +393,19 @@ export default function QC() {
                 <table style={{ borderCollapse:'collapse', fontSize:12, width:'100%', minWidth:1400 }}>
                   <thead>
                     <tr>
+                      <th style={{ position:'sticky', top:0, background:'#f8fafc', borderBottom:'1.5px solid #e2e8f0', padding:'9px 8px', zIndex:1 }}>
+                        <input type="checkbox"
+                          checked={displayRows.length > 0 && displayRows.every(r => selectedIds.has(r['ProductId']))}
+                          onChange={e => {
+                            const pids = displayRows.map(r => r['ProductId'])
+                            setSelectedIds(s => {
+                              const n = new Set(s)
+                              e.target.checked ? pids.forEach(p => n.add(p)) : pids.forEach(p => n.delete(p))
+                              return n
+                            })
+                          }}
+                          style={{ cursor:'pointer' }}/>
+                      </th>
                       <th style={{ position:'sticky', top:0, background:'#f8fafc', borderBottom:'1.5px solid #e2e8f0', padding:'9px 8px', textAlign:'left', fontSize:11, fontWeight:700, color:'#475569', zIndex:1 }}>SL</th>
                       {QC_COLUMNS.map(c => (
                         <th key={c} style={{ position:'sticky', top:0, background:'#f8fafc', borderBottom:'1.5px solid #e2e8f0', padding:'9px 10px', textAlign:'left', fontSize:11, fontWeight:700, color:'#475569', whiteSpace:'nowrap', zIndex:1 }}>
@@ -336,6 +416,7 @@ export default function QC() {
                     </tr>
                     {showFilters && (
                       <tr>
+                        <th style={{ position:'sticky', top:33, background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'4px 8px', zIndex:1 }}/>
                         <th style={{ position:'sticky', top:33, background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'4px 8px', zIndex:1 }}/>
                         {QC_COLUMNS.map(c => (
                           <th key={c} style={{ position:'sticky', top:33, background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'4px 6px', zIndex:1 }}>
@@ -358,6 +439,9 @@ export default function QC() {
                       const imgFlagged = (manualFlags[pid] || []).some(x => x.startsWith('Image:'))
                       return (
                         <tr key={i} style={{ borderBottom:'1px solid #f1f5f9', background: hasAny && pIssues.length ? '#fef2f2' : '#fff' }}>
+                          <td style={{ padding:'6px 8px' }}>
+                            <input type="checkbox" checked={selectedIds.has(pid)} onChange={() => toggleSelect(pid)} style={{ cursor:'pointer' }}/>
+                          </td>
                           <td style={{ padding:'6px 8px', color:'#94a3b8', fontSize:11 }}>{i + 1}</td>
                           {QC_COLUMNS.map(c => {
                             if (c === 'Product Image1') {
@@ -511,6 +595,62 @@ export default function QC() {
               <button onClick={() => setEditModal(null)} style={btn('#fff','#64748b','#e2e8f0')}>Cancel</button>
               <button onClick={() => { setReportEdit(re => ({ ...re, [editModal.pid]: editModal.text })); setEditModal(null) }}
                 style={btn('#16a34a','#fff')}>Save Report</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Remove by ID modal ── */}
+      {removeModal && (
+        <div onClick={() => setRemoveModal(false)} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:110 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:12, width:'min(480px, 90vw)', padding:20 }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+              <span style={{ fontSize:13, fontWeight:700, color:'#1a202c' }}>Remove Products</span>
+              <button onClick={() => setRemoveModal(false)} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8' }}><X size={17}/></button>
+            </div>
+            <div style={{ fontSize:11.5, color:'#64748b', marginBottom:8 }}>
+              Paste Product IDs — single or multiple (separate with comma, space, or new line). Removed products are excluded from both output files.
+            </div>
+            <textarea value={removeText} onChange={e => setRemoveText(e.target.value)}
+              rows={5} placeholder={'2394727\n2394723, 2390907'}
+              style={{ width:'100%', padding:'10px 12px', fontSize:12.5, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none', resize:'vertical', fontFamily:'monospace', boxSizing:'border-box' }}/>
+            <div style={{ display:'flex', gap:8, marginTop:12, justifyContent:'flex-end' }}>
+              <button onClick={() => setRemoveModal(false)} style={btn('#fff','#64748b','#e2e8f0')}>Cancel</button>
+              <button onClick={removeFromText} disabled={!removeText.trim()} style={btn('#dc2626','#fff')}>
+                <Trash2 size={13}/> Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Lists editor modal ── */}
+      {listsModal && (
+        <div onClick={() => setListsModal(null)} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:110 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:12, width:'min(560px, 90vw)', padding:20, maxHeight:'85vh', overflow:'auto' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+              <span style={{ fontSize:13, fontWeight:700, color:'#1a202c' }}>Check Lists (comma separated)</span>
+              <button onClick={() => setListsModal(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8' }}><X size={17}/></button>
+            </div>
+            <div style={{ fontSize:11.5, fontWeight:600, color:'#64748b', marginBottom:5 }}>Competitor names / sites</div>
+            <textarea value={listsModal.competitors} onChange={e => setListsModal(m => ({ ...m, competitors: e.target.value }))}
+              rows={4} style={{ width:'100%', padding:'9px 12px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none', resize:'vertical', fontFamily:'inherit', boxSizing:'border-box', marginBottom:12 }}/>
+            <div style={{ fontSize:11.5, fontWeight:600, color:'#64748b', marginBottom:5 }}>Restricted keywords</div>
+            <textarea value={listsModal.restrictedKeywords} onChange={e => setListsModal(m => ({ ...m, restrictedKeywords: e.target.value }))}
+              rows={4} style={{ width:'100%', padding:'9px 12px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none', resize:'vertical', fontFamily:'inherit', boxSizing:'border-box' }}/>
+            <div style={{ display:'flex', gap:8, marginTop:12, justifyContent:'space-between' }}>
+              <button onClick={() => setListsModal({ competitors: DEFAULT_LISTS.competitors.join(', '), restrictedKeywords: DEFAULT_LISTS.restrictedKeywords.join(', ') })}
+                style={btn('#fff','#94a3b8','#e2e8f0')}>Restore defaults</button>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => setListsModal(null)} style={btn('#fff','#64748b','#e2e8f0')}>Cancel</button>
+                <button onClick={() => {
+                  saveQcLists({
+                    competitors: listsModal.competitors.split(',').map(s => s.trim()).filter(Boolean),
+                    restrictedKeywords: listsModal.restrictedKeywords.split(',').map(s => s.trim()).filter(Boolean),
+                  })
+                  setListsModal(null)
+                }} style={btn('#16a34a','#fff')}>Save Lists</button>
+              </div>
             </div>
           </div>
         </div>
