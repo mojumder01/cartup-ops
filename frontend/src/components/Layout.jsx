@@ -79,7 +79,7 @@ export default function Layout() {
           )}
 
           {navItem('/visual',     Image,       'Visual',     false)}
-          {navItem('/qc',         CheckSquare, 'QC',         true)}
+          {navItem('/qc',         CheckSquare, 'QC',         false)}
           {navItem('/governance', Shield,      'Governance', false)}
         </nav>
 

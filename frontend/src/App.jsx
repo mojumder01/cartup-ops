@@ -7,6 +7,7 @@ import DarazUpload from './pages/DarazUpload'
 import ManualUpload from './pages/ManualUpload'
 import Profile from './pages/Profile'
 import Visual from './pages/Visual'
+import QC from './pages/QC'
 import Governance from './pages/Governance'
 import Layout from './components/Layout'
 
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="manual" element={<ManualUpload />} />
         </Route>
         <Route path="visual"      element={<Visual />} />
+        <Route path="qc"          element={<QC />} />
         <Route path="governance"  element={<Governance />} />
         <Route path="profile" element={<Profile />} />
       </Route>

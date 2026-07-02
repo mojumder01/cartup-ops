@@ -17,9 +17,9 @@ const TEAMS = [
     icon: CheckSquare,
     color: '#16a34a',
     bg: '#dcfce7',
-    desc: 'Review AI output, approve or reject rows',
+    desc: 'Sequential checks — Name, Category, Image, Highlights, Description, Weight',
     path: '/qc',
-    active: false,
+    active: true,
   },
   {
     label: 'Visual',
