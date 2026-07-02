@@ -357,19 +357,25 @@ Return ONLY a JSON array, no markdown:
 }
 
 // ── Run a single pass with batching + checkpoint + pause ──────────────────────
-async function runPass(passNum, totalPasses, label, products, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress) {
+async function runPass(passNum, totalPasses, label, checkKey, products, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress) {
   const pending = products.filter(p => !alreadyDone.has(p.sku))
   const results = {}
   const batches = []
   for (let i = 0; i < pending.length; i += BATCH_SIZE) batches.push(pending.slice(i, i + BATCH_SIZE))
 
   let done = products.length - pending.length
+  // checkpoint key must match what processGovernanceFile reads back on resume
+  const passKey = `${checkKey}Results`
 
   onProgress({ pass: passNum, totalPasses, label, done, total })
 
   for (const batch of batches) {
     if (signal?.paused) {
-      saveCheckpoint(file, checks, { ...cpState, passCompleted: passNum - 1 })
+      saveCheckpoint(file, checks, {
+        ...cpState,
+        passCompleted: passNum - 1,
+        [passKey]: { ...(cpState[passKey] || {}), ...results },
+      })
       return { paused: true, results, done, total }
     }
 
@@ -379,7 +385,6 @@ async function runPass(passNum, totalPasses, label, products, batchFn, alreadyDo
 
     onProgress({ pass: passNum, totalPasses, label, done, total })
 
-    const passKey = `pass${passNum}Results`
     saveCheckpoint(file, checks, {
       ...cpState,
       passCompleted: passNum - 1,
@@ -480,7 +485,7 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       descriptionResults: results.description,
     }
 
-    const res = await runPass(passNum, totalPasses, label, passProducts, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress)
+    const res = await runPass(passNum, totalPasses, label, checkKey, passProducts, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress)
     Object.assign(results[checkKey], res.results)
 
     if (res.paused) return { paused: true, done: res.done, total }

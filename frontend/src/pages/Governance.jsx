@@ -32,7 +32,11 @@ function FileInputBox({ onChange, checkpoint }) {
         borderRadius:8, cursor:'pointer', background: fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept=".xlsx" style={{ display:'none' }}
-          onChange={e => { const f = e.target.files[0]; if(f){ setFileName(f.name); onChange(f) } }}
+          onChange={e => {
+            const f = e.target.files[0]
+            e.target.value = ''   // allow re-selecting the same file name
+            if(f){ setFileName(f.name); onChange(f) }
+          }}
         />
         {fileName
           ? <><CheckCircle size={16} color='#16a34a'/><span style={{ fontSize:13, color:'#16a34a', fontWeight:500 }}>{fileName}</span></>
@@ -42,7 +46,7 @@ function FileInputBox({ onChange, checkpoint }) {
       {checkpoint && fileName && (
         <div style={{ marginTop:8, padding:'8px 12px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:7, fontSize:12, color:'#92400e', display:'flex', alignItems:'center', gap:8 }}>
           <RotateCcw size={13}/>
-          Checkpoint found — Pass {checkpoint.passCompleted} of {['name','weight','category'].some(k => checkpoint.checks?.[k]) ? 1 : 0} completed, <strong>{checkpoint.total}</strong> products total. Resume will continue from here.
+          Checkpoint found — {checkpoint.passCompleted || 0} pass(es) completed, <strong>{checkpoint.total}</strong> products. Resume will continue from where it stopped.
         </div>
       )}
     </div>
@@ -112,8 +116,10 @@ export default function Governance() {
   const anyChecked  = Object.values(checks).some(Boolean)
 
   const handleFileChange = f => {
+    signalRef.current.paused = true   // stop any run from the previous file
     setFile(f); setStatus(''); setError(''); setPassInfo(null)
     const cp = loadCheckpoint(f)
+    if (!cp) clearCheckpoint()        // discard old file's checkpoint
     setCheckpoint(cp)
     if (cp?.checks) setChecks(cp.checks)
   }
