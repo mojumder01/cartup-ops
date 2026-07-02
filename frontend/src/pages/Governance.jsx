@@ -26,10 +26,10 @@ function FileInputBox({ onChange, checkpoint }) {
   const [fileName, setFileName] = useState('')
   return (
     <div>
-      <label style={{
-        display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
-        border:`1.5px dashed ${fileName ? '#16a34a' : '#e2e8f0'}`,
-        borderRadius:8, cursor:'pointer', background: fileName ? '#dcfce7' : '#fafafa',
+      <label className="file-drop" style={{
+        display:'flex', alignItems:'center', gap:10, padding:'12px 14px',
+        border:`1.5px dashed ${fileName ? '#16a34a' : '#cbd5e1'}`,
+        borderRadius:10, cursor:'pointer', background: fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept=".xlsx" style={{ display:'none' }}
           onChange={e => {
@@ -177,7 +177,7 @@ export default function Governance() {
   const handleSelectAll   = () => setChecks({ name:true, weight:true, highlights:true, description:true, category:true })
   const handleDeselectAll = () => setChecks({ name:false, weight:false, highlights:false, description:false, category:false })
 
-  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:24, marginBottom:16 }
+  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:24, marginBottom:16, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
 
   return (
     <div>
@@ -307,10 +307,11 @@ export default function Governance() {
         <div style={{ display:'flex', gap:10, alignItems:'center' }}>
           {status !== 'processing' && (
             <button onClick={handleRun} disabled={!anyChecked || !file}
+              className={!anyChecked || !file ? '' : 'btn-primary'}
               style={{
-                display:'flex', alignItems:'center', gap:8, padding:'11px 24px',
+                display:'flex', alignItems:'center', gap:8, padding:'12px 26px',
                 background: !anyChecked || !file ? '#a5b4fc' : '#4f46e5',
-                color:'#fff', border:'none', borderRadius:8, fontWeight:600, fontSize:14,
+                color:'#fff', border:'none', borderRadius:10, fontWeight:600, fontSize:14,
                 cursor: !anyChecked || !file ? 'not-allowed' : 'pointer',
               }}>
               {checkpoint

@@ -41,7 +41,7 @@ export default function ManualUpload() {
     }
   }
 
-  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:28 }
+  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
 
   return (
     <div>
@@ -99,7 +99,7 @@ export default function ManualUpload() {
           <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
             Manual Product File <span style={{ color:'#dc2626' }}>*</span>
           </label>
-          <label style={{
+          <label className="file-drop" style={{
             display:'flex', alignItems:'center', gap:10, padding:'14px 18px',
             border:`2px dashed ${fileName ? '#16a34a' : '#e2e8f0'}`,
             borderRadius:10, cursor:'pointer',
@@ -164,10 +164,11 @@ export default function ManualUpload() {
         <button
           onClick={handleProcess}
           disabled={status === 'processing' || !file}
+          className={(status === 'processing' || !file) ? '' : 'btn-primary'}
           style={{
-            display:'flex', alignItems:'center', gap:8, padding:'11px 24px',
+            display:'flex', alignItems:'center', gap:8, padding:'12px 26px',
             background: (status === 'processing' || !file) ? '#a5b4fc' : '#4f46e5',
-            color:'#fff', border:'none', borderRadius:8,
+            color:'#fff', border:'none', borderRadius:10,
             fontWeight:600, fontSize:14,
             cursor: (status === 'processing' || !file) ? 'not-allowed' : 'pointer',
           }}

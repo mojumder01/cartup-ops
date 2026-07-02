@@ -10,10 +10,10 @@ function FileInput({ label, hint, onChange }) {
         {label}
       </label>
       {hint && <div style={{ fontSize:11, color:'#94a3b8', marginBottom:6 }}>{hint}</div>}
-      <label style={{
-        display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
-        border:`1.5px dashed ${fileName ? '#16a34a' : '#e2e8f0'}`,
-        borderRadius:8, cursor:'pointer',
+      <label className="file-drop" style={{
+        display:'flex', alignItems:'center', gap:10, padding:'12px 14px',
+        border:`1.5px dashed ${fileName ? '#16a34a' : '#cbd5e1'}`,
+        borderRadius:10, cursor:'pointer',
         background: fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept=".xlsx" style={{ display:'none' }}
@@ -52,7 +52,7 @@ export default function Visual() {
     }
   }
 
-  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:28 }
+  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28 }
 
   return (
     <div>
@@ -68,7 +68,7 @@ export default function Visual() {
       </div>
 
       <div style={{ padding:'28px 32px', maxWidth:560 }}>
-        <div style={card}>
+        <div className="card-modern" style={card}>
           <FileInput
             label="SKU Image File *"
             hint="Columns: Product ID, SellerSKU, Variations Combo, Images1–8"
@@ -105,11 +105,12 @@ export default function Visual() {
             <button
               onClick={handleProcess}
               disabled={status === 'processing'}
+              className={status === 'processing' ? '' : 'btn-primary'}
               style={{
                 display:'flex', alignItems:'center', gap:8,
-                padding:'10px 22px',
+                padding:'11px 24px',
                 background: status === 'processing' ? '#a5b4fc' : '#4f46e5',
-                color:'#fff', border:'none', borderRadius:8,
+                color:'#fff', border:'none', borderRadius:10,
                 fontWeight:600, fontSize:14, cursor: status === 'processing' ? 'not-allowed' : 'pointer',
               }}
             >
@@ -121,7 +122,7 @@ export default function Visual() {
         </div>
 
         {/* Output format info */}
-        <div style={{ ...card, marginTop:16 }}>
+        <div className="card-modern" style={{ ...card, marginTop:16 }}>
           <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px', marginBottom:12 }}>Output Columns</div>
           <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
             {['Parent SKU','Product','Seller SKU','Image 1','Image 2','Image 3','Image 4','Image 5','Image 6','Image 7','Image 8','Variant Image','Variant Combo'].map(c => (

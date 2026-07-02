@@ -11,7 +11,7 @@ function FileInput({ label, required, onChange }) {
       <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
         {label} {required && <span style={{ color:'#dc2626' }}>*</span>}
       </label>
-      <label style={{
+      <label className="file-drop" style={{
         display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
         border:`1.5px dashed ${fileName ? '#16a34a' : '#e2e8f0'}`,
         borderRadius:8, cursor:'pointer',
@@ -54,7 +54,7 @@ export default function DarazUpload() {
     }
   }
 
-  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:28 }
+  const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
 
   return (
     <div>
@@ -112,10 +112,11 @@ export default function DarazUpload() {
         <button
           onClick={handleProcess}
           disabled={status === 'processing'}
+          className={status === 'processing' ? '' : 'btn-primary'}
           style={{
-            display:'flex', alignItems:'center', gap:8, padding:'11px 22px',
+            display:'flex', alignItems:'center', gap:8, padding:'12px 24px',
             background: status === 'processing' ? '#a5b4fc' : '#4f46e5',
-            color:'#fff', border:'none', borderRadius:8,
+            color:'#fff', border:'none', borderRadius:10,
             fontWeight:600, fontSize:14, marginTop:20,
             cursor: status === 'processing' ? 'not-allowed' : 'pointer',
           }}

@@ -229,7 +229,7 @@ export default function QC() {
               </span>
             )}
             {status !== 'processing' && (
-              <button onClick={handleRun} style={btn('#4f46e5','#fff')} disabled={!apiKey}>
+              <button onClick={handleRun} className="btn-primary" style={btn('#4f46e5','#fff')} disabled={!apiKey}>
                 <Upload size={13}/> {status==='paused' ? 'Continue' : 'Run QC Checks'}
               </button>
             )}
@@ -251,6 +251,7 @@ export default function QC() {
           <span style={{ fontSize:10.5, fontWeight:700, color:'#94a3b8', textTransform:'uppercase' }}>Checks:</span>
           {CHECK_TOGGLES.map(({ key, label }) => (
             <button key={key} onClick={() => setChecks(c => ({ ...c, [key]: !c[key] }))}
+              className="chip-toggle"
               style={{
                 padding:'4px 11px', borderRadius:999, fontSize:11, fontWeight:600, cursor:'pointer',
                 background: checks[key] ? '#eef2ff' : '#f1f5f9',
@@ -287,7 +288,7 @@ export default function QC() {
             <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px', marginBottom:10 }}>
               QC Input File <span style={{ color:'#dc2626' }}>*</span>
             </div>
-            <label style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 14px', border:'1.5px dashed #e2e8f0', borderRadius:8, cursor:'pointer', background:'#fafafa' }}>
+            <label className="file-drop" style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 14px', border:'1.5px dashed #cbd5e1', borderRadius:10, cursor:'pointer', background:'#fafafa' }}>
               <input key={inputKey} type="file" accept=".xlsx" style={{ display:'none' }} onChange={handleFile}/>
               <FileSpreadsheet size={16} color='#94a3b8'/>
               <span style={{ fontSize:13, color:'#94a3b8' }}>Choose Admin QC .xlsx file...</span>
@@ -321,7 +322,7 @@ export default function QC() {
 
               {/* Remove controls */}
               {selectedIds.size > 0 && (
-                <button onClick={removeSelected} style={btn('#dc2626','#fff')}>
+                <button onClick={removeSelected} className="btn-danger-grad" style={btn('#dc2626','#fff')}>
                   <Trash2 size={13}/> Remove Selected ({selectedIds.size})
                 </button>
               )}
@@ -350,15 +351,15 @@ export default function QC() {
                   <span style={{ fontSize:12, color:'#15803d', fontWeight:600 }}>
                     {uniqueRows.length - rejectCount} OK · {rejectCount} issues
                   </span>
-                  <button onClick={handleDownloadView} style={btn('#16a34a','#fff')}><Download size={13}/> Unique-QC View</button>
-                  <button onClick={handleDownloadPass} style={btn('#0369a1','#fff')}><Download size={13}/> QC Pass File</button>
+                  <button onClick={handleDownloadView} className="btn-success" style={btn('#16a34a','#fff')}><Download size={13}/> Unique-QC View</button>
+                  <button onClick={handleDownloadPass} className="btn-info" style={btn('#0369a1','#fff')}><Download size={13}/> QC Pass File</button>
                 </>
               )}
             </div>
 
             {/* ── Variant check table ── */}
             {view === 'variants' && (
-              <div style={{ background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, overflow:'auto', maxHeight:'calc(100vh - 210px)' }}>
+              <div className="table-modern" style={{ background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, overflow:'auto', maxHeight:'calc(100vh - 210px)' }}>
                 <table style={{ borderCollapse:'collapse', fontSize:12, width:'100%' }}>
                   <thead>
                     <tr>
@@ -414,7 +415,7 @@ export default function QC() {
 
             {/* ── Main table ── */}
             {view !== 'variants' && (
-              <div style={{ background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, overflow:'auto', maxHeight:'calc(100vh - 210px)' }}>
+              <div className="table-modern" style={{ background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, overflow:'auto', maxHeight:'calc(100vh - 210px)' }}>
                 <table style={{ borderCollapse:'collapse', fontSize:12, width:'100%', minWidth:1400 }}>
                   <thead>
                     <tr>
