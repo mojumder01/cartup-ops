@@ -59,10 +59,7 @@ export default function Layout() {
             style={{ height:32, display:'block', marginBottom:6 }}
           />
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
-              <span style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
-            </div>
+            <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
             <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)' }}>by muntasir</div>
           </div>
         </div>
@@ -86,6 +83,10 @@ export default function Layout() {
           {navItem('/governance', Shield,      'Governance', false)}
         </nav>
 
+        {/* Sidebar footer */}
+        <div style={{ padding:'10px 20px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
+          <span style={{ fontSize:10, color:'rgba(255,255,255,0.2)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
+        </div>
       </aside>
 
       {/* Main */}
