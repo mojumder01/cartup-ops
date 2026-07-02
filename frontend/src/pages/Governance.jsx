@@ -100,6 +100,7 @@ function PassProgress({ info, checks }) {
 export default function Governance() {
   const apiKey = getApiKey()
   const [file, setFile]           = useState(null)
+  const [fileInputKey, setFileInputKey] = useState(0)
   const [checkpoint, setCheckpoint] = useState(null)
   const [checks, setChecks]       = useState({ name:true, weight:true, highlights:true, description:true, category:true })
   const [status, setStatus]       = useState('')
@@ -159,7 +160,8 @@ export default function Governance() {
 
   const handleReset = () => {
     clearCheckpoint()
-    setFile(null); setCheckpoint(null); setStatus(''); setError(''); setPassInfo(null)
+    setFile(null); setFileInputKey(k => k + 1); setCheckpoint(null)
+    setStatus(''); setError(''); setPassInfo(null)
     setChecks({ name:true, weight:true, highlights:true, description:true, category:true })
   }
 
@@ -193,7 +195,7 @@ export default function Governance() {
             Required: <code style={{ background:'#f1f5f9', padding:'1px 5px', borderRadius:3 }}>Name</code> and <code style={{ background:'#f1f5f9', padding:'1px 5px', borderRadius:3 }}>SKU ID</code>.
             Optional: Description, Highlights
           </div>
-          <FileInputBox onChange={handleFileChange} checkpoint={checkpoint}/>
+          <FileInputBox key={fileInputKey} onChange={handleFileChange} checkpoint={checkpoint}/>
           {checkpoint && (
             <button onClick={handleClearCheckpoint} style={{ marginTop:6, background:'none', border:'none', fontSize:11, color:'#94a3b8', cursor:'pointer', padding:0, textDecoration:'underline' }}>
               Clear checkpoint &amp; start fresh
