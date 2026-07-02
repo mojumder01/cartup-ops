@@ -26,25 +26,40 @@ export default function Login() {
   }
 
   const inputStyle = {
-    width:'100%', padding:'10px 14px',
-    border:'1.5px solid #e2e8f0', borderRadius:'8px',
-    outline:'none', fontSize:'14px', transition:'border 0.15s',
+    width:'100%', padding:'11px 14px',
+    border:'1.5px solid #e2e8f0', borderRadius:'10px',
+    outline:'none', fontSize:'14px', background:'#fafbfc',
   }
 
   return (
-    <div style={{
+    <div className="login-bg" style={{
       minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center',
-      background:'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+      position:'relative', overflow:'hidden',
     }}>
-      <div style={{
-        background:'#fff', borderRadius:'16px', padding:'40px 36px',
-        width:'100%', maxWidth:'400px', boxShadow:'0 20px 60px rgba(0,0,0,0.3)',
+      {/* floating orbs */}
+      <div className="orb orb-1"/>
+      <div className="orb orb-2"/>
+      <div className="orb orb-3"/>
+
+      <div className="login-card" style={{
+        background:'rgba(255,255,255,0.96)', borderRadius:'20px', padding:'42px 38px',
+        width:'100%', maxWidth:'410px', position:'relative', zIndex:2,
+        boxShadow:'0 24px 80px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1)',
+        backdropFilter:'blur(12px)',
       }}>
-        <div style={{ textAlign:'center', marginBottom:'32px' }}>
-          <div style={{ fontSize:'28px', fontWeight:'800', color:'#1e1b4b' }}>
-            CartUp <span style={{ color:'#6366f1' }}>Ops</span>
+        <div style={{ textAlign:'center', marginBottom:'30px' }}>
+          <img
+            src="https://cartup.com/new/cartup-logo-voucher.svg"
+            alt="CartUp"
+            style={{ height:40, display:'block', margin:'0 auto 10px' }}
+          />
+          <div style={{ fontSize:'20px', fontWeight:'800', color:'#1e1b4b', letterSpacing:'-0.3px' }}>
+            CartUp <span style={{
+              background:'linear-gradient(90deg, #4f46e5, #a855f7)',
+              WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent',
+            }}>Ops</span>
           </div>
-          <div style={{ color:'#718096', fontSize:'13px', marginTop:'4px' }}>Team Operations Platform</div>
+          <div style={{ color:'#718096', fontSize:'13px', marginTop:'2px' }}>Catalog Team Platform</div>
         </div>
 
         <form onSubmit={handleSubmit}>
@@ -55,8 +70,6 @@ export default function Login() {
             <input
               type="email" value={email} onChange={e => setEmail(e.target.value)}
               placeholder="your@email.com" required style={inputStyle}
-              onFocus={e => e.target.style.borderColor='#6366f1'}
-              onBlur={e => e.target.style.borderColor='#e2e8f0'}
             />
           </div>
 
@@ -67,13 +80,11 @@ export default function Login() {
             <input
               type="password" value={password} onChange={e => setPassword(e.target.value)}
               placeholder="••••••••" required style={inputStyle}
-              onFocus={e => e.target.style.borderColor='#6366f1'}
-              onBlur={e => e.target.style.borderColor='#e2e8f0'}
             />
           </div>
 
           {error && (
-            <div style={{ background:'#fee2e2', color:'#dc2626', padding:'10px 14px', borderRadius:'8px', fontSize:'13px', marginBottom:'16px' }}>
+            <div className="anim-pop" style={{ background:'#fee2e2', color:'#dc2626', padding:'10px 14px', borderRadius:'10px', fontSize:'13px', marginBottom:'16px' }}>
               {error}
             </div>
           )}
@@ -81,17 +92,48 @@ export default function Login() {
           <button
             type="submit" disabled={loading}
             style={{
-              width:'100%', padding:'12px',
-              background: loading ? '#a5b4fc' : '#4f46e5',
-              color:'#fff', border:'none', borderRadius:'8px',
-              fontWeight:'600', fontSize:'15px', cursor: loading ? 'not-allowed' : 'pointer',
-              transition:'background 0.15s',
+              width:'100%', padding:'13px',
+              background: loading
+                ? '#a5b4fc'
+                : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+              color:'#fff', border:'none', borderRadius:'10px',
+              fontWeight:'700', fontSize:'15px', cursor: loading ? 'not-allowed' : 'pointer',
+              boxShadow:'0 8px 24px rgba(79,70,229,0.4)',
             }}
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
+
+        <div style={{ textAlign:'center', marginTop:'22px', fontSize:'11px', color:'#a0aec0' }}>
+          built by muntasir
+        </div>
       </div>
+
+      <style>{`
+        .login-bg {
+          background: linear-gradient(-45deg, #1e1b4b, #312e81, #3b1e6e, #1e1b4b);
+          background-size: 300% 300%;
+          animation: gradientShift 12s ease infinite;
+        }
+        @keyframes gradientShift {
+          0%   { background-position: 0% 50%; }
+          50%  { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        .login-card { animation: popIn 0.4s ease both; }
+        .orb {
+          position: absolute; border-radius: 50%; filter: blur(60px); opacity: 0.35; z-index: 1;
+          animation: float 9s ease-in-out infinite;
+        }
+        .orb-1 { width: 340px; height: 340px; background: #6366f1; top: -80px; left: -60px; }
+        .orb-2 { width: 260px; height: 260px; background: #a855f7; bottom: -60px; right: -40px; animation-delay: -3s; }
+        .orb-3 { width: 180px; height: 180px; background: #ec4899; top: 55%; left: 12%; animation-delay: -6s; }
+        @keyframes float {
+          0%, 100% { transform: translateY(0) scale(1); }
+          50%      { transform: translateY(-28px) scale(1.06); }
+        }
+      `}</style>
     </div>
   )
 }

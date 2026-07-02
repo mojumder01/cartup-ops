@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight, UserCircle } from 'lucide-react'
+import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight } from 'lucide-react'
 import { APP_VERSION } from '../version'
 
 export default function Layout() {
@@ -12,16 +12,20 @@ export default function Layout() {
   const handleLogout = () => { signOut(); navigate('/login') }
 
   const navItem = (to, Icon, label, soon, end = false) => (
-    <NavLink key={to} to={to} end={end}
+    <NavLink key={to} to={to} end={end} className="sb-item"
       style={({ isActive }) => ({
-        display:'flex', alignItems:'center', gap:10,
-        padding:'10px 20px',
-        color: isActive ? '#fff' : 'rgba(255,255,255,0.55)',
-        background: isActive ? 'rgba(99,102,241,0.25)' : 'transparent',
-        borderLeft: isActive ? '3px solid #818cf8' : '3px solid transparent',
-        transition:'all 0.15s', fontSize:13, fontWeight: isActive ? 600 : 400,
+        display:'flex', alignItems:'center', gap:11,
+        margin:'2px 10px', padding:'10px 13px',
+        borderRadius:10,
+        color: isActive ? '#fff' : 'rgba(255,255,255,0.6)',
+        background: isActive
+          ? 'linear-gradient(135deg, rgba(99,102,241,0.85), rgba(124,58,237,0.75))'
+          : 'transparent',
+        boxShadow: isActive ? '0 4px 14px rgba(99,102,241,0.35)' : 'none',
+        fontSize:13, fontWeight: isActive ? 600 : 500,
         textDecoration:'none',
         pointerEvents: soon ? 'none' : 'auto',
+        transition:'all 0.18s ease',
       })}
     >
       <Icon size={16} />
@@ -31,15 +35,15 @@ export default function Layout() {
   )
 
   const subItem = (to, label) => (
-    <NavLink key={to} to={to}
+    <NavLink key={to} to={to} className="sb-sub"
       style={({ isActive }) => ({
         display:'flex', alignItems:'center', gap:8,
-        padding:'8px 20px 8px 40px',
-        color: isActive ? '#c7d2fe' : 'rgba(255,255,255,0.38)',
-        background: isActive ? 'rgba(99,102,241,0.15)' : 'transparent',
-        borderLeft: isActive ? '3px solid #6366f1' : '3px solid transparent',
+        margin:'1px 10px 1px 26px', padding:'7px 12px',
+        borderRadius:8,
+        color: isActive ? '#c7d2fe' : 'rgba(255,255,255,0.42)',
+        background: isActive ? 'rgba(99,102,241,0.22)' : 'transparent',
         fontSize:12, fontWeight: isActive ? 600 : 400,
-        textDecoration:'none', transition:'all 0.15s',
+        textDecoration:'none', transition:'all 0.18s ease',
       })}
     >
       <ChevronRight size={11} />
@@ -50,38 +54,39 @@ export default function Layout() {
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
       {/* Sidebar — fixed height, always fully visible */}
-      <aside style={{ width:220, height:'100vh', background:'#1e1b4b', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto' }}>
+      <aside style={{
+        width:224, height:'100vh', flexShrink:0,
+        background:'linear-gradient(180deg, #1e1b4b 0%, #251f5c 55%, #2b1e63 100%)',
+        display:'flex', flexDirection:'column', overflowY:'auto',
+        boxShadow:'4px 0 24px rgba(30,27,75,0.25)',
+      }}>
         {/* Logo */}
-        <div style={{ padding:'20px 20px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ padding:'22px 20px 16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
           <img
             src="https://cartup.com/new/cartup-logo-voucher.svg"
             alt="CartUp"
-            style={{ height:32, display:'block', marginBottom:6 }}
+            style={{ height:32, display:'block', marginBottom:7 }}
           />
-          <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
+          <div style={{ fontSize:11, color:'rgba(255,255,255,0.45)', letterSpacing:'0.3px' }}>Catalog Team Platform</div>
         </div>
 
         {/* Nav */}
-        <nav className="sb-nav" style={{ flex:1, padding:'12px 0' }}>
+        <nav className="sb-nav" style={{ flex:1, padding:'14px 0' }}>
           {navItem('/', LayoutDashboard, 'Dashboard', false, true)}
-
-          {/* Production parent */}
           {navItem('/production', Upload, 'Production')}
-          {/* Sub-menu — visible when on production */}
           {onProd && (
             <>
               {subItem('/production/daraz',  'Daraz Upload')}
               {subItem('/production/manual', 'Manual Upload')}
             </>
           )}
-
           {navItem('/visual',     Image,       'Visual',     false)}
           {navItem('/qc',         CheckSquare, 'QC',         false)}
           {navItem('/governance', Shield,      'Governance', false)}
         </nav>
 
         {/* Sidebar footer */}
-        <div style={{ padding:'12px 20px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
+        <div style={{ padding:'14px 20px 16px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
           <div className="sb-credit">built by muntasir</div>
           <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace', marginTop:3 }}>v{APP_VERSION}</div>
         </div>
@@ -92,21 +97,25 @@ export default function Layout() {
         {/* Top bar */}
         <div style={{
           display:'flex', alignItems:'center', justifyContent:'flex-end',
-          padding:'10px 24px', borderBottom:'1px solid #e2e8f0',
-          background:'#fff', gap:12, flexShrink:0,
+          padding:'10px 24px', borderBottom:'1px solid rgba(226,232,240,0.8)',
+          background:'rgba(255,255,255,0.85)', backdropFilter:'blur(10px)',
+          gap:12, flexShrink:0, position:'sticky', top:0, zIndex:20,
         }}>
-          <NavLink to="/profile"
+          <NavLink to="/profile" className="tb-profile"
             style={({ isActive }) => ({
-              display:'flex', alignItems:'center', gap:7,
+              display:'flex', alignItems:'center', gap:8,
+              padding:'4px 10px 4px 4px', borderRadius:99,
               textDecoration:'none', fontSize:12,
-              color: isActive ? '#4f46e5' : '#64748b',
-              fontWeight: isActive ? 600 : 400,
+              background: isActive ? '#eef2ff' : 'transparent',
+              transition:'background 0.15s ease',
             })}
           >
             <div style={{
-              width:30, height:30, borderRadius:'50%', background: '#eef2ff',
+              width:32, height:32, borderRadius:'50%',
+              background:'linear-gradient(135deg, #4f46e5, #7c3aed)',
               display:'flex', alignItems:'center', justifyContent:'center',
-              color:'#4f46e5', fontWeight:700, fontSize:13, flexShrink:0,
+              color:'#fff', fontWeight:700, fontSize:13, flexShrink:0,
+              boxShadow:'0 2px 8px rgba(79,70,229,0.35)',
             }}>
               {(user?.name || user?.email || 'U')[0].toUpperCase()}
             </div>
@@ -117,8 +126,8 @@ export default function Layout() {
               <div style={{ fontSize:11, color:'#94a3b8' }}>Profile &amp; Settings</div>
             </div>
           </NavLink>
-          <button onClick={handleLogout} title="Logout"
-            style={{ background:'none', border:'1px solid #e2e8f0', borderRadius:7, color:'#94a3b8', padding:'6px 8px', cursor:'pointer', display:'flex', alignItems:'center' }}>
+          <button onClick={handleLogout} title="Logout" className="tb-logout"
+            style={{ background:'none', border:'1px solid #e2e8f0', borderRadius:9, color:'#94a3b8', padding:'7px 9px', cursor:'pointer', display:'flex', alignItems:'center' }}>
             <LogOut size={14} />
           </button>
         </div>
@@ -139,10 +148,18 @@ export default function Layout() {
           color: #a5b4fc;
           text-shadow: 0 0 12px rgba(129, 140, 248, 0.8);
         }
-        .sb-nav a:hover {
+        .sb-nav .sb-item:hover {
           color: #fff !important;
-          background: rgba(99, 102, 241, 0.35) !important;
+          background: rgba(99, 102, 241, 0.3) !important;
+          transform: translateX(3px);
         }
+        .sb-nav .sb-sub:hover {
+          color: #e0e7ff !important;
+          background: rgba(99, 102, 241, 0.18) !important;
+          transform: translateX(3px);
+        }
+        .tb-profile:hover { background: #eef2ff !important; }
+        .tb-logout:hover { color: #dc2626 !important; border-color: #fecaca !important; background: #fef2f2 !important; }
       `}</style>
     </div>
   )
