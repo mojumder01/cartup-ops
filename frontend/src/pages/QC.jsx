@@ -60,7 +60,12 @@ export default function QC() {
   const signalRef               = useRef({ paused:false })
 
   const uniqueRows  = useMemo(() => rows ? uniqueByProductId(rows) : [], [rows])
-  const variantRows = useMemo(() => (rows || []).filter(r => r['VariantName']), [rows])
+  const variantRows = useMemo(() => {
+    if (!rows) return []
+    const counts = {}
+    for (const r of rows) counts[r['ProductId']] = (counts[r['ProductId']] || 0) + 1
+    return rows.filter(r => counts[r['ProductId']] > 1)
+  }, [rows])
   const checksRun   = Object.keys(issues).length > 0
 
   const baseRows = view === 'unique' ? uniqueRows : view === 'variants' ? variantRows : (rows || [])
