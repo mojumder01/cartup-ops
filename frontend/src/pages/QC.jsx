@@ -112,14 +112,21 @@ export default function QC() {
 
   const handleFile = async e => {
     const f = e.target.files[0]
+    e.target.value = ''   // allow re-selecting the same file name later
     if (!f) return
-    setError(''); setIssues({}); setManualFlags({}); setReportEdit({}); setVariantOk({})
-    setStatus(''); setPassInfo(null); setFilters({}); setRemovedIds(new Set()); setSelectedIds(new Set())
+    // full state wipe — nothing from the previous file survives
+    setRows(null); setIssues({}); setManualFlags({}); setReportEdit({}); setVariantOk({})
+    setStatus(''); setError(''); setPassInfo(null); setFilters({})
+    setRemovedIds(new Set()); setSelectedIds(new Set()); setView('unique')
+    signalRef.current = { paused: true }  // stop any running checks from the old file
     try {
       const parsed = await readQcFile(f)
       if (!parsed.length) { setError('No valid rows found (ProductId required)'); return }
+      const cp = loadQcCheckpoint(f)
+      if (!cp) clearQcCheckpoint()   // old file's checkpoint — throw away
       setRows(parsed); setFileName(f.name); setFileObj(f)
-      setHasCheckpoint(!!loadQcCheckpoint(f))
+      setHasCheckpoint(!!cp)
+      setInputKey(k => k + 1)
     } catch(err) { setError('Failed to read file: ' + err.message) }
   }
 
@@ -227,6 +234,10 @@ export default function QC() {
             {status === 'processing' && (
               <button onClick={handlePause} style={btn('#fff','#d97706','#fde68a')}><Pause size={13}/> Pause</button>
             )}
+            <label style={{ ...btn('#fff','#4f46e5','#c7d2fe'), display:'flex' }}>
+              <input key={inputKey + '_new'} type="file" accept=".xlsx" style={{ display:'none' }} onChange={handleFile}/>
+              <FileSpreadsheet size={13}/> New File
+            </label>
             <button onClick={handleReset} style={btn('#fff','#94a3b8','#e2e8f0')}><RefreshCw size={12}/> Reset</button>
           </>
         )}
