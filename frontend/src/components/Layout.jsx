@@ -58,10 +58,7 @@ export default function Layout() {
             alt="CartUp"
             style={{ height:32, display:'block', marginBottom:6 }}
           />
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-            <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
-            <div className="sb-credit">by muntasir</div>
-          </div>
+          <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
         </div>
 
         {/* Nav */}
@@ -84,8 +81,9 @@ export default function Layout() {
         </nav>
 
         {/* Sidebar footer */}
-        <div style={{ padding:'10px 20px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
-          <span style={{ fontSize:10, color:'rgba(255,255,255,0.2)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
+        <div style={{ padding:'12px 20px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
+          <div className="sb-credit">built by muntasir</div>
+          <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace', marginTop:3 }}>v{APP_VERSION}</div>
         </div>
       </aside>
 
