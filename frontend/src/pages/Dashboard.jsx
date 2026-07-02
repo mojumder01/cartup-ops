@@ -26,18 +26,18 @@ const TEAMS = [
     icon: Image,
     color: '#d97706',
     bg: '#fef3c7',
-    desc: 'Asset upload, alt-text & visual tagging',
+    desc: 'SKU image + basic file → image output with variant mapping',
     path: '/visual',
-    active: false,
+    active: true,
   },
   {
     label: 'Governance',
     icon: Shield,
     color: '#7c3aed',
     bg: '#f5f3ff',
-    desc: 'Monitor team activity, reports & audit logs',
+    desc: 'AI pipeline — Name, Weight, Category, Highlights, Description',
     path: '/governance',
-    active: false,
+    active: true,
   },
 ]
 

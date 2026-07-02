@@ -58,9 +58,12 @@ export default function Layout() {
             alt="CartUp"
             style={{ height:32, display:'block', marginBottom:6 }}
           />
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
-            <span style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
+              <span style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>v{APP_VERSION}</span>
+            </div>
+            <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)' }}>by muntasir</div>
           </div>
         </div>
 
@@ -83,12 +86,6 @@ export default function Layout() {
           {navItem('/governance', Shield,      'Governance', false)}
         </nav>
 
-        {/* Sidebar footer */}
-        <div style={{ padding:'12px 20px 14px', borderTop:'1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{ fontSize:10, color:'rgba(255,255,255,0.2)', textAlign:'center' }}>
-            built by muntasir
-          </div>
-        </div>
       </aside>
 
       {/* Main */}
