@@ -4,7 +4,8 @@ import { processGovernanceFile, loadCheckpoint, clearCheckpoint } from '../utils
 import {
   Shield, FileSpreadsheet, CheckCircle, AlertCircle, Loader,
   Upload, Type, Weight, AlignLeft, AlignJustify, Tag,
-  ToggleLeft, ToggleRight, Pause, Play, RotateCcw,
+  ToggleLeft, ToggleRight, Pause, Play, RotateCcw, RefreshCw,
+  CheckSquare, Square,
 } from 'lucide-react'
 
 const CHECK_DEFS = [
@@ -156,6 +157,17 @@ export default function Governance() {
     clearCheckpoint(); setCheckpoint(null); setStatus(''); setPassInfo(null)
   }
 
+  const handleReset = () => {
+    clearCheckpoint()
+    setFile(null); setCheckpoint(null); setStatus(''); setError(''); setPassInfo(null)
+    setChecks({ name:true, weight:true, highlights:true, description:true, category:true })
+  }
+
+  const allChecked  = Object.values(checks).every(Boolean)
+  const noneChecked = Object.values(checks).every(v => !v)
+  const handleSelectAll   = () => setChecks({ name:true, weight:true, highlights:true, description:true, category:true })
+  const handleDeselectAll = () => setChecks({ name:false, weight:false, highlights:false, description:false, category:false })
+
   const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:12, padding:24, marginBottom:16 }
 
   return (
@@ -213,7 +225,23 @@ export default function Governance() {
 
         {/* Check toggles */}
         <div style={card}>
-          <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px', marginBottom:14 }}>Checks</div>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
+            <div style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px' }}>Checks</div>
+            <div style={{ display:'flex', gap:6 }}>
+              <button onClick={handleSelectAll} disabled={allChecked}
+                style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', fontSize:11, fontWeight:600,
+                  background: allChecked ? '#f1f5f9' : '#eef2ff', color: allChecked ? '#cbd5e1' : '#4f46e5',
+                  border:`1px solid ${allChecked ? '#e2e8f0' : '#c7d2fe'}`, borderRadius:6, cursor: allChecked ? 'default' : 'pointer' }}>
+                <CheckSquare size={12}/> All
+              </button>
+              <button onClick={handleDeselectAll} disabled={noneChecked}
+                style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', fontSize:11, fontWeight:600,
+                  background: noneChecked ? '#f1f5f9' : '#f8fafc', color: noneChecked ? '#cbd5e1' : '#64748b',
+                  border:`1px solid ${noneChecked ? '#e2e8f0' : '#cbd5e1'}`, borderRadius:6, cursor: noneChecked ? 'default' : 'pointer' }}>
+                <Square size={12}/> None
+              </button>
+            </div>
+          </div>
           <div style={{ display:'grid', gap:10 }}>
             {CHECK_DEFS.map(({ key, label, desc, note, color, bg, icon: Icon }) => (
               <div key={key} style={{
@@ -267,7 +295,7 @@ export default function Governance() {
         )}
 
         {/* Buttons */}
-        <div style={{ display:'flex', gap:10 }}>
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
           {status !== 'processing' && (
             <button onClick={handleRun} disabled={!anyChecked || !file}
               style={{
@@ -297,6 +325,12 @@ export default function Governance() {
                 <span style={{ fontSize:13, color:'#1d4ed8' }}>Processing...</span>
               </div>
             </>
+          )}
+          {status !== 'processing' && (
+            <button onClick={handleReset} title="Reset everything"
+              style={{ display:'flex', alignItems:'center', gap:6, padding:'11px 14px', background:'#fff', color:'#94a3b8', border:'1.5px solid #e2e8f0', borderRadius:8, fontWeight:600, fontSize:13, cursor:'pointer' }}>
+              <RefreshCw size={14}/> Reset
+            </button>
           )}
         </div>
 
