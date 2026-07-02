@@ -48,9 +48,9 @@ export default function Layout() {
   )
 
   return (
-    <div style={{ display:'flex', minHeight:'100vh' }}>
-      {/* Sidebar */}
-      <aside style={{ width:220, background:'#1e1b4b', display:'flex', flexDirection:'column', flexShrink:0 }}>
+    <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
+      {/* Sidebar — fixed height, always fully visible */}
+      <aside style={{ width:220, height:'100vh', background:'#1e1b4b', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto' }}>
         {/* Logo */}
         <div style={{ padding:'20px 20px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
           <img
@@ -88,7 +88,7 @@ export default function Layout() {
       </aside>
 
       {/* Main */}
-      <main style={{ flex:1, overflow:'auto', display:'flex', flexDirection:'column' }}>
+      <main style={{ flex:1, height:'100vh', overflow:'auto', display:'flex', flexDirection:'column' }}>
         {/* Top bar */}
         <div style={{
           display:'flex', alignItems:'center', justifyContent:'flex-end',
