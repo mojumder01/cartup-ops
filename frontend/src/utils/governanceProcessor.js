@@ -135,7 +135,7 @@ async function batchName(products, apiKey) {
   ).join('\n\n')
 
   const prompt = `You are a product data governance assistant. For EACH product:
-Clean the product name: remove duplicate/repeated words, translate any non-English to English. Keep ALL product info.
+Clean the product name: remove duplicate/repeated words, translate any non-English to English, fix ALL spelling mistakes (zero tolerance — every misspelled word must be corrected). Keep ALL product info. Do not change brand names or model codes.
 
 PRODUCTS:
 ${inputBlock}
@@ -290,10 +290,12 @@ async function batchHighlights(products, apiKey) {
 
   const prompt = `You are a product data governance assistant. For EACH product:
 Recreate highlights as clean <ul><li> HTML bullet points.
-- Use ONLY information present in Name and Description.
-- DO NOT add any information not in the source.
-- DO NOT remove any specification, feature, or information.
-- Fix formatting only.
+STRICT RULES:
+- Use ONLY information present in the given Name and Description — nothing else.
+- DO NOT add ANY AI-generated extra information, marketing phrases, invented specs, or assumptions.
+- DO NOT remove ANY specification, feature, measurement, or detail — every piece of source information must appear in the output.
+- Fix ALL spelling and grammar mistakes — ZERO TOLERANCE, every error must be corrected (brand names and model codes stay unchanged).
+- Fix formatting and HTML structure.
 
 PRODUCTS:
 ${inputBlock}
@@ -327,10 +329,12 @@ async function batchDescription(products, apiKey) {
 
   const prompt = `You are a product data governance assistant. For EACH product:
 Recreate description as clean <p> HTML paragraph(s).
-- Use ONLY information present in Name and Highlights.
-- DO NOT add any information not in the source.
-- DO NOT remove any specification, feature, or information.
-- Fix formatting only.
+STRICT RULES:
+- Use ONLY information present in the given Name and Highlights — nothing else.
+- DO NOT add ANY AI-generated extra information, marketing phrases, invented specs, or assumptions.
+- DO NOT remove ANY specification, feature, measurement, or detail — every piece of source information must appear in the output.
+- Fix ALL spelling and grammar mistakes — ZERO TOLERANCE, every error must be corrected (brand names and model codes stay unchanged).
+- Fix formatting and HTML structure.
 
 PRODUCTS:
 ${inputBlock}

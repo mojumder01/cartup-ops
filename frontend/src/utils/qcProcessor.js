@@ -1,9 +1,11 @@
 import * as XLSX from 'xlsx'
+import MAPPINGS from './mappings.json'
 
+const { cartup_map } = MAPPINGS
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
-const BATCH_SIZE = 10
+const BATCH_SIZE = 5   // smaller batch = more AI attention per product = better accuracy
 
 export const QC_COLUMNS = [
   'ProductId','SellerId','ShopName','CategoryId','CategoryPath','Name (English)',
@@ -148,16 +150,28 @@ export function basicChecks(row, checks, lists) {
 
 // ── AI check passes ───────────────────────────────────────────────────────────
 
-const SPELLING_RULES = `SPELLING RULES (zero tolerance for REAL mistakes, but):
+const SPELLING_RULES = `SPELLING RULES — LENIENT. Many sellers upload products, so minor issues are FORGIVEN. Only flag CLEAR, OBVIOUS misspellings that look unprofessional:
 - Report format exactly: "Spelling mistake: 'wrong' = 'correct'"
-- IGNORE plural/singular differences (e/es/s endings), brand names, model numbers, codes, abbreviations, transliterated Bangla words
-- IGNORE stylistic choices (colour/color, litre/liter)
-- Only flag words that are genuinely misspelled`
+- Flag ONLY obvious misspellings of common English words
+- FORGIVE: plural/singular slips (e/es/s), minor typos that don't hurt readability, stylistic variants (colour/color, litre/liter)
+- IGNORE: brand names, model numbers/codes, SKU codes, abbreviations, transliterated Bangla/local words
+EXAMPLES:
+- "Blander machine" → FLAG: Spelling mistake: 'Blander' = 'Blender' (obvious, looks bad)
+- "Stainles steel" → FLAG: Spelling mistake: 'Stainles' = 'Stainless'
+- "2 pcs knifes" → OK (minor plural slip — forgiven)
+- "BLZ-DSEI 01 model" → OK (model code)
+- "Janamaz prayer mat" → OK (transliterated local word)
+- "Xiaomi phone" → OK (brand name)`
 
-const GRAMMAR_RULES = `GRAMMAR RULES (light touch):
-- Only flag SERIOUS grammar errors that damage readability or meaning
-- IGNORE minor issues: missing articles, comma usage, sentence fragments in bullet lists, capitalization style
-- If grammar is understandable, return empty string`
+const GRAMMAR_RULES = `GRAMMAR RULES — VERY LENIENT (QC only flags, sellers won't be rejected for small slips):
+- Flag ONLY grammar so broken that the meaning is unclear or the listing looks unprofessional
+- Report format: "Grammar: short description"
+- FORGIVE: missing articles, comma issues, bullet fragments, capitalization, minor verb slips
+- If a normal buyer can understand it, return empty string
+EXAMPLES:
+- "It good product buy fast very nice quality cheap" → FLAG: Grammar: broken sentence, unclear
+- "This product are very good" → OK (minor slip — understandable)
+- "1.6 liter jar" (bullet fragment) → OK`
 
 async function checkNameBatch(rows, apiKey, context) {
   const input = rows.map((r, i) => `Product ${i + 1} (id:"${r['ProductId']}"): ${r['Name (English)']}`).join('\n')
@@ -174,26 +188,73 @@ Return ONLY a JSON array, no markdown:
   return map
 }
 
+// ── Category matching helpers (same technique as Production/Governance) ──────
+const ALL_CATS = Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+const CAT_SKIP = new Set(['the','and','for','with','from','this','that','other','products','size','color','type','pack','pcs','set','kit'])
+
+function catTokenize(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter(t => t.length > 1 && !CAT_SKIP.has(t))
+}
+
+function catScore(path, queryTokens) {
+  const segments = path.split('>').map(s => s.trim())
+  const leafTokens = catTokenize(segments[segments.length - 1])
+  const fullTokens = catTokenize(path)
+  let score = 0
+  for (const q of queryTokens) {
+    if (leafTokens.includes(q)) { score += 6; continue }
+    if (leafTokens.some(t => t.includes(q) || q.includes(t))) { score += 3; continue }
+    if (fullTokens.includes(q)) { score += 2; continue }
+    if (fullTokens.some(t => t.includes(q) || q.includes(t))) { score += 1 }
+  }
+  return score
+}
+
 async function checkCategoryBatch(rows, apiKey, context) {
+  // Step 1: AI describes the correct category in plain words (no list bias)
   const input = rows.map((r, i) =>
-    `Product ${i + 1} (id:"${r['ProductId']}"):\n Name: ${r['Name (English)']}\n Category: ${r['CategoryPath']}`
+    `Product ${i + 1} (id:"${r['ProductId']}"): ${r['Name (English)']}`
   ).join('\n')
-  const prompt = `You are a QC reviewer.${context ? ` These products are: ${context}.` : ''} For EACH product, score how well the assigned category matches the product name (confidence 0-100). If confidence < 60, it's a mismatch.
+  const prompt = `You are an e-commerce category expert.${context ? ` These products are: ${context}.` : ''} For EACH product, write the most specific category it belongs to in plain English (e.g. "uninterrupted power supply", "hair trimmers clippers", "prayer accessories muslim wear"). Think like a buyer browsing the site menu.
 
 ${input}
 
 Return ONLY a JSON array, no markdown:
-[{"id":"...","confidence":0,"suggested":""}] — "suggested" only when mismatch (short category description)`
-  const arr = parseJsonArray(await callGemini(prompt, apiKey))
+[{"id":"...","correct":"..."}]`
+
+  let descs = {}
+  try {
+    const arr = parseJsonArray(await callGemini(prompt, apiKey))
+    arr.forEach((it, i) => { descs[String(it.id || rows[i]?.['ProductId'])] = it.correct || '' })
+  } catch {
+    for (const r of rows) descs[r['ProductId']] = ''
+  }
+
+  // Step 2: local scoring — assigned path vs AI description, against the real 3815-category list
   const map = {}
-  arr.forEach((it, i) => {
-    const id = String(it.id || rows[i]?.['ProductId'])
-    const conf = Number(it.confidence ?? 0)
-    map[id] = conf < 60
-      ? `category mismatch (confidence ${conf}%${it.suggested ? `, suggest: ${it.suggested}` : ''})`
-      : ''
-    map[id + '__conf'] = conf
-  })
+  for (const r of rows) {
+    const pid = r['ProductId']
+    const desc = descs[pid] || r['Name (English)']
+    const qTokens = [...new Set([...catTokenize(desc), ...catTokenize(r['Name (English)']).slice(0, 6)])]
+    const assignedScore = catScore(r['CategoryPath'] || '', catTokenize(desc))
+
+    let best = null
+    for (const c of ALL_CATS) {
+      const s = catScore(c.path, qTokens)
+      if (!best || s > best.score) best = { ...c, score: s }
+    }
+
+    const conf = best && best.score > 0 ? Math.min(100, Math.round((assignedScore / Math.max(best.score * 0.5, 1)) * 50)) : 50
+    map[pid + '__conf'] = conf
+
+    // assigned category considered OK if it scores reasonably vs the best possible match
+    if (best && assignedScore < best.score * 0.35 && best.score >= 6) {
+      map[pid] = `category mismatch (confidence ${conf}%) — should be: ${best.path}`
+    } else {
+      map[pid] = ''
+    }
+  }
   return map
 }
 
@@ -258,13 +319,61 @@ Return ONLY a JSON array, no markdown:
   return map
 }
 
+async function checkWeightBatch(rows, apiKey, context) {
+  const input = rows.map((r, i) =>
+    `Product ${i + 1} (id:"${r['ProductId']}"): ${r['Name (English)']} — stated weight: ${r['Package Weight (kg)']} kg`
+  ).join('\n')
+  const prompt = `You are a QC reviewer.${context ? ` These products are: ${context}.` : ''} For EACH product, check if the stated package weight is REALISTIC for that product type.
+- Package weight includes packaging, so slightly higher than product weight is normal
+- Only flag if clearly wrong (e.g. blender 0.05 kg, phone case 5 kg)
+- If realistic, return empty string. If wrong: "unrealistic weight (X kg stated, expect ~Y kg)"
+
+${input}
+
+Return ONLY a JSON array, no markdown:
+[{"id":"...","issue":""}]`
+  const arr = parseJsonArray(await callGemini(prompt, apiKey))
+  const map = {}
+  arr.forEach((it, i) => { map[String(it.id || rows[i]?.['ProductId'])] = (it.issue || '').trim() })
+  return map
+}
+
 export const QC_PASS_DEFS = [
   { key:'name',        label:'Name (Spelling)', fn: checkNameBatch,        prefix:'Name' },
   { key:'category',    label:'Category Match',  fn: checkCategoryBatch,    prefix:'Category' },
+  { key:'weight',      label:'Weight (AI)',     fn: checkWeightBatch,      prefix:'Weight' },
   { key:'highlights',  label:'Highlights',      fn: checkHighlightsBatch,  prefix:'Highlights' },
   { key:'description', label:'Description',     fn: checkDescriptionBatch, prefix:'Description' },
   { key:'restricted',  label:'Restricted Items',fn: checkRestrictedBatch,  prefix:'Restricted' },
 ]
+
+// ── Spelling/grammar double-check: verify flagged issues to kill false positives ─
+async function verifyFlaggedIssues(flagged, apiKey, context) {
+  // flagged: [{pid, passKey, issue, name}]
+  const kept = new Set(flagged.map((_, i) => i))
+  for (let i = 0; i < flagged.length; i += 10) {
+    const batch = flagged.slice(i, i + 10)
+    const input = batch.map((f, j) =>
+      `Item ${j + 1}: Product: "${f.name}" — Flagged issue: ${f.issue}`
+    ).join('\n')
+    const prompt = `You are a senior QC verifier.${context ? ` These products are: ${context}.` : ''} For EACH flagged spelling/grammar issue below, VERIFY it is a REAL error:
+- Answer "yes" if it is genuinely a spelling/grammar mistake
+- Answer "no" if the flagged word is actually a brand name, model code, transliterated local word, acceptable variant, or the flag is wrong
+
+${input}
+
+Return ONLY a JSON array, no markdown:
+[{"item":1,"real":"yes"}]`
+    try {
+      const arr = parseJsonArray(await callGemini(prompt, apiKey))
+      for (const it of arr) {
+        const idx = i + (Number(it.item) - 1)
+        if (String(it.real).toLowerCase() !== 'yes' && idx >= 0 && idx < flagged.length) kept.delete(idx)
+      }
+    } catch { /* verification failed — keep original flags */ }
+  }
+  return flagged.filter((_, i) => kept.has(i))
+}
 
 // ── Checkpoint ────────────────────────────────────────────────────────────────
 const QC_CP_KEY = 'qc_checkpoint'
@@ -339,6 +448,28 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
       doneCount += batch.length
       onProgress({ pass: p + 1, totalPasses, label: pass.label, done: doneCount, total })
     }
+  }
+
+  // ── Final stage: verify spelling/grammar flags to remove false positives ──
+  const nameByPid = {}
+  for (const r of rows) nameByPid[r['ProductId']] = r['Name (English)']
+  const flagged = []
+  for (const key of ['name', 'highlights', 'description']) {
+    if (!checks[key] || !aiIssues[key]) continue
+    for (const [pid, issue] of Object.entries(aiIssues[key])) {
+      if (issue && /spelling mistake|grammar/i.test(issue)) {
+        flagged.push({ pid, passKey: key, issue, name: nameByPid[pid] || '' })
+      }
+    }
+  }
+  if (flagged.length) {
+    onProgress({ pass: totalPasses, totalPasses, label: 'Verifying flags', done: 0, total: flagged.length })
+    const kept = await verifyFlaggedIssues(flagged, apiKey, context)
+    const keptSet = new Set(kept.map(f => `${f.passKey}|${f.pid}`))
+    for (const f of flagged) {
+      if (!keptSet.has(`${f.passKey}|${f.pid}`)) aiIssues[f.passKey][f.pid] = ''
+    }
+    onProgress({ pass: totalPasses, totalPasses, label: 'Verifying flags', done: flagged.length, total: flagged.length })
   }
 
   clearQcCheckpoint()
