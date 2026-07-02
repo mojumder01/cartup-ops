@@ -60,12 +60,12 @@ export default function Layout() {
           />
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
             <div style={{ fontSize:11, color:'rgba(255,255,255,0.4)' }}>Catalog Team Platform</div>
-            <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)' }}>by muntasir</div>
+            <div className="sb-credit">by muntasir</div>
           </div>
         </div>
 
         {/* Nav */}
-        <nav style={{ flex:1, padding:'12px 0' }}>
+        <nav className="sb-nav" style={{ flex:1, padding:'12px 0' }}>
           {navItem('/', LayoutDashboard, 'Dashboard', false, true)}
 
           {/* Production parent */}
@@ -128,6 +128,24 @@ export default function Layout() {
           <Outlet />
         </div>
       </main>
+
+      <style>{`
+        .sb-credit {
+          font-size: 13px;
+          font-weight: 600;
+          color: #fff;
+          cursor: default;
+          transition: color 0.2s, text-shadow 0.2s;
+        }
+        .sb-credit:hover {
+          color: #a5b4fc;
+          text-shadow: 0 0 12px rgba(129, 140, 248, 0.8);
+        }
+        .sb-nav a:hover {
+          color: #fff !important;
+          background: rgba(99, 102, 241, 0.35) !important;
+        }
+      `}</style>
     </div>
   )
 }
