@@ -5,7 +5,15 @@ const { cartup_map } = MAPPINGS
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
-const BATCH_SIZE = 5   // smaller batch = more AI attention per product = better accuracy
+
+// batch size is user-configurable (smaller = better accuracy, more API calls)
+export function getQcBatchSize() {
+  const v = parseInt(localStorage.getItem('qc_batch_size'), 10)
+  return isNaN(v) ? 5 : Math.min(20, Math.max(1, v))
+}
+export function saveQcBatchSize(v) {
+  try { localStorage.setItem('qc_batch_size', String(Math.min(20, Math.max(1, v)))) } catch {}
+}
 
 export const QC_COLUMNS = [
   'ProductId','SellerId','ShopName','CategoryId','CategoryPath','Name (English)',
@@ -428,12 +436,13 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
     let doneCount = total - pending.length
     onProgress({ pass: p + 1, totalPasses, label: pass.label, done: doneCount, total })
 
-    for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+    const batchSize = getQcBatchSize()
+    for (let i = 0; i < pending.length; i += batchSize) {
       if (signal?.paused) {
         saveQcCheckpoint(file, aiIssues, confidence)
         return { paused: true, issuesByProduct: buildResult(), confidence }
       }
-      const batch = pending.slice(i, i + BATCH_SIZE)
+      const batch = pending.slice(i, i + batchSize)
       try {
         const map = await pass.fn(batch, apiKey, context)
         for (const r of batch) {

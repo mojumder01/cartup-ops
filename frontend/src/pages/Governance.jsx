@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 import { getApiKey } from '../utils/gemini'
-import { processGovernanceFile, loadCheckpoint, clearCheckpoint } from '../utils/governanceProcessor'
+import { processGovernanceFile, loadCheckpoint, clearCheckpoint, getGovBatchSize, saveGovBatchSize } from '../utils/governanceProcessor'
 import {
   Shield, FileSpreadsheet, CheckCircle, AlertCircle, Loader,
   Upload, Type, Weight, AlignLeft, AlignJustify, Tag,
@@ -110,6 +110,7 @@ export default function Governance() {
   const [status, setStatus]       = useState('')
   const [passInfo, setPassInfo]   = useState(null)
   const [error, setError]         = useState('')
+  const [batchSize, setBatchSize] = useState(getGovBatchSize())
   const signalRef                 = useRef({ paused:false })
 
   const toggleCheck = key => setChecks(c => ({ ...c, [key]: !c[key] }))
@@ -342,8 +343,24 @@ export default function Governance() {
           )}
         </div>
 
+        {/* Batch size control */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginTop:14, padding:'10px 14px', background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:8 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:'#64748b', textTransform:'uppercase' }}>Batch Size</span>
+          <input type="number" min={1} max={20} value={batchSize}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10)
+              if (!isNaN(v)) { setBatchSize(v); saveGovBatchSize(v) }
+            }}
+            style={{ width:52, padding:'5px 8px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:7, outline:'none', background:'#fff', textAlign:'center' }}/>
+          <span style={{ fontSize:11, color:'#94a3b8', lineHeight:1.5 }}>
+            ছোট (1-5) = বেশি accuracy, বেশি API call (ধীর, quota তাড়াতাড়ি শেষ) ·
+            বড় (10-20) = দ্রুত, কম call, কিন্তু accuracy কমে ·
+            Recommended: ছোট file 5, বড় file (5k+) 10
+          </span>
+        </div>
+
         <div style={{ marginTop:10, fontSize:11, color:'#94a3b8' }}>
-          Saves after every 10 products. Output downloads only when all passes complete.
+          Progress saves after every batch. Output downloads only when all passes complete.
         </div>
       </div>
 

@@ -6,7 +6,14 @@ const { cartup_map } = MAPPINGS
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
-const BATCH_SIZE = 10
+// batch size is user-configurable (smaller = better accuracy, more API calls)
+export function getGovBatchSize() {
+  const v = parseInt(localStorage.getItem('gov_batch_size'), 10)
+  return isNaN(v) ? 10 : Math.min(20, Math.max(1, v))
+}
+export function saveGovBatchSize(v) {
+  try { localStorage.setItem('gov_batch_size', String(Math.min(20, Math.max(1, v)))) } catch {}
+}
 const CHECKPOINT_KEY = 'gov_checkpoint'
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
@@ -194,13 +201,19 @@ Return ONLY a JSON array, no markdown:
   }
 }
 
+function descExcerpt(html) {
+  return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150)
+}
+
 async function batchCategory(products, apiKey) {
-  // products: [{sku, name}]
+  // products: [{sku, name, description?}]
 
   // ── Step 1: AI gives 3 targeted search queries per product ────────────────
-  const step1Input = products.map((p, i) =>
-    `Product ${i + 1} (sku:"${p.sku}"): ${p.name || '(empty)'}`
-  ).join('\n')
+  // description excerpt gives extra signal for ambiguous names
+  const step1Input = products.map((p, i) => {
+    const d = descExcerpt(p.description)
+    return `Product ${i + 1} (sku:"${p.sku}"): ${p.name || '(empty)'}${d ? `\n  About: ${d}` : ''}`
+  }).join('\n')
 
   const step1Prompt = `You are an e-commerce marketplace category expert for CartUp.pk (Pakistan, similar to Daraz).
 
@@ -256,11 +269,11 @@ ${step2Input}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","category_id":"...","category_path":"..."}]`
 
+  let map = {}
   try {
     const raw2 = await callGemini(step2Prompt, apiKey)
     const clean2 = raw2.replace(/```json|```/g, '').trim()
     const arr2 = JSON.parse(clean2.match(/\[[\s\S]*\]/)[0])
-    const map = {}
     for (let i = 0; i < arr2.length; i++) {
       const item = arr2[i]
       const sku = String(item.sku || products[i]?.sku || '')
@@ -276,10 +289,36 @@ Return ONLY a JSON array, no markdown:
     for (const p of products) {
       if (!map[p.sku]) map[p.sku] = { category_id: '', category_path: '', category_error: 'Missing from response' }
     }
-    return map
   } catch (err) {
     return Object.fromEntries(products.map(p => [p.sku, { category_id: '', category_path: '', category_error: err.message }]))
   }
+
+  // ── Step 4: Verify picks — catch wrong matches before they reach output ───
+  const picked = products.filter(p => map[p.sku]?.category_id)
+  if (picked.length) {
+    const verifyInput = picked.map((p, i) =>
+      `Item ${i + 1} (sku:"${p.sku}"): Product: "${p.name}" → Assigned: "${map[p.sku].category_path}"`
+    ).join('\n')
+    const verifyPrompt = `You are a strict category auditor. For EACH item, does the assigned category genuinely fit the product? Answer "yes" or "no". Say "no" ONLY if the category is clearly wrong for this product type.
+
+${verifyInput}
+
+Return ONLY a JSON array, no markdown:
+[{"sku":"...","ok":"yes"}]`
+    try {
+      const rawV = await callGemini(verifyPrompt, apiKey)
+      const cleanV = rawV.replace(/```json|```/g, '').trim()
+      const arrV = JSON.parse(cleanV.match(/\[[\s\S]*\]/)[0])
+      for (let i = 0; i < arrV.length; i++) {
+        const sku = String(arrV[i].sku || picked[i]?.sku || '')
+        if (sku && String(arrV[i].ok).toLowerCase() === 'no' && map[sku]) {
+          map[sku].category_error = `Low confidence — verify manually (suggested: ${map[sku].category_path})`
+        }
+      }
+    } catch { /* verify failed — keep picks as-is */ }
+  }
+
+  return map
 }
 
 async function batchHighlights(products, apiKey) {
@@ -365,7 +404,8 @@ async function runPass(passNum, totalPasses, label, checkKey, products, batchFn,
   const pending = products.filter(p => !alreadyDone.has(p.sku))
   const results = {}
   const batches = []
-  for (let i = 0; i < pending.length; i += BATCH_SIZE) batches.push(pending.slice(i, i + BATCH_SIZE))
+  const batchSize = getGovBatchSize()
+  for (let i = 0; i < pending.length; i += batchSize) batches.push(pending.slice(i, i + batchSize))
 
   let done = products.length - pending.length
   // checkpoint key must match what processGovernanceFile reads back on resume
@@ -466,6 +506,12 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
         sku: p.sku,
         cleanedName:    results.name[p.sku] || p.name,
         fixedHighlights: results.highlights[p.sku] || p.highlights,
+      }))
+    } else if (checkKey === 'category') {
+      passProducts = products.map(p => ({
+        sku: p.sku,
+        name: results.name[p.sku] || p.name,
+        description: p.description,
       }))
     } else {
       passProducts = products.map(p => ({ sku: p.sku, name: results.name[p.sku] || p.name }))

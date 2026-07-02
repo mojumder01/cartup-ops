@@ -5,6 +5,7 @@ import {
   buildQcViewFile, buildQcPassFile,
   getQcLists, saveQcLists, DEFAULT_LISTS,
   loadQcCheckpoint, clearQcCheckpoint,
+  getQcBatchSize, saveQcBatchSize,
 } from '../utils/qcProcessor'
 import {
   CheckSquare, FileSpreadsheet, CheckCircle, AlertCircle, Upload,
@@ -70,6 +71,7 @@ export default function QC() {
   const [removeText, setRemoveText]   = useState('')
   const [listsModal, setListsModal]   = useState(null)  // {competitors, restrictedKeywords} strings
   const [hasCheckpoint, setHasCheckpoint] = useState(false)
+  const [batchSize, setBatchSize] = useState(getQcBatchSize())
   const [fileObj, setFileObj]   = useState(null)
   const [inputKey, setInputKey] = useState(0)
   const signalRef               = useRef({ paused:false })
@@ -262,6 +264,18 @@ export default function QC() {
           <input value={context} onChange={e => setContext(e.target.value)}
             placeholder="Product type / category context (e.g. kitchen appliances) — helps AI accuracy"
             style={{ flex:1, minWidth:220, padding:'6px 12px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none', background:'#fff' }}/>
+          <div style={{ width:1, height:20, background:'#e2e8f0', margin:'0 4px' }}/>
+          <span style={{ fontSize:10.5, fontWeight:700, color:'#94a3b8', textTransform:'uppercase' }}
+            title={'BATCH SIZE — কত products একসাথে AI-কে পাঠানো হবে:\n\n• ছোট (1-5): প্রতি product-এ AI-র বেশি মনোযোগ = বেশি accuracy। কিন্তু API call বেশি = ধীর, daily quota তাড়াতাড়ি শেষ।\n\n• বড় (10-20): কম API call = দ্রুত, quota বাঁচে। কিন্তু AI মাঝে মাঝে শেষের product গুলোতে মনোযোগ হারায় = accuracy কমে।\n\n• Recommended: ছোট file (<200) হলে 5, বড় file হলে 10।'}>
+            Batch: ⓘ
+          </span>
+          <input type="number" min={1} max={20} value={batchSize}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10)
+              if (!isNaN(v)) { setBatchSize(v); saveQcBatchSize(v) }
+            }}
+            title="Small = accurate but slow (more API calls) · Large = fast but less accurate"
+            style={{ width:52, padding:'6px 8px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none', background:'#fff', textAlign:'center' }}/>
         </div>
       )}
 
