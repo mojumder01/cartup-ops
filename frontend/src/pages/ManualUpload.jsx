@@ -13,6 +13,7 @@ export default function ManualUpload() {
 
   const handleFile = e => {
     const f = e.target.files[0]
+    e.target.value = ''   // allow re-selecting the same file name
     if (f) { setFile(f); setFileName(f.name); setStatus(''); setError('') }
   }
 

@@ -17,7 +17,11 @@ function FileInput({ label, hint, onChange }) {
         background: fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept=".xlsx" style={{ display:'none' }}
-          onChange={e => { const f = e.target.files[0]; if(f){ setFileName(f.name); onChange(f) } }}
+          onChange={e => {
+            const f = e.target.files[0]
+            e.target.value = ''   // allow re-selecting the same file name
+            if(f){ setFileName(f.name); onChange(f) }
+          }}
         />
         {fileName
           ? <><CheckCircle size={16} color='#16a34a' /><span style={{ fontSize:13, color:'#16a34a', fontWeight:500 }}>{fileName}</span></>

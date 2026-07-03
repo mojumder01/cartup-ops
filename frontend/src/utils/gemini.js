@@ -136,9 +136,17 @@ export async function processAndCategoriseBatch(products, cartupCategories, apiK
   ).join('\n\n')
 
   const prompt = `You are an e-commerce product data processor. For EACH product below:
-1. Clean the name: fix typos, remove duplicate words. Do NOT change product type/color/attributes.
-2. highlights: Convert ALL existing specs/features into <ul><li> HTML bullets. KEEP EVERY piece of information — do NOT summarize, merge, or drop any spec. Remove only: non-Latin chars, hashtags, clearly empty items. If input is empty, create bullets from the name only.
-3. description: Convert ALL existing text into clean <p> HTML paragraphs. PRESERVE ALL information — do NOT summarize or shorten. Remove only: non-Latin chars, obvious boilerplate ("click add to cart", "contact us" etc). If input is empty, write 2 sentences from the name only.
+1. Clean the name: fix ALL spelling mistakes (zero tolerance), remove duplicate words, translate non-English to English. Do NOT change product type/color/attributes, brand names, or model codes.
+2. highlights: Recreate as <ul><li> HTML bullets. STRICT RULES:
+   - Use ONLY information present in the given Name/Highlights/Description — nothing else.
+   - DO NOT add ANY AI-generated extra information, marketing phrases, invented specs, or assumptions.
+   - DO NOT remove ANY specification, feature, measurement, or detail — every piece of source information must appear in the output.
+   - Fix ALL spelling and grammar mistakes — zero tolerance (brand names and model codes stay unchanged).
+   - Remove only: non-Latin chars, hashtags, clearly empty items. If input is empty, create bullets from the name only.
+3. description: Recreate as clean <p> HTML paragraphs. Same STRICT RULES as highlights:
+   - Use ONLY given information. DO NOT add anything AI-generated. DO NOT remove any spec/detail.
+   - Fix ALL spelling and grammar — zero tolerance.
+   - Remove only: non-Latin chars, obvious boilerplate ("click add to cart", "contact us" etc). If input is empty, write 2 sentences from the name only.
 4. category_id + category_path: Pick the BEST matching category from the list below.
 
 PRODUCTS:
@@ -201,7 +209,10 @@ export async function processProductsBatch(products, apiKey) {
     `Product ${i + 1} (id: "${p.pid}"):\nName: ${p.name || '(empty)'}\nHighlights: ${p.highlights || '(empty)'}\nDescription: ${p.description || '(empty)'}`
   ).join('\n\n')
   const prompt = `You are cleaning e-commerce product data. Process ALL ${products.length} products below and return ONLY a JSON array, no markdown, no explanation.
-RULES: 1. name: fix typos, remove duplicate words. 2. highlights: <ul><li> HTML — KEEP ALL specs/features, do NOT summarize or drop any information, remove only non-Latin chars/hashtags/empty items; if empty create bullets from name. 3. description: <p> HTML — PRESERVE ALL existing text, do NOT shorten, remove only non-Latin chars and obvious boilerplate ("click add to cart" etc); if empty write 2 sentences from name.
+STRICT RULES:
+1. name: fix ALL spelling mistakes (zero tolerance), remove duplicate words. Brand names and model codes stay unchanged.
+2. highlights: <ul><li> HTML — use ONLY given information, DO NOT add any AI-generated info/marketing/invented specs, DO NOT remove any spec/feature/measurement/detail, fix ALL spelling+grammar (zero tolerance), remove only non-Latin chars/hashtags/empty items; if empty create bullets from name.
+3. description: <p> HTML — use ONLY given information, DO NOT add anything AI-generated, DO NOT remove any spec/detail, fix ALL spelling+grammar (zero tolerance), remove only non-Latin chars and obvious boilerplate ("click add to cart" etc); if empty write 2 sentences from name.
 ${inputBlock}
 Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
   try {

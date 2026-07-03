@@ -18,7 +18,11 @@ function FileInput({ label, required, onChange }) {
         background: fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept=".xlsx" style={{ display:'none' }}
-          onChange={e => { const f = e.target.files[0]; if(f){ setFileName(f.name); onChange(f) } }}
+          onChange={e => {
+            const f = e.target.files[0]
+            e.target.value = ''   // allow re-selecting the same file name
+            if(f){ setFileName(f.name); onChange(f) }
+          }}
         />
         {fileName
           ? <><CheckCircle size={16} color='#16a34a' /><span style={{ fontSize:13, color:'#16a34a', fontWeight:500 }}>{fileName}</span></>
@@ -74,11 +78,11 @@ export default function DarazUpload() {
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 20px' }}>
-          <FileInput label="Price / Stock file" required onChange={f => setFiles(p => ({...p, price:f}))} />
-          <FileInput label="Basic file"          required onChange={f => setFiles(p => ({...p, basic:f}))} />
-          <FileInput label="Weight file"         required onChange={f => setFiles(p => ({...p, weight:f}))} />
-          <FileInput label="SKU Image file"      required onChange={f => setFiles(p => ({...p, skuimg:f}))} />
-          <FileInput label="Attribute file (optional)" onChange={f => setFiles(p => ({...p, attr:f}))} />
+          <FileInput label="Price / Stock file" required onChange={f => { setFiles(p => ({...p, price:f})); setStatus(''); setError('') }} />
+          <FileInput label="Basic file"          required onChange={f => { setFiles(p => ({...p, basic:f})); setStatus(''); setError('') }} />
+          <FileInput label="Weight file"         required onChange={f => { setFiles(p => ({...p, weight:f})); setStatus(''); setError('') }} />
+          <FileInput label="SKU Image file"      required onChange={f => { setFiles(p => ({...p, skuimg:f})); setStatus(''); setError('') }} />
+          <FileInput label="Attribute file (optional)" onChange={f => { setFiles(p => ({...p, attr:f})); setStatus(''); setError('') }} />
         </div>
 
         {apiKey && (
