@@ -36,6 +36,7 @@ export function classifyColumns(headers) {
   const isHi      = h => /highlight/i.test(h)
   const isDesc    = h => /description/i.test(h)
   const isWeight  = h => /weight/i.test(h)
+  const isPrice   = h => /price|mrp/i.test(h)
   const isName    = h => /name/i.test(h)
   const isId      = h => /product\s*id/i.test(norm(h))
   const isSku     = h => /\bsku\b/i.test(h)
@@ -44,6 +45,7 @@ export function classifyColumns(headers) {
   const highlightCols   = headers.filter(isHi)
   const descriptionCols = headers.filter(isDesc)
   const weightCol       = headers.find(isWeight) || null
+  const priceCols       = headers.filter(isPrice)
 
   const nameCandidates = headers.filter(isName)
   const nameCol = nameCandidates.find(h => /english/i.test(h))
@@ -52,10 +54,10 @@ export function classifyColumns(headers) {
 
   const idCol = headers.find(isId) || headers.find(isSku) || headers[0] || null
 
-  const shown = new Set([idCol, nameCol, weightCol, ...imageCols, ...highlightCols, ...descriptionCols].filter(Boolean))
+  const shown = new Set([idCol, nameCol, weightCol, ...imageCols, ...highlightCols, ...descriptionCols, ...priceCols].filter(Boolean))
   const otherCols = headers.filter(h => !shown.has(h))
 
-  return { idCol, nameCol, imageCols, highlightCols, descriptionCols, weightCol, otherCols }
+  return { idCol, nameCol, imageCols, highlightCols, descriptionCols, weightCol, priceCols, otherCols }
 }
 
 // Heuristic score to auto-pick the "real" product sheet when a file has several

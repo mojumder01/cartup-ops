@@ -24,6 +24,21 @@ function shortGroupLabel(header) {
 
 const PAGE_SIZE = 100
 
+// Focused check modes — each shows only the columns needed to make that call,
+// plus one-click tags so a report can be written without typing every time.
+const MODES = [
+  { key:'all',     label:'All Fields' },
+  { key:'image',   label:'Image Check' },
+  { key:'weight',  label:'Weight Check' },
+  { key:'content', label:'Content Check' },
+]
+const PRESET_TAGS = {
+  image:   ['Missing', 'Blurry / low-res', 'Wrong product', 'Watermark / text'],
+  weight:  ['Missing / invalid', 'Too light', 'Too heavy', 'Price mismatch'],
+  content: ['Spelling', 'Grammar', 'Empty / missing', 'Too short', 'Duplicate'],
+}
+function tagsOf(text) { return String(text || '').split(';').map(s => s.trim()).filter(Boolean) }
+
 export default function GovernanceDataViz() {
   const [wb, setWb]           = useState(null)   // { sheetNames, sheets }
   const [fileName, setFileName] = useState('')
@@ -36,8 +51,14 @@ export default function GovernanceDataViz() {
   const [modal, setModal]     = useState(null)   // {kind:'image'|'text', rid, col, group}
   const [error, setError]     = useState('')
   const [inputKey, setInputKey] = useState(0)
+  const [mode, setMode]       = useState('all')  // 'all' | 'image' | 'weight' | 'content'
 
   const classify = useMemo(() => classifyColumns(headers), [headers])
+  const showWeight      = mode === 'all' || mode === 'weight'
+  const showPrice       = (mode === 'all' || mode === 'weight') && classify.priceCols.length > 0
+  const showHighlights  = mode === 'all' || mode === 'content'
+  const showDescription = mode === 'all' || mode === 'content'
+  const presetTags      = PRESET_TAGS[mode] || null
   const ridIndex = useMemo(() => { const m = {}; rows.forEach((r, i) => { m[r.__rid] = i }); return m }, [rows])
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
   const pageRows = useMemo(() => rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE), [rows, page])
@@ -87,6 +108,14 @@ export default function GovernanceDataViz() {
     const n = new Set(s); n.has(rid) ? n.delete(rid) : n.add(rid); return n
   })
 
+  // one-click preset tag — toggles the tag in/out of that row's report text
+  const toggleTag = (rid, tag) => setReport(rp => {
+    const tags = tagsOf(rp[rid])
+    const idx = tags.indexOf(tag)
+    idx >= 0 ? tags.splice(idx, 1) : tags.push(tag)
+    return { ...rp, [rid]: tags.join('; ') }
+  })
+
   const handleDownload = () => {
     download(buildDataVizFile(headers, rows, report, sheetName), 'governance_dataviz_' + (fileName.replace(/\.xlsx$/i, '') || 'output') + '.xlsx')
   }
@@ -96,6 +125,9 @@ export default function GovernanceDataViz() {
   const modalGroupCols = modal?.group === 'highlight' ? classify.highlightCols
     : modal?.group === 'description' ? classify.descriptionCols
     : classify.imageCols
+  const modalPresetTags = modal?.kind === 'image' ? PRESET_TAGS.image
+    : modal?.kind === 'text' ? PRESET_TAGS.content
+    : null
 
   const navModalRow = dir => {
     setModal(m => {
@@ -139,6 +171,30 @@ export default function GovernanceDataViz() {
           </>
         )}
       </div>
+
+      {/* Check mode — shows only the columns needed for that kind of review */}
+      {rows.length > 0 && (
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+          <span style={{ fontSize:11, color:'#94a3b8', fontWeight:700, textTransform:'uppercase' }}>Check:</span>
+          <div style={{ display:'flex', gap:4, background:'#f1f5f9', borderRadius:9, padding:3 }}>
+            {MODES.map(m => (
+              <button key={m.key} onClick={() => setMode(m.key)}
+                style={{ padding:'6px 14px', borderRadius:7, fontSize:12, fontWeight:600, border:'none', cursor:'pointer',
+                  background: mode === m.key ? '#fff' : 'transparent', color: mode === m.key ? '#4f46e5' : '#718096',
+                  boxShadow: mode === m.key ? '0 1px 4px rgba(0,0,0,0.08)' : 'none', transition:'all 0.15s' }}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {mode !== 'all' && (
+            <span style={{ fontSize:11, color:'#94a3b8' }}>
+              Showing ID, Name{classify.imageCols.length ? ', Image' : ''}
+              {mode === 'weight' ? ', Weight' + (showPrice ? ', Price' : '') : ''}
+              {mode === 'content' ? ', Highlights, Description' : ''} only
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Sheet selector + stats */}
       {wb && wb.sheetNames.length > 1 && (
@@ -197,9 +253,10 @@ export default function GovernanceDataViz() {
                   {classify.idCol && <th style={th}>{classify.idCol}</th>}
                   {classify.imageCols.length > 0 && <th style={th}><ImageIcon size={11} style={{ display:'inline', marginRight:4 }}/>Image</th>}
                   {classify.nameCol && <th style={th}>{classify.nameCol}</th>}
-                  {classify.weightCol && <th style={th}><WeightIcon size={11} style={{ display:'inline', marginRight:4 }}/>Weight</th>}
-                  {classify.highlightCols.length > 0 && <th style={th}>Highlights</th>}
-                  {classify.descriptionCols.length > 0 && <th style={th}>Description</th>}
+                  {classify.weightCol && showWeight && <th style={th}><WeightIcon size={11} style={{ display:'inline', marginRight:4 }}/>Weight</th>}
+                  {showPrice && classify.priceCols.map(c => <th key={c} style={th}>{c}</th>)}
+                  {classify.highlightCols.length > 0 && showHighlights && <th style={th}>Highlights</th>}
+                  {classify.descriptionCols.length > 0 && showDescription && <th style={th}>Description</th>}
                   <th style={th}>Report</th>
                   <th style={th}></th>
                 </tr>
@@ -231,13 +288,19 @@ export default function GovernanceDataViz() {
                             <input value={getVal(headers, r, classify.nameCol)} onChange={e => updateCell(rid, classify.nameCol, e.target.value)} style={cellIn}/>
                           </td>
                         )}
-                        {classify.weightCol && (
+                        {classify.weightCol && showWeight && (
                           <td style={{ ...td, width:90 }}>
                             <input value={getVal(headers, r, classify.weightCol)} onChange={e => updateCell(rid, classify.weightCol, e.target.value)}
                               style={{ ...cellIn, textAlign:'center' }}/>
                           </td>
                         )}
-                        {classify.highlightCols.length > 0 && (
+                        {showPrice && classify.priceCols.map(c => (
+                          <td key={c} style={{ ...td, width:100 }}>
+                            <input value={getVal(headers, r, c)} onChange={e => updateCell(rid, c, e.target.value)}
+                              style={{ ...cellIn, textAlign:'center' }}/>
+                          </td>
+                        ))}
+                        {classify.highlightCols.length > 0 && showHighlights && (
                           <td style={td}>
                             <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
                               {classify.highlightCols.map(c => {
@@ -253,7 +316,7 @@ export default function GovernanceDataViz() {
                             </div>
                           </td>
                         )}
-                        {classify.descriptionCols.length > 0 && (
+                        {classify.descriptionCols.length > 0 && showDescription && (
                           <td style={td}>
                             <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
                               {classify.descriptionCols.map(c => {
@@ -269,10 +332,25 @@ export default function GovernanceDataViz() {
                             </div>
                           </td>
                         )}
-                        <td style={{ ...td, minWidth:200 }}>
+                        <td style={{ ...td, minWidth:220 }}>
                           <input value={rpt} onChange={e => setReport(rp => ({ ...rp, [rid]: e.target.value }))}
                             placeholder="Add note / report..."
                             style={{ ...cellIn, background: rpt.trim() ? '#fffbeb' : '#fff', borderColor: rpt.trim() ? '#fde68a' : '#e2e8f0' }}/>
+                          {presetTags && (
+                            <div style={{ display:'flex', gap:3, flexWrap:'wrap', marginTop:4 }}>
+                              {presetTags.map(tag => {
+                                const active = tagsOf(rpt).includes(tag)
+                                return (
+                                  <button key={tag} onClick={() => toggleTag(rid, tag)}
+                                    style={{ padding:'2px 7px', fontSize:9.5, fontWeight:600, borderRadius:5, cursor:'pointer',
+                                      background: active ? '#dc2626' : '#f8fafc', color: active ? '#fff' : '#94a3b8',
+                                      border:`1px solid ${active ? '#dc2626' : '#e2e8f0'}` }}>
+                                    {tag}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
                         </td>
                         <td style={{ ...td, width:30 }}>
                           {classify.otherCols.length > 0 && (
@@ -389,11 +467,28 @@ export default function GovernanceDataViz() {
             </div>
 
             {/* Footer: live report for this row */}
-            <div style={{ borderTop:'1px solid #e2e8f0', padding:'12px 18px', display:'flex', gap:8, alignItems:'center' }}>
-              <MessageSquarePlus size={14} color='#94a3b8'/>
-              <input value={report[modal.rid] || ''} onChange={e => setReport(rp => ({ ...rp, [modal.rid]: e.target.value }))}
-                placeholder="Add note / report for this row..."
-                style={{ flex:1, padding:'8px 12px', fontSize:12.5, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none' }}/>
+            <div style={{ borderTop:'1px solid #e2e8f0', padding:'12px 18px', display:'flex', flexDirection:'column', gap:8 }}>
+              <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                <MessageSquarePlus size={14} color='#94a3b8'/>
+                <input value={report[modal.rid] || ''} onChange={e => setReport(rp => ({ ...rp, [modal.rid]: e.target.value }))}
+                  placeholder="Add note / report for this row..."
+                  style={{ flex:1, padding:'8px 12px', fontSize:12.5, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none' }}/>
+              </div>
+              {modalPresetTags && (
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap', paddingLeft:22 }}>
+                  {modalPresetTags.map(tag => {
+                    const active = tagsOf(report[modal.rid]).includes(tag)
+                    return (
+                      <button key={tag} onClick={() => toggleTag(modal.rid, tag)}
+                        style={{ padding:'4px 10px', fontSize:11, fontWeight:600, borderRadius:6, cursor:'pointer',
+                          background: active ? '#dc2626' : '#f8fafc', color: active ? '#fff' : '#64748b',
+                          border:`1px solid ${active ? '#dc2626' : '#e2e8f0'}` }}>
+                        {tag}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
