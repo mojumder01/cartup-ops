@@ -7,6 +7,7 @@ import {
   FileSpreadsheet, AlertCircle, RefreshCw, Download, X,
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Image as ImageIcon,
   Eye, Layers, Weight as WeightIcon, FileText, MessageSquarePlus, Info,
+  Filter, Search, XCircle,
 } from 'lucide-react'
 
 function download(buf, name) {
@@ -55,6 +56,10 @@ export default function GovernanceDataViz() {
   const [error, setError]     = useState('')
   const [inputKey, setInputKey] = useState(0)
   const [mode, setMode]       = useState('all')  // 'all' | 'image' | 'weight' | 'content'
+  const [showFilterBar, setShowFilterBar] = useState(false)
+  const [filterText, setFilterText] = useState('')     // matches ID or Name
+  const [weightMin, setWeightMin]   = useState('')     // weight-mode custom range filter
+  const [weightMax, setWeightMax]   = useState('')
 
   const classify = useMemo(() => classifyColumns(headers), [headers])
   const showWeight      = mode === 'all' || mode === 'weight'
@@ -63,8 +68,35 @@ export default function GovernanceDataViz() {
   const showDescription = mode === 'all' || mode === 'content'
   const presetTags      = PRESET_TAGS[mode] || null
   const ridIndex = useMemo(() => { const m = {}; rows.forEach((r, i) => { m[r.__rid] = i }); return m }, [rows])
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
-  const pageRows = useMemo(() => rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE), [rows, page])
+
+  const weightFilterActive = mode === 'weight' && classify.weightCol && (weightMin !== '' || weightMax !== '')
+  const filteredRows = useMemo(() => {
+    let out = rows
+    const q = filterText.trim().toLowerCase()
+    if (q) {
+      out = out.filter(r => {
+        const idVal = classify.idCol ? getVal(headers, r, classify.idCol) : ''
+        const nameVal = classify.nameCol ? getVal(headers, r, classify.nameCol) : ''
+        return idVal.toLowerCase().includes(q) || nameVal.toLowerCase().includes(q)
+      })
+    }
+    if (weightFilterActive) {
+      const min = weightMin !== '' ? parseFloat(weightMin) : -Infinity
+      const max = weightMax !== '' ? parseFloat(weightMax) : Infinity
+      out = out.filter(r => {
+        const w = parseFloat(getVal(headers, r, classify.weightCol))
+        return !isNaN(w) && w >= min && w <= max
+      })
+    }
+    return out
+  }, [rows, filterText, weightFilterActive, weightMin, weightMax, classify, headers])
+  const filteredRidIndex = useMemo(() => { const m = {}; filteredRows.forEach((r, i) => { m[r.__rid] = i }); return m }, [filteredRows])
+  const filtersActive = !!filterText.trim() || weightFilterActive
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE))
+  const pageRows = useMemo(() => filteredRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE), [filteredRows, page])
+
+  const clearFilters = () => { setFilterText(''); setWeightMin(''); setWeightMax(''); setPage(0) }
 
   const stats = useMemo(() => {
     const reported = Object.values(report).filter(v => v && v.trim()).length
@@ -82,6 +114,7 @@ export default function GovernanceDataViz() {
     setRows(sheet.rows)
     setReport(scanOverLimit(sheet.headers, sheet.rows))
     setExpanded(new Set()); setPage(0); setModal(null); setError(''); setMode('all')
+    setShowFilterBar(false); setFilterText(''); setWeightMin(''); setWeightMax('')
   }
 
   const handleFile = async e => {
@@ -102,6 +135,7 @@ export default function GovernanceDataViz() {
   const handleReset = () => {
     setWb(null); setFileName(''); setSheetName(''); setHeaders([]); setRows([])
     setReport({}); setExpanded(new Set()); setPage(0); setModal(null); setError(''); setInputKey(k => k + 1)
+    setMode('all'); setShowFilterBar(false); setFilterText(''); setWeightMin(''); setWeightMax('')
   }
 
   const updateCell = (rid, col, val) =>
@@ -135,10 +169,10 @@ export default function GovernanceDataViz() {
   const navModalRow = dir => {
     setModal(m => {
       if (!m) return m
-      let idx = ridIndex[m.rid] + dir
-      if (idx < 0) idx = rows.length - 1
-      if (idx >= rows.length) idx = 0
-      const newRid = rows[idx].__rid
+      let idx = (filteredRidIndex[m.rid] ?? 0) + dir
+      if (idx < 0) idx = filteredRows.length - 1
+      if (idx >= filteredRows.length) idx = 0
+      const newRid = filteredRows[idx].__rid
       setPage(Math.floor(idx / PAGE_SIZE))
       return { ...m, rid: newRid }
     })
@@ -183,7 +217,7 @@ export default function GovernanceDataViz() {
             {MODES.map(m => {
               const ok = m.applicable(classify)
               return (
-                <button key={m.key} onClick={() => ok && setMode(m.key)} disabled={!ok}
+                <button key={m.key} onClick={() => { if (ok) { setMode(m.key); setPage(0) } }} disabled={!ok}
                   title={ok ? undefined : `This file has no ${m.key === 'weight' ? 'weight' : m.key === 'content' ? 'highlights/description' : 'image'} column — nothing to check here`}
                   style={{ padding:'6px 14px', borderRadius:7, fontSize:12, fontWeight:600, border:'none',
                     cursor: ok ? 'pointer' : 'not-allowed',
@@ -201,6 +235,43 @@ export default function GovernanceDataViz() {
               {mode === 'weight' ? ', Weight' + (showPrice ? ', Price' : '') : ''}
               {mode === 'content' ? [classify.highlightCols.length && 'Highlights', classify.descriptionCols.length && 'Description'].filter(Boolean).map(s => ', ' + s).join('') : ''} only
             </span>
+          )}
+          <div style={{ flex:1 }}/>
+          <button onClick={() => setShowFilterBar(s => !s)}
+            style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer',
+              background: showFilterBar || filtersActive ? '#eef2ff' : '#fff',
+              color: showFilterBar || filtersActive ? '#4f46e5' : '#64748b',
+              border:`1.5px solid ${showFilterBar || filtersActive ? '#c7d2fe' : '#e2e8f0'}` }}>
+            <Filter size={13}/> Filter{filtersActive ? ` (${filteredRows.length})` : ''}
+          </button>
+        </div>
+      )}
+
+      {/* Filter bar — ID/Name search always, custom weight range only in Weight Check */}
+      {rows.length > 0 && showFilterBar && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:10, marginBottom:12 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, minWidth:200, background:'#fff', border:'1.5px solid #e2e8f0', borderRadius:8, padding:'6px 10px' }}>
+            <Search size={13} color='#94a3b8'/>
+            <input value={filterText} onChange={e => { setFilterText(e.target.value); setPage(0) }}
+              placeholder={`Search ${classify.idCol || 'ID'}${classify.nameCol ? ' or Name' : ''}...`}
+              style={{ flex:1, border:'none', outline:'none', fontSize:12.5, background:'transparent' }}/>
+            {filterText && <button onClick={() => { setFilterText(''); setPage(0) }} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8', display:'flex' }}><XCircle size={14}/></button>}
+          </div>
+          {mode === 'weight' && classify.weightCol && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'#64748b' }}>
+              <WeightIcon size={13} color='#0369a1'/> Weight:
+              <input type="number" value={weightMin} onChange={e => { setWeightMin(e.target.value); setPage(0) }} placeholder="min"
+                style={{ width:64, padding:'6px 8px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:7, outline:'none' }}/>
+              –
+              <input type="number" value={weightMax} onChange={e => { setWeightMax(e.target.value); setPage(0) }} placeholder="max"
+                style={{ width:64, padding:'6px 8px', fontSize:12, border:'1.5px solid #e2e8f0', borderRadius:7, outline:'none' }}/>
+              <span style={{ color:'#94a3b8' }}>kg</span>
+            </div>
+          )}
+          {filtersActive && (
+            <button onClick={clearFilters} style={{ display:'flex', alignItems:'center', gap:5, padding:'6px 10px', fontSize:12, fontWeight:600, background:'#fff', color:'#dc2626', border:'1.5px solid #fecaca', borderRadius:8, cursor:'pointer' }}>
+              <XCircle size={13}/> Clear
+            </button>
           )}
         </div>
       )}
@@ -424,9 +495,17 @@ export default function GovernanceDataViz() {
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 18px', borderBottom:'1px solid #e2e8f0', gap:10 }}>
               <span style={{ fontSize:12.5, fontWeight:700, color:'#1a202c', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                 {modal.kind === 'image' ? <ImageIcon size={13} style={{ display:'inline', marginRight:6 }}/> : <FileText size={13} style={{ display:'inline', marginRight:6 }}/>}
-                {classify.nameCol ? getVal(headers, modalRow, classify.nameCol).slice(0, 60) : `Row ${ridIndex[modal.rid] + 1}`}
+                {classify.nameCol ? getVal(headers, modalRow, classify.nameCol).slice(0, 60) : `Row ${(filteredRidIndex[modal.rid] ?? 0) + 1}`}
               </span>
-              <span style={{ fontSize:11, color:'#94a3b8', flexShrink:0 }}>{ridIndex[modal.rid] + 1} / {rows.length}</span>
+              {modal.kind === 'image' && classify.weightCol && (
+                <div style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, background:'#f0f9ff', border:'1px solid #bae6fd', borderRadius:8, padding:'4px 10px' }}>
+                  <WeightIcon size={12} color='#0369a1'/>
+                  <input value={getVal(headers, modalRow, classify.weightCol)} onChange={e => updateCell(modal.rid, classify.weightCol, e.target.value)}
+                    style={{ width:54, border:'none', outline:'none', fontSize:12.5, fontWeight:700, textAlign:'center', background:'transparent', color:'#0369a1' }}/>
+                  <span style={{ fontSize:10, color:'#0369a1' }}>kg</span>
+                </div>
+              )}
+              <span style={{ fontSize:11, color:'#94a3b8', flexShrink:0 }}>{(filteredRidIndex[modal.rid] ?? 0) + 1} / {filteredRows.length}</span>
               <button onClick={() => setModal(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'#94a3b8', flexShrink:0 }}><X size={18}/></button>
             </div>
 
@@ -460,10 +539,6 @@ export default function GovernanceDataViz() {
                       })}
                     </div>
                   )}
-                  <div style={{ marginTop:14 }}>
-                    <div style={{ fontSize:10.5, color:'#94a3b8', fontWeight:600, marginBottom:4 }}>{modal.col} (editable — bare S3 keys are shown live automatically)</div>
-                    <input value={getVal(headers, modalRow, modal.col)} onChange={e => updateCell(modal.rid, modal.col, e.target.value)} style={cellIn}/>
-                  </div>
                 </>
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
