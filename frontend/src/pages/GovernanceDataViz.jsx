@@ -26,11 +26,14 @@ const PAGE_SIZE = 100
 
 // Focused check modes — each shows only the columns needed to make that call,
 // plus one-click tags so a report can be written without typing every time.
+// `applicable` decides whether the mode makes sense for this file at all — e.g.
+// a bulk image-update template with no Name/Weight/Description columns should
+// gray those modes out instead of silently showing the same table as Image Check.
 const MODES = [
-  { key:'all',     label:'All Fields' },
-  { key:'image',   label:'Image Check' },
-  { key:'weight',  label:'Weight Check' },
-  { key:'content', label:'Content Check' },
+  { key:'all',     label:'All Fields',    applicable: () => true },
+  { key:'image',   label:'Image Check',   applicable: c => c.imageCols.length > 0 },
+  { key:'weight',  label:'Weight Check',  applicable: c => !!c.weightCol },
+  { key:'content', label:'Content Check', applicable: c => c.highlightCols.length > 0 || c.descriptionCols.length > 0 },
 ]
 const PRESET_TAGS = {
   image:   ['Missing', 'Blurry / low-res', 'Wrong product', 'Watermark / text'],
@@ -78,7 +81,7 @@ export default function GovernanceDataViz() {
     setHeaders(sheet.headers)
     setRows(sheet.rows)
     setReport(scanOverLimit(sheet.headers, sheet.rows))
-    setExpanded(new Set()); setPage(0); setModal(null); setError('')
+    setExpanded(new Set()); setPage(0); setModal(null); setError(''); setMode('all')
   }
 
   const handleFile = async e => {
@@ -174,23 +177,29 @@ export default function GovernanceDataViz() {
 
       {/* Check mode — shows only the columns needed for that kind of review */}
       {rows.length > 0 && (
-        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10, flexWrap:'wrap' }}>
           <span style={{ fontSize:11, color:'#94a3b8', fontWeight:700, textTransform:'uppercase' }}>Check:</span>
           <div style={{ display:'flex', gap:4, background:'#f1f5f9', borderRadius:9, padding:3 }}>
-            {MODES.map(m => (
-              <button key={m.key} onClick={() => setMode(m.key)}
-                style={{ padding:'6px 14px', borderRadius:7, fontSize:12, fontWeight:600, border:'none', cursor:'pointer',
-                  background: mode === m.key ? '#fff' : 'transparent', color: mode === m.key ? '#4f46e5' : '#718096',
-                  boxShadow: mode === m.key ? '0 1px 4px rgba(0,0,0,0.08)' : 'none', transition:'all 0.15s' }}>
-                {m.label}
-              </button>
-            ))}
+            {MODES.map(m => {
+              const ok = m.applicable(classify)
+              return (
+                <button key={m.key} onClick={() => ok && setMode(m.key)} disabled={!ok}
+                  title={ok ? undefined : `This file has no ${m.key === 'weight' ? 'weight' : m.key === 'content' ? 'highlights/description' : 'image'} column — nothing to check here`}
+                  style={{ padding:'6px 14px', borderRadius:7, fontSize:12, fontWeight:600, border:'none',
+                    cursor: ok ? 'pointer' : 'not-allowed',
+                    background: mode === m.key && ok ? '#fff' : 'transparent',
+                    color: !ok ? '#cbd5e1' : mode === m.key ? '#4f46e5' : '#718096',
+                    boxShadow: mode === m.key && ok ? '0 1px 4px rgba(0,0,0,0.08)' : 'none', transition:'all 0.15s' }}>
+                  {m.label}
+                </button>
+              )
+            })}
           </div>
           {mode !== 'all' && (
             <span style={{ fontSize:11, color:'#94a3b8' }}>
-              Showing ID, Name{classify.imageCols.length ? ', Image' : ''}
+              Showing ID{classify.nameCol ? ', Name' : ''}{classify.imageCols.length ? ', Image' : ''}
               {mode === 'weight' ? ', Weight' + (showPrice ? ', Price' : '') : ''}
-              {mode === 'content' ? ', Highlights, Description' : ''} only
+              {mode === 'content' ? [classify.highlightCols.length && 'Highlights', classify.descriptionCols.length && 'Description'].filter(Boolean).map(s => ', ' + s).join('') : ''} only
             </span>
           )}
         </div>
@@ -207,6 +216,12 @@ export default function GovernanceDataViz() {
               {n}
             </button>
           ))}
+        </div>
+      )}
+
+      {rows.length > 0 && !classify.nameCol && !classify.weightCol && !classify.highlightCols.length && !classify.descriptionCols.length && (
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px', background:'#eff6ff', border:'1px solid #bfdbfe', borderRadius:8, marginBottom:12, fontSize:12, color:'#1d4ed8' }}>
+          <Info size={13}/> This sheet only has {classify.idCol || 'an ID'} and Image columns — no Name, Weight, Highlights, or Description found, so those checks are grayed out above.
         </div>
       )}
 
