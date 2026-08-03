@@ -164,3 +164,60 @@ export function buildDataVizFile(headers, rows, reportByRid, sheetName = 'data')
   XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31) || 'data')
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
 }
+
+// ── Session memory — reviewing a big file (thousands of rows) is realistically
+// multi-day work, so edits/reports/reviewed-marks are saved to localStorage and
+// restored the next time the same file + sheet is opened, instead of vanishing
+// the moment the tab closes.
+const SESSION_PREFIX = 'gov_dataviz_session::'
+export function fileKeyFor(file) { return `${file.name}__${file.size}` }
+function sessionStorageKey(fileKey, sheetName) { return `${SESSION_PREFIX}${fileKey}::${sheetName}` }
+
+export function saveDataVizSession(fileKey, sheetName, headers, edits, report, reviewed) {
+  try {
+    localStorage.setItem(sessionStorageKey(fileKey, sheetName), JSON.stringify({
+      savedAt: Date.now(), headers, edits, report, reviewed,
+    }))
+  } catch { /* storage full or unavailable — edits still work, just won't persist */ }
+}
+
+export function loadDataVizSession(fileKey, sheetName) {
+  try {
+    const raw = localStorage.getItem(sessionStorageKey(fileKey, sheetName))
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch { return null }
+}
+
+export function clearDataVizSession(fileKey, sheetName) {
+  try { localStorage.removeItem(sessionStorageKey(fileKey, sheetName)) } catch {}
+}
+
+// Only the changed cells are saved (not the whole sheet) — sparse by row, then by column.
+export function diffEdits(pristineByRid, rows, headers) {
+  const edits = {}
+  for (const r of rows) {
+    const orig = pristineByRid[r.__rid]
+    if (!orig) continue
+    let rowEdits = null
+    headers.forEach((h, i) => {
+      if (r.values[i] !== orig[i]) {
+        if (!rowEdits) rowEdits = {}
+        rowEdits[h] = r.values[i]
+      }
+    })
+    if (rowEdits) edits[r.__rid] = rowEdits
+  }
+  return edits
+}
+
+export function applyEdits(headers, rows, edits) {
+  if (!edits) return rows
+  return rows.map(r => {
+    const e = edits[r.__rid]
+    if (!e) return r
+    let nr = r
+    for (const [col, val] of Object.entries(e)) nr = setVal(headers, nr, col, val)
+    return nr
+  })
+}

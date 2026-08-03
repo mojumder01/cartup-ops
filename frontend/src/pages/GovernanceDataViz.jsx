@@ -1,13 +1,15 @@
-import { useState, useMemo, Fragment } from 'react'
+import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
 import {
   readAnyWorkbook, classifyColumns, scoreSheet,
   getVal, setVal, buildDataVizFile, scanOverLimit, imageSrc,
+  fileKeyFor, saveDataVizSession, loadDataVizSession, clearDataVizSession,
+  diffEdits, applyEdits,
 } from '../utils/govDataVizProcessor'
 import {
   FileSpreadsheet, AlertCircle, RefreshCw, Download, X,
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Image as ImageIcon,
   Eye, Layers, Weight as WeightIcon, FileText, MessageSquarePlus, Info,
-  Filter, Search, XCircle,
+  Filter, Search, XCircle, CheckCircle2, Circle, History, Trash2,
 } from 'lucide-react'
 
 function download(buf, name) {
@@ -73,6 +75,10 @@ export default function GovernanceDataViz() {
   const [filterText, setFilterText] = useState('')     // matches ID or Name
   const [weightMin, setWeightMin]   = useState('')     // weight-mode custom range filter
   const [weightMax, setWeightMax]   = useState('')
+  const [fileKey, setFileKey]       = useState('')     // name+size — identifies this file across sessions
+  const [reviewed, setReviewed]     = useState(new Set())  // rid set — "checked, done" regardless of report text
+  const [restoredInfo, setRestoredInfo] = useState(null)    // {savedAt, editedRows, reportedRows, reviewedRows} or null
+  const pristineRef = useRef({})    // rid -> original values[], snapshot taken right after parsing (before any edits)
 
   const classify = useMemo(() => classifyColumns(headers), [headers])
   const showWeight      = mode === 'all' || mode === 'weight'
@@ -117,15 +123,37 @@ export default function GovernanceDataViz() {
       ? rows.filter(r => !classify.imageCols.some(c => getVal(headers, r, c))).length : 0
     const missingWeight = classify.weightCol
       ? rows.filter(r => !getVal(headers, r, classify.weightCol)).length : 0
-    return { reported, missingImage, missingWeight }
-  }, [rows, report, classify, headers])
+    return { reported, missingImage, missingWeight, reviewedCount: reviewed.size }
+  }, [rows, report, classify, headers, reviewed])
 
-  const loadSheet = (wbResult, name) => {
+  const loadSheet = (wbResult, name, fkParam) => {
+    const fk = fkParam ?? fileKey
     const sheet = wbResult.sheets[name]
     setSheetName(name)
     setHeaders(sheet.headers)
-    setRows(sheet.rows)
-    setReport(scanOverLimit(sheet.headers, sheet.rows))
+    pristineRef.current = Object.fromEntries(sheet.rows.map(r => [r.__rid, r.values]))
+
+    const baseReport = scanOverLimit(sheet.headers, sheet.rows)
+    const saved = fk ? loadDataVizSession(fk, name) : null
+    const sameShape = saved && JSON.stringify(saved.headers) === JSON.stringify(sheet.headers)
+
+    if (sameShape) {
+      setRows(applyEdits(sheet.headers, sheet.rows, saved.edits))
+      setReport({ ...baseReport, ...(saved.report || {}) })
+      setReviewed(new Set(saved.reviewed || []))
+      setRestoredInfo({
+        savedAt: saved.savedAt,
+        editedRows: Object.keys(saved.edits || {}).length,
+        reportedRows: Object.values(saved.report || {}).filter(v => v && v.trim()).length,
+        reviewedRows: (saved.reviewed || []).length,
+      })
+    } else {
+      setRows(sheet.rows)
+      setReport(baseReport)
+      setReviewed(new Set())
+      setRestoredInfo(null)
+    }
+
     setExpanded(new Set()); setPage(0); setModal(null); setError(''); setMode('all')
     setShowFilterBar(false); setFilterText(''); setWeightMin(''); setWeightMax('')
   }
@@ -140,8 +168,9 @@ export default function GovernanceDataViz() {
       const usable = result.sheetNames.filter(n => result.sheets[n].headers.length)
       if (!usable.length) { setError('No readable sheets found in this file'); return }
       const best = usable.reduce((a, b) => scoreSheet(result.sheets[b].headers) > scoreSheet(result.sheets[a].headers) ? b : a)
-      setWb(result); setFileName(f.name); setInputKey(k => k + 1)
-      loadSheet(result, best)
+      const fk = fileKeyFor(f)
+      setWb(result); setFileName(f.name); setInputKey(k => k + 1); setFileKey(fk)
+      loadSheet(result, best, fk)
     } catch (err) { setError('Failed to read file: ' + err.message) }
   }
 
@@ -149,6 +178,7 @@ export default function GovernanceDataViz() {
     setWb(null); setFileName(''); setSheetName(''); setHeaders([]); setRows([])
     setReport({}); setExpanded(new Set()); setPage(0); setModal(null); setError(''); setInputKey(k => k + 1)
     setMode('all'); setShowFilterBar(false); setFilterText(''); setWeightMin(''); setWeightMax('')
+    setFileKey(''); setReviewed(new Set()); setRestoredInfo(null)
   }
 
   const updateCell = (rid, col, val) =>
@@ -157,6 +187,31 @@ export default function GovernanceDataViz() {
   const toggleExpand = rid => setExpanded(s => {
     const n = new Set(s); n.has(rid) ? n.delete(rid) : n.add(rid); return n
   })
+
+  const toggleReviewed = rid => setReviewed(s => {
+    const n = new Set(s); n.has(rid) ? n.delete(rid) : n.add(rid); return n
+  })
+
+  // discard the saved session for this file+sheet and roll the table back to
+  // the pristine parsed state — used when the restored progress isn't wanted
+  const discardSession = () => {
+    clearDataVizSession(fileKey, sheetName)
+    const pristineRows = rows.map(r => ({ __rid: r.__rid, values: pristineRef.current[r.__rid] || r.values }))
+    setRows(pristineRows)
+    setReport(scanOverLimit(headers, pristineRows))
+    setReviewed(new Set())
+    setRestoredInfo(null)
+  }
+
+  // autosave — debounced so fast typing doesn't hammer localStorage
+  useEffect(() => {
+    if (!fileKey || !sheetName || !rows.length) return
+    const t = setTimeout(() => {
+      const edits = diffEdits(pristineRef.current, rows, headers)
+      saveDataVizSession(fileKey, sheetName, headers, edits, report, Array.from(reviewed))
+    }, 400)
+    return () => clearTimeout(t)
+  }, [fileKey, sheetName, rows, report, reviewed, headers])
 
   // one-click preset tag — toggles the tag in/out of that row's report text
   const toggleTag = (rid, tag) => setReport(rp => {
@@ -309,12 +364,33 @@ export default function GovernanceDataViz() {
         </div>
       )}
 
+      {/* Restored-session banner — this file+sheet had saved progress from a previous visit */}
+      {restoredInfo && (
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px', background:'#f0fdf4', border:'1px solid #bbf7d0', borderRadius:8, marginBottom:12, fontSize:12, color:'#15803d', flexWrap:'wrap' }}>
+          <History size={13}/>
+          <span>
+            Resumed from {new Date(restoredInfo.savedAt).toLocaleString()} — {restoredInfo.editedRows} edited, {restoredInfo.reportedRows} reported, {restoredInfo.reviewedRows} reviewed.
+          </span>
+          <div style={{ flex:1 }}/>
+          <button onClick={discardSession}
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', fontSize:11.5, fontWeight:600, background:'#fff', color:'#dc2626', border:'1.5px solid #fecaca', borderRadius:7, cursor:'pointer' }}>
+            <Trash2 size={12}/> Discard &amp; start fresh
+          </button>
+        </div>
+      )}
+
       {rows.length > 0 && (
-        <div style={{ display:'flex', gap:16, marginBottom:12, fontSize:12, color:'#64748b', flexWrap:'wrap' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:16, marginBottom:12, fontSize:12, color:'#64748b', flexWrap:'wrap' }}>
           <span><strong style={{ color:'#1a202c' }}>{rows.length}</strong> rows</span>
           <span><strong style={{ color: stats.reported ? '#b45309' : '#1a202c' }}>{stats.reported}</strong> reported</span>
           {classify.imageCols.length > 0 && <span><strong style={{ color: stats.missingImage ? '#dc2626' : '#1a202c' }}>{stats.missingImage}</strong> missing image</span>}
           {classify.weightCol && <span><strong style={{ color: stats.missingWeight ? '#dc2626' : '#1a202c' }}>{stats.missingWeight}</strong> missing weight</span>}
+          <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <strong style={{ color:'#1a202c' }}>{stats.reviewedCount}</strong> / {rows.length} reviewed
+            <span style={{ width:70, height:6, background:'#e2e8f0', borderRadius:999, overflow:'hidden', display:'inline-block' }}>
+              <span style={{ display:'block', width:`${rows.length ? (stats.reviewedCount / rows.length) * 100 : 0}%`, height:'100%', background:'#16a34a' }}/>
+            </span>
+          </span>
         </div>
       )}
 
@@ -349,6 +425,7 @@ export default function GovernanceDataViz() {
               <thead>
                 <tr>
                   <th style={th}>SL</th>
+                  <th style={th} title="Mark as reviewed"><CheckCircle2 size={12}/></th>
                   {classify.idCol && <th style={th}>{classify.idCol}</th>}
                   {classify.imageCols.length > 0 && <th style={th}><ImageIcon size={11} style={{ display:'inline', marginRight:4 }}/>Image</th>}
                   {classify.nameCol && <th style={th}>{classify.nameCol}</th>}
@@ -367,10 +444,18 @@ export default function GovernanceDataViz() {
                   const imgs = classify.imageCols.map(c => getVal(headers, r, c)).filter(Boolean)
                   const rpt = report[rid] || ''
                   const isOpen = expanded.has(rid)
+                  const isReviewed = reviewed.has(rid)
+                  const rowBg = rpt.trim() ? '#fffbeb' : isReviewed ? '#f0fdf4' : '#fff'
                   return (
                     <Fragment key={rid}>
-                      <tr style={{ borderBottom:'1px solid #f1f5f9', background: rpt.trim() ? '#fffbeb' : '#fff' }}>
+                      <tr style={{ borderBottom:'1px solid #f1f5f9', background: rowBg }}>
                         <td style={{ ...td, color:'#94a3b8' }}>{sl}</td>
+                        <td style={td}>
+                          <button onClick={() => toggleReviewed(rid)} title={isReviewed ? 'Reviewed — click to unmark' : 'Mark as reviewed'}
+                            style={{ background:'none', border:'none', cursor:'pointer', color: isReviewed ? '#16a34a' : '#cbd5e1', display:'flex' }}>
+                            {isReviewed ? <CheckCircle2 size={17}/> : <Circle size={17}/>}
+                          </button>
+                        </td>
                         {classify.idCol && <td style={{ ...td, fontWeight:600, color:'#334155' }}>{getVal(headers, r, classify.idCol)}</td>}
                         {classify.imageCols.length > 0 && (
                           <td style={td}>
@@ -577,6 +662,12 @@ export default function GovernanceDataViz() {
                 <input value={report[modal.rid] || ''} onChange={e => setReport(rp => ({ ...rp, [modal.rid]: e.target.value }))}
                   placeholder="Add note / report for this row..."
                   style={{ flex:1, padding:'8px 12px', fontSize:12.5, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none' }}/>
+                <button onClick={() => toggleReviewed(modal.rid)}
+                  style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 12px', borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer', flexShrink:0,
+                    background: reviewed.has(modal.rid) ? '#dcfce7' : '#f8fafc', color: reviewed.has(modal.rid) ? '#15803d' : '#64748b',
+                    border:`1.5px solid ${reviewed.has(modal.rid) ? '#bbf7d0' : '#e2e8f0'}` }}>
+                  {reviewed.has(modal.rid) ? <CheckCircle2 size={14}/> : <Circle size={14}/>} Reviewed
+                </button>
               </div>
               {modalPresetTags && (
                 <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', paddingLeft:22 }}>
@@ -609,7 +700,7 @@ export default function GovernanceDataViz() {
 
       {rows.length > 0 && (
         <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:12, fontSize:11, color:'#94a3b8' }}>
-          <Info size={12}/> All edits (name, weight, highlights/description HTML, other fields, report) are kept live in this session. Click Download any time to export the current state.
+          <Info size={12}/> Edits, reports, and reviewed marks auto-save to this browser — reopen the same file (even tomorrow) and your progress is restored. Click Download any time to export the current state.
         </div>
       )}
     </div>
