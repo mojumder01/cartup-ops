@@ -10,6 +10,7 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Image as ImageIcon,
   Eye, Layers, Weight as WeightIcon, FileText, MessageSquarePlus, Info,
   Filter, Search, XCircle, CheckCircle2, Circle, History, Trash2,
+  ToggleLeft, ToggleRight, Keyboard,
 } from 'lucide-react'
 
 function download(buf, name) {
@@ -58,6 +59,11 @@ function modalTagCategory(modal) {
   return colLabel && colLabel !== modal.col ? `${groupLabel} (${colLabel})` : groupLabel
 }
 
+const AUTO_NEXT_KEY = 'gov_dataviz_autonext'
+function loadAutoNext() {
+  try { const v = localStorage.getItem(AUTO_NEXT_KEY); return v === null ? true : v === '1' } catch { return true }
+}
+
 export default function GovernanceDataViz() {
   const [wb, setWb]           = useState(null)   // { sheetNames, sheets }
   const [fileName, setFileName] = useState('')
@@ -78,7 +84,10 @@ export default function GovernanceDataViz() {
   const [fileKey, setFileKey]       = useState('')     // name+size — identifies this file across sessions
   const [reviewed, setReviewed]     = useState(new Set())  // rid set — "checked, done" regardless of report text
   const [restoredInfo, setRestoredInfo] = useState(null)    // {savedAt, editedRows, reportedRows, reviewedRows} or null
+  const [autoNext, setAutoNext] = useState(loadAutoNext)    // Reviewed button also jumps to the next row when on
   const pristineRef = useRef({})    // rid -> original values[], snapshot taken right after parsing (before any edits)
+
+  useEffect(() => { try { localStorage.setItem(AUTO_NEXT_KEY, autoNext ? '1' : '0') } catch {} }, [autoNext])
 
   const classify = useMemo(() => classifyColumns(headers), [headers])
   const showWeight      = mode === 'all' || mode === 'weight'
@@ -245,6 +254,39 @@ export default function GovernanceDataViz() {
       return { ...m, rid: newRid }
     })
   }
+
+  // Reviewed button doubles as "next" — marking a row done and moving straight to
+  // the next one is the whole rhythm of a sequential review, so don't make the
+  // reviewer reach for a separate arrow every time. Un-marking (a correction)
+  // does not advance — only the "just finished this one" direction does.
+  const handleModalReviewed = () => {
+    if (!modal) return
+    const wasReviewed = reviewed.has(modal.rid)
+    toggleReviewed(modal.rid)
+    if (!wasReviewed && autoNext) navModalRow(1)
+  }
+
+  // Keyboard shortcuts while the modal is open — ← → to move, Space/Enter to
+  // mark reviewed (and advance, same as the button), 1-4 for quick tags, Esc to
+  // close. Skipped while focus is in the report/HTML text fields so typing a
+  // space or a digit still works normally.
+  useEffect(() => {
+    if (!modal) return
+    const onKey = e => {
+      const tag = (e.target.tagName || '').toLowerCase()
+      if (e.key === 'Escape') { setModal(null); return }
+      if (tag === 'input' || tag === 'textarea') return
+      if (e.key === 'ArrowLeft') navModalRow(-1)
+      else if (e.key === 'ArrowRight') navModalRow(1)
+      else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); handleModalReviewed() }
+      else if (/^[1-4]$/.test(e.key) && modalPresetTags) {
+        const t = modalPresetTags[Number(e.key) - 1]
+        if (t) toggleTag(modal.rid, `${modalTagCategory(modal)}: ${t}`)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [modal, autoNext, reviewed, modalPresetTags, filteredRows, filteredRidIndex])
 
   const btn = (bg, color, border) => ({
     display:'flex', alignItems:'center', gap:6, padding:'8px 14px', background:bg, color,
@@ -662,12 +704,21 @@ export default function GovernanceDataViz() {
                 <input value={report[modal.rid] || ''} onChange={e => setReport(rp => ({ ...rp, [modal.rid]: e.target.value }))}
                   placeholder="Add note / report for this row..."
                   style={{ flex:1, padding:'8px 12px', fontSize:12.5, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none' }}/>
-                <button onClick={() => toggleReviewed(modal.rid)}
+                <button onClick={handleModalReviewed} title="Space / Enter"
                   style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 12px', borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer', flexShrink:0,
                     background: reviewed.has(modal.rid) ? '#dcfce7' : '#f8fafc', color: reviewed.has(modal.rid) ? '#15803d' : '#64748b',
                     border:`1.5px solid ${reviewed.has(modal.rid) ? '#bbf7d0' : '#e2e8f0'}` }}>
                   {reviewed.has(modal.rid) ? <CheckCircle2 size={14}/> : <Circle size={14}/>} Reviewed
                 </button>
+                <button onClick={() => setAutoNext(v => !v)} title="When on, marking Reviewed jumps straight to the next row"
+                  style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 10px', borderRadius:8, fontSize:11, fontWeight:600, cursor:'pointer', flexShrink:0,
+                    background: autoNext ? '#eef2ff' : '#f8fafc', color: autoNext ? '#4f46e5' : '#94a3b8',
+                    border:`1.5px solid ${autoNext ? '#c7d2fe' : '#e2e8f0'}` }}>
+                  {autoNext ? <ToggleRight size={16}/> : <ToggleLeft size={16}/>} Auto-next
+                </button>
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:5, paddingLeft:22, fontSize:10, color:'#cbd5e1' }}>
+                <Keyboard size={11}/> ← → navigate · Space/Enter mark reviewed{autoNext ? ' + next' : ''}{modalPresetTags ? ' · 1-4 quick tags' : ''} · Esc close
               </div>
               {modalPresetTags && (
                 <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', paddingLeft:22 }}>
