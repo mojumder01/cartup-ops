@@ -43,6 +43,19 @@ const PRESET_TAGS = {
 }
 function tagsOf(text) { return String(text || '').split(';').map(s => s.trim()).filter(Boolean) }
 
+// Prefix every quick-tag with which field it's about — a bare "Empty / missing"
+// in the report doesn't say whether the image, highlights, or description was
+// empty. The table only knows the check mode; the modal also knows the exact
+// column, so it can be even more specific (e.g. "Highlights (En)" vs "Description (Bn)").
+const MODE_LABEL = { image:'Image', weight:'Weight', content:'Content' }
+function modalTagCategory(modal) {
+  if (!modal) return ''
+  if (modal.kind === 'image') return 'Image'
+  const groupLabel = modal.group === 'highlight' ? 'Highlights' : 'Description'
+  const colLabel = shortGroupLabel(modal.col)
+  return colLabel && colLabel !== modal.col ? `${groupLabel} (${colLabel})` : groupLabel
+}
+
 export default function GovernanceDataViz() {
   const [wb, setWb]           = useState(null)   // { sheetNames, sheets }
   const [fileName, setFileName] = useState('')
@@ -425,9 +438,10 @@ export default function GovernanceDataViz() {
                           {presetTags && (
                             <div style={{ display:'flex', gap:3, flexWrap:'wrap', marginTop:4 }}>
                               {presetTags.map(tag => {
-                                const active = tagsOf(rpt).includes(tag)
+                                const fullTag = `${MODE_LABEL[mode]}: ${tag}`
+                                const active = tagsOf(rpt).includes(fullTag)
                                 return (
-                                  <button key={tag} onClick={() => toggleTag(rid, tag)}
+                                  <button key={tag} onClick={() => toggleTag(rid, fullTag)} title={fullTag}
                                     style={{ padding:'2px 7px', fontSize:9.5, fontWeight:600, borderRadius:5, cursor:'pointer',
                                       background: active ? '#dc2626' : '#f8fafc', color: active ? '#fff' : '#94a3b8',
                                       border:`1px solid ${active ? '#dc2626' : '#e2e8f0'}` }}>
@@ -565,11 +579,15 @@ export default function GovernanceDataViz() {
                   style={{ flex:1, padding:'8px 12px', fontSize:12.5, border:'1.5px solid #e2e8f0', borderRadius:8, outline:'none' }}/>
               </div>
               {modalPresetTags && (
-                <div style={{ display:'flex', gap:6, flexWrap:'wrap', paddingLeft:22 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', paddingLeft:22 }}>
+                  <span style={{ fontSize:10, color:'#94a3b8', fontWeight:700, textTransform:'uppercase' }}>
+                    Tag as {modalTagCategory(modal)}:
+                  </span>
                   {modalPresetTags.map(tag => {
-                    const active = tagsOf(report[modal.rid]).includes(tag)
+                    const fullTag = `${modalTagCategory(modal)}: ${tag}`
+                    const active = tagsOf(report[modal.rid]).includes(fullTag)
                     return (
-                      <button key={tag} onClick={() => toggleTag(modal.rid, tag)}
+                      <button key={tag} onClick={() => toggleTag(modal.rid, fullTag)} title={fullTag}
                         style={{ padding:'4px 10px', fontSize:11, fontWeight:600, borderRadius:6, cursor:'pointer',
                           background: active ? '#dc2626' : '#f8fafc', color: active ? '#fff' : '#64748b',
                           border:`1px solid ${active ? '#dc2626' : '#e2e8f0'}` }}>
