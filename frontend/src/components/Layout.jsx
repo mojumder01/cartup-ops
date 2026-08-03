@@ -8,6 +8,7 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const onProd   = location.pathname.startsWith('/production')
+  const onGov    = location.pathname.startsWith('/governance')
 
   const handleLogout = () => { signOut(); navigate('/login') }
 
@@ -83,6 +84,12 @@ export default function Layout() {
           {navItem('/visual',     Image,       'Visual',     false)}
           {navItem('/qc',         CheckSquare, 'QC',         false)}
           {navItem('/governance', Shield,      'Governance', false)}
+          {onGov && (
+            <>
+              {subItem('/governance/checks',  'Auto Checks')}
+              {subItem('/governance/dataviz', 'Data Viz')}
+            </>
+          )}
         </nav>
 
         {/* Sidebar footer */}
