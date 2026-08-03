@@ -109,6 +109,16 @@ export function stripHtml(html) {
   return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+// Image columns sometimes store just the S3 object key instead of a full URL
+// (e.g. "86652bda-...webp"). Prefix the CDN base so it renders live — leave
+// anything that's already a full http(s) URL untouched.
+const S3_IMAGE_BASE = 'https://sl-dev-s3.s3.amazonaws.com/product/'
+export function imageSrc(v) {
+  const s = String(v || '').trim()
+  if (!s) return ''
+  return /^https?:\/\//i.test(s) ? s : S3_IMAGE_BASE + s
+}
+
 // Excel's hard per-cell text limit — writing longer strings throws at export time.
 export const EXCEL_CELL_LIMIT = 32767
 

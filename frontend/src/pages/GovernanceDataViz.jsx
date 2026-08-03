@@ -1,7 +1,7 @@
 import { useState, useMemo, Fragment } from 'react'
 import {
   readAnyWorkbook, classifyColumns, scoreSheet,
-  getVal, setVal, buildDataVizFile, scanOverLimit,
+  getVal, setVal, buildDataVizFile, scanOverLimit, imageSrc,
 } from '../utils/govDataVizProcessor'
 import {
   FileSpreadsheet, AlertCircle, RefreshCw, Download, X,
@@ -219,7 +219,7 @@ export default function GovernanceDataViz() {
                         {classify.imageCols.length > 0 && (
                           <td style={td}>
                             {imgs.length
-                              ? <img src={imgs[0]} alt="" loading="lazy"
+                              ? <img src={imageSrc(imgs[0])} alt="" loading="lazy"
                                   onClick={() => setModal({ kind:'image', rid, col: classify.imageCols.find(c => getVal(headers, r, c) === imgs[0]) })}
                                   style={{ width:42, height:42, objectFit:'cover', borderRadius:6, cursor:'pointer', border:'1px solid #e2e8f0' }}
                                   onError={e => { e.target.style.opacity = 0.25 }}/>
@@ -353,14 +353,14 @@ export default function GovernanceDataViz() {
             <div style={{ padding:'14px 20px', overflow:'auto', flex:1 }}>
               {modal.kind === 'image' ? (
                 <>
-                  <img src={getVal(headers, modalRow, modal.col)} alt="" style={{ maxWidth:'100%', maxHeight:'46vh', borderRadius:8, display:'block', margin:'0 auto', background:'#f8fafc' }}/>
+                  <img src={imageSrc(getVal(headers, modalRow, modal.col))} alt="" style={{ maxWidth:'100%', maxHeight:'46vh', borderRadius:8, display:'block', margin:'0 auto', background:'#f8fafc' }}/>
                   {modalGroupCols.length > 1 && (
                     <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap', justifyContent:'center' }}>
                       {modalGroupCols.map(c => {
                         const url = getVal(headers, modalRow, c)
                         if (!url) return null
                         return (
-                          <img key={c} src={url} alt="" onClick={() => setModal(m => ({ ...m, col:c }))}
+                          <img key={c} src={imageSrc(url)} alt="" onClick={() => setModal(m => ({ ...m, col:c }))}
                             style={{ width:52, height:52, objectFit:'cover', borderRadius:6, cursor:'pointer', border: modal.col === c ? '2px solid #4f46e5' : '1px solid #e2e8f0' }}
                             onError={e => { e.target.style.opacity = 0.25 }}/>
                         )
@@ -368,7 +368,7 @@ export default function GovernanceDataViz() {
                     </div>
                   )}
                   <div style={{ marginTop:14 }}>
-                    <div style={{ fontSize:10.5, color:'#94a3b8', fontWeight:600, marginBottom:4 }}>{modal.col} (URL — editable)</div>
+                    <div style={{ fontSize:10.5, color:'#94a3b8', fontWeight:600, marginBottom:4 }}>{modal.col} (editable — bare S3 keys are shown live automatically)</div>
                     <input value={getVal(headers, modalRow, modal.col)} onChange={e => updateCell(modal.rid, modal.col, e.target.value)} style={cellIn}/>
                   </div>
                 </>
