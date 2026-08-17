@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { getApiKey } from '../utils/gemini'
+import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { processGovernanceFile, loadCheckpoint, clearCheckpoint, getGovBatchSize, saveGovBatchSize } from '../utils/governanceProcessor'
 import {
   FileSpreadsheet, CheckCircle, AlertCircle, Loader,
@@ -18,9 +18,22 @@ const CHECK_DEFS = [
 
 const CHECK_COLORS = {
   name:'#4f46e5', weight:'#0369a1', category:'#7c3aed',
-  highlights:'#15803d', description:'#b45309',
+  highlights:'#15803d', description:'#b45309', highlights_description:'#15803d',
 }
-const PASS_ORDER = ['name','weight','category','highlights','description']
+const PASS_LABELS = {
+  name:'Name', weight:'Weight', category:'Category',
+  highlights:'Highlights', description:'Description', highlights_description:'Highlights + Description',
+}
+// Mirrors governanceProcessor's pass order exactly: when BOTH Highlights and
+// Description are enabled they merge into one combined pass (kept in sync so
+// progress pills / resume label always match what the processor is doing).
+function getEnabledPasses(checks) {
+  const bothHD = !!(checks?.highlights && checks?.description)
+  const order = bothHD
+    ? ['name', 'weight', 'category', 'highlights_description']
+    : ['name', 'weight', 'category', 'highlights', 'description']
+  return order.filter(k => k === 'highlights_description' ? bothHD : checks?.[k])
+}
 
 function FileInputBox({ onChange, checkpoint }) {
   const [fileName, setFileName] = useState('')
@@ -64,7 +77,7 @@ function Toggle({ enabled, onToggle, color }) {
 function PassProgress({ info, checks }) {
   if (!info || !info.total) return null
   const pct = Math.round((info.done / info.total) * 100)
-  const enabledPasses = PASS_ORDER.filter(k => checks?.[k])
+  const enabledPasses = getEnabledPasses(checks)
   const currentKey = enabledPasses[info.pass - 1]
   const passColor = CHECK_COLORS[currentKey] || '#4f46e5'
 
@@ -204,10 +217,10 @@ export default function GovernanceChecks() {
         <div style={{ ...card, padding:16, background:'#f8fafc' }}>
           <div style={{ fontSize:11, fontWeight:600, color:'#64748b', marginBottom:8, textTransform:'uppercase', letterSpacing:'0.4px' }}>Processing Order</div>
           <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', fontSize:12 }}>
-            {PASS_ORDER.filter(k => checks[k]).map((key, i, arr) => {
-              const bg = { name:'#eef2ff', weight:'#e0f2fe', category:'#ede9fe', highlights:'#dcfce7', description:'#fef3c7' }[key]
+            {getEnabledPasses(checks).map((key, i, arr) => {
+              const bg = { name:'#eef2ff', weight:'#e0f2fe', category:'#ede9fe', highlights:'#dcfce7', description:'#fef3c7', highlights_description:'#dcfce7' }[key]
               const color = CHECK_COLORS[key]
-              const label = { name:'Name', weight:'Weight', category:'Category', highlights:'Highlights', description:'Description' }[key]
+              const label = PASS_LABELS[key]
               return (
                 <span key={key} style={{ display:'flex', alignItems:'center', gap:6 }}>
                   {i > 0 && <span style={{ color:'#94a3b8' }}>→</span>}
@@ -261,6 +274,11 @@ export default function GovernanceChecks() {
               </div>
             ))}
           </div>
+          {checks.highlights && checks.description && (
+            <div style={{ marginTop:12, padding:'8px 12px', background:'#dcfce7', border:'1px solid #bbf7d0', borderRadius:8, fontSize:12, color:'#15803d' }}>
+              Highlights + Description run as ONE combined pass so the two stay consistent with each other.
+            </div>
+          )}
           {!apiKey && (
             <div style={{ marginTop:12, padding:'8px 12px', background:'#fef3c7', border:'1px solid #fde68a', borderRadius:8, fontSize:12, color:'#92400e' }}>
               No API key — AI checks skipped. Add key in Profile &amp; Settings.
@@ -306,9 +324,9 @@ export default function GovernanceChecks() {
               }}>
               {checkpoint
                 ? (() => {
-                    const enabled = PASS_ORDER.filter(k => checks[k])
+                    const enabled = getEnabledPasses(checks)
                     const nextKey = enabled[checkpoint.passCompleted]
-                    const label = { name:'Name', weight:'Weight', category:'Category', highlights:'Highlights', description:'Description' }[nextKey] || `Pass ${checkpoint.passCompleted + 1}`
+                    const label = PASS_LABELS[nextKey] || `Pass ${checkpoint.passCompleted + 1}`
                     return <><Play size={15}/> Resume — {label}</>
                   })()
                 : <><Upload size={15}/> Run Governance Checks</>}

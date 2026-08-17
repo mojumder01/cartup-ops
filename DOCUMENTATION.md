@@ -234,6 +234,8 @@ All settings persist in the browser (localStorage).
 - Fix **ALL** spelling and grammar — zero tolerance
 - Brand names and model codes stay unchanged
 - Output format: highlights = `<ul><li>` bullets, description = `<p>` paragraphs
+- **Image rule**: Highlights may never contain an `<img>` tag — any image found there is dropped. Description may keep exactly one image, always relocated to the very end, after the last closing `</p>` tag — never inside or between paragraphs. Enforced in code (not just the prompt), so it holds even if the AI ignores the instruction.
+- **Combined Highlights+Description (Governance only)**: when both checks are enabled together, they run as ONE AI pass instead of two sequential ones, so the two fields are generated from the same source at once and never contradict each other. Toggling only one of the two still runs it alone. Production (Daraz/Manual) already generates both fields in a single call by design, so this applies there automatically too.
 
 ### QC flagging — LENIENT
 - Flag only clear, obvious errors that look unprofessional
@@ -243,7 +245,12 @@ All settings persist in the browser (localStorage).
 
 ### Rate limiting
 - 2-second delay between API calls, 15s wait + 3 retries on HTTP 429
-- Model: `gemini-3.1-flash-lite`
+- Model: `gemini-3.1-flash-lite` (default), or `grok-4-fast-non-reasoning` when Grok is selected as provider
+
+### AI Provider (Profile & Settings)
+- Choose **Gemini** (Google, 500 free requests/day) or **Grok** (xAI, free trial credits for new accounts) — get a Grok key at [console.x.ai](https://console.x.ai)
+- The chosen provider powers all AI calls across Production, QC, and Governance — no per-section switch needed
+- Each provider's key is stored and tested independently in Profile; switching providers doesn't clear the other key
 
 ---
 

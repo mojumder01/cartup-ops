@@ -1,6 +1,8 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { applyReplacements } from './wordReplacements'
+import { getProvider, callGrok } from './aiProvider'
+import { stripImagesFromHighlights, fixDescriptionImages, enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
 
 const { cartup_map } = MAPPINGS
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
@@ -19,6 +21,7 @@ const CHECKPOINT_KEY = 'gov_checkpoint'
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
+  if (getProvider() === 'grok') return callGrok(prompt, apiKey, retries)
   await sleep(DELAY_MS)
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
@@ -335,6 +338,7 @@ STRICT RULES:
 - DO NOT remove ANY specification, feature, measurement, or detail — every piece of source information must appear in the output.
 - Fix ALL spelling and grammar mistakes — ZERO TOLERANCE, every error must be corrected (brand names and model codes stay unchanged).
 - Fix formatting and HTML structure.
+- Highlights must NEVER contain an <img> tag — if the source has an image, drop it entirely.
 
 PRODUCTS:
 ${inputBlock}
@@ -351,7 +355,7 @@ Return ONLY a JSON array, no markdown:
       const item = arr[i]
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
-      map[sku] = applyReplacements(item.highlights || '')
+      map[sku] = stripImagesFromHighlights(applyReplacements(item.highlights || ''))
     }
     for (const p of products) { if (!map[p.sku]) map[p.sku] = '' }
     return map
@@ -374,6 +378,7 @@ STRICT RULES:
 - DO NOT remove ANY specification, feature, measurement, or detail — every piece of source information must appear in the output.
 - Fix ALL spelling and grammar mistakes — ZERO TOLERANCE, every error must be corrected (brand names and model codes stay unchanged).
 - Fix formatting and HTML structure.
+- If the source contains an <img> tag, keep exactly ONE image and place it at the very end, AFTER the last closing </p> tag. Never place an image inside or between paragraphs.
 
 PRODUCTS:
 ${inputBlock}
@@ -390,12 +395,58 @@ Return ONLY a JSON array, no markdown:
       const item = arr[i]
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
-      map[sku] = applyReplacements(item.description || '')
+      map[sku] = fixDescriptionImages(applyReplacements(item.description || ''))
     }
     for (const p of products) { if (!map[p.sku]) map[p.sku] = '' }
     return map
   } catch {
     return Object.fromEntries(products.map(p => [p.sku, '']))
+  }
+}
+
+// ── Combined pass: when BOTH Highlights and Description are enabled they are
+// generated together in ONE call so the two fields stay consistent with each
+// other, instead of Description being rebuilt from an already-rewritten
+// Highlights (which could silently drop info from the original description).
+async function batchHighlightsAndDescription(products, apiKey) {
+  // products: [{sku, cleanedName, description, highlights}] — both ORIGINAL fields
+  const inputBlock = products.map((p, i) =>
+    `Product ${i + 1} (sku:"${p.sku}"):\nName: ${p.cleanedName || '(empty)'}\nHighlights: ${p.highlights || '(empty)'}\nDescription: ${p.description || '(empty)'}`
+  ).join('\n\n')
+
+  const prompt = `You are a product data governance assistant. For EACH product, recreate BOTH fields TOGETHER so they stay consistent with each other and don't contradict or duplicate:
+1. highlights: clean <ul><li> HTML bullet points.
+2. description: clean <p> HTML paragraph(s).
+STRICT RULES (apply to both):
+- Use ONLY information present in the given Name, Highlights, and Description — nothing else.
+- DO NOT add ANY AI-generated extra information, marketing phrases, invented specs, or assumptions.
+- DO NOT remove ANY specification, feature, measurement, or detail found in either source field — every piece of source information must appear in at least one of the two outputs.
+- Fix ALL spelling and grammar mistakes — ZERO TOLERANCE, every error must be corrected (brand names and model codes stay unchanged).
+${IMAGE_RULE_PROMPT}
+- Remove: non-Latin characters, hashtags, obvious boilerplate ("click add to cart", "contact us" etc).
+
+PRODUCTS:
+${inputBlock}
+
+Return ONLY a JSON array, no markdown:
+[{"sku":"...","highlights":"...","description":"..."}]`
+
+  try {
+    const raw = await callGemini(prompt, apiKey)
+    const clean = raw.replace(/```json|```/g, '').trim()
+    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
+    const map = {}
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i]
+      const sku = String(item.sku || products[i]?.sku || '')
+      if (!sku) continue
+      const fixed = enforceImageRules(applyReplacements(item.highlights || ''), applyReplacements(item.description || ''))
+      map[sku] = fixed
+    }
+    for (const p of products) { if (!map[p.sku]) map[p.sku] = { highlights: '', description: '' } }
+    return map
+  } catch {
+    return Object.fromEntries(products.map(p => [p.sku, { highlights: '', description: '' }]))
   }
 }
 
@@ -466,9 +517,15 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
 
   // Build ordered pass list based on enabled checks
   // Ordered: name → weight → category → highlights → description
-  // highlights uses cleanedName; description uses cleanedName + fixedHighlights
-  const PASS_ORDER = ['name', 'weight', 'category', 'highlights', 'description']
-  const enabledPasses = PASS_ORDER.filter(k => checks[k])
+  // When BOTH Highlights and Description are checked, they run as ONE combined
+  // pass instead of two sequential ones, so the two fields stay consistent
+  // (no risk of description losing info that only survived in the rewritten
+  // highlights). Single-toggle Highlights or Description still run alone.
+  const bothHD = !!(checks.highlights && checks.description)
+  const PASS_ORDER = bothHD
+    ? ['name', 'weight', 'category', 'highlights_description']
+    : ['name', 'weight', 'category', 'highlights', 'description']
+  const enabledPasses = PASS_ORDER.filter(k => k === 'highlights_description' ? bothHD : checks[k])
   const totalPasses = enabledPasses.length
 
   // Load checkpoint
@@ -482,7 +539,16 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
     category:    cp.categoryResults   || {},
     highlights:  cp.highlightsResults || {},
     description: cp.descriptionResults|| {},
+    highlights_description: cp.highlights_descriptionResults || {},
   }
+  // unpack any combined-pass results carried over from a resumed checkpoint
+  const syncCombined = () => {
+    for (const [sku, v] of Object.entries(results.highlights_description)) {
+      results.highlights[sku] = v.highlights
+      results.description[sku] = v.description
+    }
+  }
+  syncCombined()
 
   let passNum = 0
 
@@ -491,7 +557,11 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
     if (passCompleted >= passNum) continue  // already done
 
     const alreadyDone = new Set(Object.keys(results[checkKey]))
-    const label = { name:'Name', weight:'Weight', category:'Category', highlights:'Highlights', description:'Description' }[checkKey]
+    const label = {
+      name:'Name', weight:'Weight', category:'Category',
+      highlights:'Highlights', description:'Description',
+      highlights_description:'Highlights + Description',
+    }[checkKey]
 
     // Build input list for this pass
     let passProducts
@@ -506,6 +576,13 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
         sku: p.sku,
         cleanedName:    results.name[p.sku] || p.name,
         fixedHighlights: results.highlights[p.sku] || p.highlights,
+      }))
+    } else if (checkKey === 'highlights_description') {
+      passProducts = products.map(p => ({
+        sku: p.sku,
+        cleanedName: results.name[p.sku] || p.name,
+        description: p.description,
+        highlights: p.highlights,
       }))
     } else if (checkKey === 'category') {
       passProducts = products.map(p => ({
@@ -523,6 +600,7 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       category:    batch => batchCategory(batch, apiKey),
       highlights:  batch => batchHighlights(batch, apiKey),
       description: batch => batchDescription(batch, apiKey),
+      highlights_description: batch => batchHighlightsAndDescription(batch, apiKey),
     }[checkKey]
 
     const cpState = {
@@ -533,10 +611,12 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       categoryResults:    results.category,
       highlightsResults:  results.highlights,
       descriptionResults: results.description,
+      highlights_descriptionResults: results.highlights_description,
     }
 
     const res = await runPass(passNum, totalPasses, label, checkKey, passProducts, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress)
     Object.assign(results[checkKey], res.results)
+    if (checkKey === 'highlights_description') syncCombined()
 
     if (res.paused) return { paused: true, done: res.done, total }
 
@@ -548,6 +628,7 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       categoryResults:    results.category,
       highlightsResults:  results.highlights,
       descriptionResults: results.description,
+      highlights_descriptionResults: results.highlights_description,
     })
   }
 

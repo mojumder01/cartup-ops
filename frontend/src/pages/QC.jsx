@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo } from 'react'
-import { getApiKey } from '../utils/gemini'
+import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import {
   QC_COLUMNS, readQcFile, uniqueByProductId, runQcChecks,
   buildQcViewFile, buildQcPassFile,

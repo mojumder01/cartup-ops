@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getApiKey } from '../utils/gemini'
+import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { processManualFile, generateTemplate } from '../utils/manualProcessor'
 import { FileSpreadsheet, CheckCircle, AlertCircle, Loader, Download, Zap, Info } from 'lucide-react'
 

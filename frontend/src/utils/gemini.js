@@ -1,3 +1,6 @@
+import { getProvider, callGrok, getGrokApiKey } from './aiProvider'
+import { enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
+
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
@@ -9,6 +12,14 @@ export function getApiKey() {
 
 export function saveApiKey(key) {
   localStorage.setItem('gemini_api_key', key)
+}
+
+// The key that actually gets used for AI calls — Grok's key when Grok is the
+// selected provider, otherwise the Gemini key. Every page reads this (not the
+// raw getApiKey above) so switching provider in Profile is enough to re-route
+// Production/QC/Governance without touching those pages.
+export function getActiveApiKey() {
+  return getProvider() === 'grok' ? getGrokApiKey() : getApiKey()
 }
 
 const TYPO_MAP = {
@@ -75,6 +86,7 @@ export function localFixName(name) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
+  if (getProvider() === 'grok') return callGrok(prompt, apiKey, retries)
   await sleep(DELAY_MS)
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
@@ -147,6 +159,7 @@ export async function processAndCategoriseBatch(products, cartupCategories, apiK
    - Use ONLY given information. DO NOT add anything AI-generated. DO NOT remove any spec/detail.
    - Fix ALL spelling and grammar — zero tolerance.
    - Remove only: non-Latin chars, obvious boilerplate ("click add to cart", "contact us" etc). If input is empty, write 2 sentences from the name only.
+${IMAGE_RULE_PROMPT}
 4. category_id + category_path: Pick the BEST matching category from the list below.
 
 PRODUCTS:
@@ -173,10 +186,10 @@ Return ONLY a JSON array, no markdown:
       const catPath = item.category_path || item.categoryPath || item.path || ''
       if (!catId && catPath) catId = pathToId[catPath.toLowerCase()] || ''
       const validCat = pool.find(c => c.id === catId)
+      const { highlights, description } = enforceImageRules(item.highlights || '', item.description || '')
       map[pid] = {
         name: item.name || localFixed[i]?.name || '',
-        highlights: item.highlights || '',
-        description: item.description || '',
+        highlights, description,
         categoryId: validCat ? catId : '',
         categoryPath: validCat ? validCat.path : '',
         categoryError: validCat ? '' : (catId ? `Unknown ID: ${catId}` : 'No category returned'),
@@ -213,6 +226,7 @@ STRICT RULES:
 1. name: fix ALL spelling mistakes (zero tolerance), remove duplicate words. Brand names and model codes stay unchanged.
 2. highlights: <ul><li> HTML — use ONLY given information, DO NOT add any AI-generated info/marketing/invented specs, DO NOT remove any spec/feature/measurement/detail, fix ALL spelling+grammar (zero tolerance), remove only non-Latin chars/hashtags/empty items; if empty create bullets from name.
 3. description: <p> HTML — use ONLY given information, DO NOT add anything AI-generated, DO NOT remove any spec/detail, fix ALL spelling+grammar (zero tolerance), remove only non-Latin chars and obvious boilerplate ("click add to cart" etc); if empty write 2 sentences from name.
+${IMAGE_RULE_PROMPT}
 ${inputBlock}
 Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
   try {
@@ -221,7 +235,10 @@ Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},
     const parsed = JSON.parse(clean)
     const map = {}
     for (const item of parsed) {
-      if (item.pid) map[item.pid] = { name: item.name, highlights: item.highlights, description: item.description }
+      if (item.pid) {
+        const { highlights, description } = enforceImageRules(item.highlights || '', item.description || '')
+        map[item.pid] = { name: item.name, highlights, description }
+      }
     }
     for (const p of localFixed) {
       if (!map[p.pid]) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
-import { getApiKey } from '../utils/gemini'
+import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { processDarazFiles } from '../utils/processor'
 import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, Loader, Download, Zap } from 'lucide-react'
 
