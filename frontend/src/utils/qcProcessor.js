@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
-import { getProvider, callGrok } from './aiProvider'
+import { getProvider, callGrok, callGroq } from './aiProvider'
 
 const { cartup_map } = MAPPINGS
 const GEMINI_MODEL = 'gemini-3.1-flash-lite'
@@ -27,7 +27,9 @@ const EXTRA_COLUMNS = ['VariantName','Variant Image1']
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
-  if (getProvider() === 'grok') return callGrok(prompt, apiKey, retries)
+  const provider = getProvider()
+  if (provider === 'grok') return callGrok(prompt, apiKey, retries)
+  if (provider === 'groq') return callGroq(prompt, apiKey, retries)
   await sleep(DELAY_MS)
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
