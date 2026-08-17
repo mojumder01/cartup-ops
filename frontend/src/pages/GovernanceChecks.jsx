@@ -1,11 +1,11 @@
 import { useState, useRef } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
-import { processGovernanceFile, loadCheckpoint, clearCheckpoint, getGovBatchSize, saveGovBatchSize } from '../utils/governanceProcessor'
+import { processGovernanceFile, loadCheckpoint, clearCheckpoint, getGovBatchSize, saveGovBatchSize, buildPartialOutput } from '../utils/governanceProcessor'
 import {
   FileSpreadsheet, CheckCircle, AlertCircle, Loader,
   Upload, Type, Weight, AlignLeft, AlignJustify, Tag,
   ToggleLeft, ToggleRight, Pause, Play, RotateCcw, RefreshCw,
-  CheckSquare, Square,
+  CheckSquare, Square, Download,
 } from 'lucide-react'
 
 const CHECK_DEFS = [
@@ -172,6 +172,21 @@ export default function GovernanceChecks() {
   const handlePause = () => {
     signalRef.current.paused = true
     setPassInfo(p => p ? { ...p, label: 'Pausing after this batch...' } : p)
+  }
+
+  const handleDownloadPartial = async () => {
+    if (!file) return
+    setError('')
+    try {
+      const output = await buildPartialOutput(file, checks)
+      const blob = new Blob([output], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      a.href = url; a.download = 'cartup_governance_partial.xlsx'; a.click()
+      URL.revokeObjectURL(url)
+    } catch(e) {
+      setError(e.message)
+    }
   }
 
   const handleClearCheckpoint = () => {
@@ -343,6 +358,12 @@ export default function GovernanceChecks() {
                 <span style={{ fontSize:13, color:'#1d4ed8' }}>Processing...</span>
               </div>
             </>
+          )}
+          {(status === 'processing' || status === 'paused') && (checkpoint || status === 'processing') && (
+            <button onClick={handleDownloadPartial} title="Download whatever has been processed so far"
+              style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 18px', background:'#fff', color:'#0369a1', border:'1.5px solid #bae6fd', borderRadius:8, fontWeight:600, fontSize:13, cursor:'pointer' }}>
+              <Download size={14}/> Download Progress So Far
+            </button>
           )}
           {status !== 'processing' && (
             <button onClick={handleReset} title="Reset everything"

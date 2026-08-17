@@ -493,12 +493,7 @@ async function runPass(passNum, totalPasses, label, checkKey, products, batchFn,
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-export async function processGovernanceFile(file, checks, apiKey, onProgress, signal) {
-  onProgress({ pass: 0, totalPasses: 0, label: 'Reading file...', done: 0, total: 0 })
-  const rows = await readSheet(file)
-  if (!rows.length) throw new Error('File is empty')
-
-  // Parse products
+function parseProducts(rows) {
   const products = []
   const invalidRows = []
   for (const row of rows) {
@@ -513,6 +508,41 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       highlights:  col(row,'highlights','*highlights','highlight','key features'),
     })
   }
+  return { products, invalidRows }
+}
+
+// ── Build an output file from whatever progress exists right now — usable
+// mid-run or after a pause, so a long job's work-so-far is never stranded.
+export async function buildPartialOutput(file, checks) {
+  const cp = loadCheckpoint(file)
+  if (!cp) throw new Error('No saved progress found for this file yet')
+
+  const rows = await readSheet(file)
+  const { products, invalidRows } = parseProducts(rows)
+  if (!products.length) throw new Error('No valid rows found (Name and SKU ID required)')
+
+  const results = {
+    name:        cp.nameResults       || {},
+    weight:      cp.weightResults     || {},
+    category:    cp.categoryResults   || {},
+    highlights:  cp.highlightsResults || {},
+    description: cp.descriptionResults|| {},
+    highlights_description: cp.highlights_descriptionResults || {},
+  }
+  for (const [sku, v] of Object.entries(results.highlights_description)) {
+    results.highlights[sku] = v.highlights
+    results.description[sku] = v.description
+  }
+
+  return buildOutput(products, checks, results, invalidRows, true)
+}
+
+export async function processGovernanceFile(file, checks, apiKey, onProgress, signal) {
+  onProgress({ pass: 0, totalPasses: 0, label: 'Reading file...', done: 0, total: 0 })
+  const rows = await readSheet(file)
+  if (!rows.length) throw new Error('File is empty')
+
+  const { products, invalidRows } = parseProducts(rows)
 
   if (!products.length) throw new Error('No valid rows found (Name and SKU ID required)')
   const total = products.length
@@ -641,13 +671,14 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
   return { paused: false, output: buildOutput(products, checks, results, invalidRows) }
 }
 
-function buildOutput(products, checks, results, invalidRows) {
+function buildOutput(products, checks, results, invalidRows, partial = false) {
   const cols = ['SKU ID', 'Original Name']
   if (checks.name)        cols.push('Name (Cleaned)')
   if (checks.weight)      cols.push('Weight (kg)', 'Weight Confidence')
   if (checks.highlights)  cols.push('Highlights')
   if (checks.description) cols.push('Description')
   if (checks.category)    cols.push('Category ID', 'Category Path', 'Category Note')
+  if (partial) cols.push('Processing Status')
   cols.push('Report')
 
   const outputRows = products.map(p => {
@@ -662,6 +693,15 @@ function buildOutput(products, checks, results, invalidRows) {
       row['Category ID']   = cat.category_id || ''
       row['Category Path'] = cat.category_path || ''
       row['Category Note'] = cat.category_error || 'Matched'
+    }
+    if (partial) {
+      const pending = []
+      if (checks.name        && !(p.sku in results.name))        pending.push('Name')
+      if (checks.weight      && !(p.sku in results.weight))      pending.push('Weight')
+      if (checks.category    && !(p.sku in results.category))    pending.push('Category')
+      if (checks.highlights  && !(p.sku in results.highlights))  pending.push('Highlights')
+      if (checks.description && !(p.sku in results.description)) pending.push('Description')
+      row['Processing Status'] = pending.length ? `Pending: ${pending.join(', ')}` : 'Done'
     }
     return row
   })
