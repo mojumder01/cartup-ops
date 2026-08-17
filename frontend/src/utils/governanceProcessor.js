@@ -378,7 +378,7 @@ STRICT RULES:
 - DO NOT remove ANY specification, feature, measurement, or detail — every piece of source information must appear in the output.
 - Fix ALL spelling and grammar mistakes — ZERO TOLERANCE, every error must be corrected (brand names and model codes stay unchanged).
 - Fix formatting and HTML structure.
-- If the source contains an <img> tag, keep exactly ONE image and place it at the very end, AFTER the last closing </p> tag. Never place an image inside or between paragraphs.
+- If the source contains <img> tag(s), keep ALL of them but move them all to the very end, AFTER the last closing </p> tag. Never place an image inside or between paragraphs.
 
 PRODUCTS:
 ${inputBlock}

@@ -234,7 +234,7 @@ All settings persist in the browser (localStorage).
 - Fix **ALL** spelling and grammar — zero tolerance
 - Brand names and model codes stay unchanged
 - Output format: highlights = `<ul><li>` bullets, description = `<p>` paragraphs
-- **Image rule**: Highlights may never contain an `<img>` tag — any image found there is dropped. Description may keep exactly one image, always relocated to the very end, after the last closing `</p>` tag — never inside or between paragraphs. Enforced in code (not just the prompt), so it holds even if the AI ignores the instruction.
+- **Image rule**: Highlights may never contain an `<img>` tag — any image found there is dropped. Description keeps every image found in the source, but all of them are relocated to the very end, after the last closing `</p>` tag — never inside or between paragraphs. Enforced in code (not just the prompt), so it holds even if the AI ignores the instruction.
 - **Combined Highlights+Description (Governance only)**: when both checks are enabled together, they run as ONE AI pass instead of two sequential ones, so the two fields are generated from the same source at once and never contradict each other. Toggling only one of the two still runs it alone. Production (Daraz/Manual) already generates both fields in a single call by design, so this applies there automatically too.
 
 ### QC flagging — LENIENT

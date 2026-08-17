@@ -7,14 +7,15 @@ export function stripImagesFromHighlights(html) {
   return String(html || '').replace(IMG_TAG_RE, '').replace(/\s{2,}/g, ' ').trim()
 }
 
-// Description may keep ONE image, but it must sit at the very end,
-// after the last closing </p> tag — never inside or between paragraphs.
+// Description keeps ALL images found, but every one of them must be moved to
+// the very end, after the last closing </p> tag — never inside or between
+// paragraphs.
 export function fixDescriptionImages(html) {
   let desc = String(html || '')
   const imgs = desc.match(IMG_TAG_RE)
   if (!imgs || !imgs.length) return desc.trim()
   desc = desc.replace(IMG_TAG_RE, '').replace(/<p>\s*<\/p>/gi, '').trim()
-  return `${desc}${imgs[0]}`
+  return `${desc}${imgs.join('')}`
 }
 
 export function enforceImageRules(highlightsHtml, descriptionHtml) {
@@ -26,4 +27,4 @@ export function enforceImageRules(highlightsHtml, descriptionHtml) {
 
 // Prompt text shared by every content-recreation prompt (Governance + Production)
 export const IMAGE_RULE_PROMPT = `- Highlights must NEVER contain an <img> tag — if the source has an image, drop it from highlights entirely.
-- If the source description contains an <img> tag, keep exactly ONE image and place it at the very end of the description, AFTER the last closing </p> tag (e.g. "...</p><img src=\\"...\\"/>"). Never place an image inside or between paragraphs.`
+- If the source description contains <img> tag(s), keep ALL of them (don't drop any) but move them all to the very end of the description, AFTER the last closing </p> tag (e.g. "...</p><img src=\\"...\\"/><img src=\\"...\\"/>"). Never place an image inside or between paragraphs.`
