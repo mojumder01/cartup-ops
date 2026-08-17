@@ -1,8 +1,13 @@
-// Provider selection + Grok (xAI) support — shared by gemini.js, qcProcessor.js,
-// governanceProcessor.js so every AI pass (Production, QC, Governance) can be
-// switched to Grok without touching each file's call sites.
-const GROK_MODEL = 'grok-4-fast-non-reasoning'
-const GROQ_MODEL = 'llama-3.3-70b-versatile'
+// Provider selection + Grok (xAI) / Groq (groqcloud) support — shared by
+// gemini.js, qcProcessor.js, governanceProcessor.js so every AI pass
+// (Production, QC, Governance) can be switched to Grok/Groq without touching
+// each file's call sites.
+//
+// IMPORTANT: unlike Gemini, neither xAI's nor Groq's API sends CORS headers,
+// so a direct browser fetch() to them is always blocked. Calls are relayed
+// through the CartUp backend (which already exists for auth/production) —
+// the key is sent per-request only, never stored server-side.
+const API_URL = 'https://cartup-content.onrender.com'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
 
@@ -34,32 +39,38 @@ export function saveGroqApiKey(key) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
-export async function callGrok(prompt, apiKey, retries = MAX_RETRIES) {
+function authToken() { return localStorage.getItem('token') || '' }
+
+async function callViaProxy(provider, prompt, apiKey, retries = MAX_RETRIES) {
   await sleep(DELAY_MS)
-  const res = await fetch('https://api.x.ai/v1/chat/completions', {
+  const token = authToken()
+  if (!token) throw new Error('Not logged in — please sign in again')
+
+  const res = await fetch(`${API_URL}/ai/proxy`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: GROK_MODEL,
-      temperature: 0.1,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ provider, api_key: apiKey, prompt }),
   })
   if (res.status === 429) {
-    if (retries > 0) { await sleep(15000); return callGrok(prompt, apiKey, retries - 1) }
+    if (retries > 0) { await sleep(15000); return callViaProxy(provider, prompt, apiKey, retries - 1) }
     throw new Error('Rate limit — please wait and retry')
   }
-  if (!res.ok) throw new Error(`Grok error: ${res.status}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `${provider} error: ${res.status}`)
+  }
   const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
+  return data.text || ''
 }
 
-export async function testGrokConnection(apiKey) {
+async function testViaProxy(provider, apiKey) {
+  const token = authToken()
+  if (!token) return 'fail'
   try {
-    const res = await fetch('https://api.x.ai/v1/chat/completions', {
+    const res = await fetch(`${API_URL}/ai/proxy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: GROK_MODEL, max_tokens: 10, messages: [{ role: 'user', content: 'Say "ok"' }] }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ provider, api_key: apiKey, prompt: 'Say "ok"' }),
     })
     if (res.status === 429) return 'rate_limited'
     if (res.ok) return 'ok'
@@ -67,35 +78,15 @@ export async function testGrokConnection(apiKey) {
   } catch { return 'fail' }
 }
 
-export async function callGroq(prompt, apiKey, retries = MAX_RETRIES) {
-  await sleep(DELAY_MS)
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      temperature: 0.1,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  })
-  if (res.status === 429) {
-    if (retries > 0) { await sleep(15000); return callGroq(prompt, apiKey, retries - 1) }
-    throw new Error('Rate limit — please wait and retry')
-  }
-  if (!res.ok) throw new Error(`Groq error: ${res.status}`)
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content || ''
+export function callGrok(prompt, apiKey, retries = MAX_RETRIES) {
+  return callViaProxy('grok', prompt, apiKey, retries)
 }
-
-export async function testGroqConnection(apiKey) {
-  try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: GROQ_MODEL, max_tokens: 10, messages: [{ role: 'user', content: 'Say "ok"' }] }),
-    })
-    if (res.status === 429) return 'rate_limited'
-    if (res.ok) return 'ok'
-    return 'fail'
-  } catch { return 'fail' }
+export function testGrokConnection(apiKey) {
+  return testViaProxy('grok', apiKey)
+}
+export function callGroq(prompt, apiKey, retries = MAX_RETRIES) {
+  return callViaProxy('groq', prompt, apiKey, retries)
+}
+export function testGroqConnection(apiKey) {
+  return testViaProxy('groq', apiKey)
 }

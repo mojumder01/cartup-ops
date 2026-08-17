@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import auth, production
+from routers import auth, production, ai_proxy
 
 app = FastAPI(title="CartUp Ops API")
 
@@ -14,6 +14,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(production.router, prefix="/production", tags=["production"])
+app.include_router(ai_proxy.router, prefix="/ai", tags=["ai"])
 
 @app.get("/")
 def root():
