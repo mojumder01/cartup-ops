@@ -1,4 +1,4 @@
-const API_URL = 'https://cartup-content.onrender.com'
+const API_URL = 'https://cartup-ops.onrender.com'
 
 export async function login(email, password) {
   let res

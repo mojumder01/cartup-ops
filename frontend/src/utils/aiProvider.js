@@ -7,7 +7,7 @@
 // so a direct browser fetch() to them is always blocked. Calls are relayed
 // through the CartUp backend (which already exists for auth/production) —
 // the key is sent per-request only, never stored server-side.
-const API_URL = 'https://cartup-content.onrender.com'
+const API_URL = 'https://cartup-ops.onrender.com'
 const DELAY_MS = 2000
 const MAX_RETRIES = 3
 
