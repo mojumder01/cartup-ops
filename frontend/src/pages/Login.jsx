@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { login } from '../utils/api'
+import { APP_VERSION } from '../version'
 
 export default function Login() {
   const [email, setEmail]       = useState('')
@@ -112,7 +113,7 @@ export default function Login() {
         </form>
 
         <div style={{ textAlign:'center', marginTop:'22px', fontSize:'11px', color:'#a0aec0' }}>
-          built by muntasir
+          built by muntasir · v{APP_VERSION}
         </div>
       </div>
 
