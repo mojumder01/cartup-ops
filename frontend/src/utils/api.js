@@ -1,12 +1,18 @@
 const API_URL = 'https://cartup-content.onrender.com'
 
 export async function login(email, password) {
-  const res = await fetch(`${API_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-  if (!res.ok) throw new Error('Invalid credentials')
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+  } catch {
+    throw new Error('SERVER_UNREACHABLE')
+  }
+  if (res.status === 401) throw new Error('INVALID_CREDENTIALS')
+  if (!res.ok) throw new Error('SERVER_ERROR')
   return res.json()
 }
 

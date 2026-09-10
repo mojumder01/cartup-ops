@@ -18,8 +18,14 @@ export default function Login() {
       const data = await login(email, password)
       signIn(data.user, data.access_token)
       navigate('/')
-    } catch {
-      setError('Email or password incorrect')
+    } catch (err) {
+      if (err.message === 'SERVER_UNREACHABLE') {
+        setError("Can't reach the server — it may be waking up from sleep, try again in ~30s")
+      } else if (err.message === 'SERVER_ERROR') {
+        setError('Server error — please try again in a moment')
+      } else {
+        setError('Email or password incorrect')
+      }
     } finally {
       setLoading(false)
     }
