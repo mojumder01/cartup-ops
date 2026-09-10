@@ -22,7 +22,7 @@ export default function Login() {
       if (err.message === 'SERVER_UNREACHABLE') {
         setError("Can't reach the server — it may be waking up from sleep, try again in ~30s")
       } else if (err.message === 'SERVER_ERROR') {
-        setError('Server error — please try again in a moment')
+        setError(`Server error: ${err.detail || 'please try again'}`)
       } else {
         setError('Email or password incorrect')
       }

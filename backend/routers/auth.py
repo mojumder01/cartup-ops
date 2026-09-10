@@ -3,6 +3,11 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from utils.supabase_client import get_supabase
 
+try:
+    from gotrue.errors import AuthApiError
+except Exception:
+    AuthApiError = None
+
 router = APIRouter()
 security = HTTPBearer()
 
@@ -12,7 +17,12 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(req: LoginRequest):
-    supabase = get_supabase()
+    try:
+        supabase = get_supabase()
+    except RuntimeError as e:
+        # Missing/misconfigured SUPABASE_URL / SUPABASE_KEY — not a bad password.
+        raise HTTPException(status_code=500, detail=f"Server misconfigured: {e}")
+
     try:
         res = supabase.auth.sign_in_with_password({
             "email": req.email,
@@ -31,7 +41,14 @@ async def login(req: LoginRequest):
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        # Only a genuine "wrong email/password" response from Supabase should
+        # ever surface as 401. Anything else (paused Supabase project, wrong
+        # keys, network failure, quota) is a SERVER problem — reporting it as
+        # "Invalid credentials" would wrongly tell a user with a correct
+        # password that they typed it wrong.
+        if AuthApiError is not None and isinstance(e, AuthApiError) and getattr(e, "status", None) in (400, 401, 422):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=500, detail=f"Login failed: {type(e).__name__}: {e}")
 
 @router.post("/logout")
 async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
