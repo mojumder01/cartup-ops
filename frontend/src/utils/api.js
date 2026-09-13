@@ -11,7 +11,12 @@ export async function login(email, password) {
   } catch {
     throw new Error('SERVER_UNREACHABLE')
   }
-  if (res.status === 401) throw new Error('INVALID_CREDENTIALS')
+  if (res.status === 401) {
+    const body = await res.json().catch(() => ({}))
+    const err = new Error('INVALID_CREDENTIALS')
+    err.detail = body.detail || ''
+    throw err
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     const err = new Error('SERVER_ERROR')

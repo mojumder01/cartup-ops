@@ -49,7 +49,10 @@ async def login(req: LoginRequest):
         # "Invalid credentials" would wrongly tell a user with a correct
         # password that they typed it wrong.
         if AuthApiError is not None and isinstance(e, AuthApiError) and getattr(e, "status", None) in (400, 401, 422):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+            # Surface Supabase's own message (e.g. "Email not confirmed" vs
+            # "Invalid login credentials") instead of a flat generic string —
+            # those need very different fixes.
+            raise HTTPException(status_code=401, detail=f"Invalid credentials: {e}")
         raise HTTPException(status_code=500, detail=f"Login failed: {type(e).__name__}: {e}")
 
 @router.post("/logout")

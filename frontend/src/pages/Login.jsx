@@ -24,6 +24,8 @@ export default function Login() {
         setError("Can't reach the server — it may be waking up from sleep, try again in ~30s")
       } else if (err.message === 'SERVER_ERROR') {
         setError(`Server error: ${err.detail || 'please try again'}`)
+      } else if (err.message === 'INVALID_CREDENTIALS') {
+        setError(err.detail ? `Login failed: ${err.detail}` : 'Email or password incorrect')
       } else {
         setError('Email or password incorrect')
       }
