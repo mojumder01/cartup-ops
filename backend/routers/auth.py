@@ -19,9 +19,11 @@ class LoginRequest(BaseModel):
 async def login(req: LoginRequest):
     try:
         supabase = get_supabase()
-    except RuntimeError as e:
-        # Missing/misconfigured SUPABASE_URL / SUPABASE_KEY — not a bad password.
-        raise HTTPException(status_code=500, detail=f"Server misconfigured: {e}")
+    except Exception as e:
+        # Missing/misconfigured SUPABASE_URL / SUPABASE_KEY, or a malformed
+        # key the client library rejects at construction time — not a bad
+        # password either way.
+        raise HTTPException(status_code=500, detail=f"Server misconfigured: {type(e).__name__}: {e}")
 
     try:
         res = supabase.auth.sign_in_with_password({
