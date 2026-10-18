@@ -8,7 +8,7 @@ const TEAMS = [
     icon: Upload,
     grad: 'linear-gradient(135deg, #4f46e5, #6366f1)',
     glow: 'rgba(79,70,229,0.35)',
-    desc: 'Daraz & manual file upload → CartUp template',
+    desc: 'Daraz, manual & shop-duplicate uploads → CartUp template',
     path: '/production',
     active: true,
   },

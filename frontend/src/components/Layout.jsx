@@ -79,6 +79,7 @@ export default function Layout() {
             <>
               {subItem('/production/daraz',  'Daraz Upload')}
               {subItem('/production/manual', 'Manual Upload')}
+              {subItem('/production/shop-duplicate', 'Shop Duplicate')}
             </>
           )}
           {navItem('/visual',     Image,       'Visual',     false)}

@@ -14,6 +14,7 @@ export default function Production() {
         {[
           { to: '/production/daraz',  label: 'Daraz Upload' },
           { to: '/production/manual', label: 'Manual Upload' },
+          { to: '/production/shop-duplicate', label: 'Shop Duplicate' },
         ].map(({ to, label }) => (
           <NavLink key={to} to={to}
             style={({ isActive }) => ({

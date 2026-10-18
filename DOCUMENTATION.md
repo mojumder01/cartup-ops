@@ -87,6 +87,33 @@ Download template → Fill in products → Upload → AI process → Download ou
 3. Upload the filled file → **Process & Download**
 4. Color/Size values expand into one row per variant, with variant columns filled only when valid for the matched category
 
+### Shop Duplicate
+
+Copies every product of one seller into the CartUp bulk-upload template for another seller — no AI, nothing rewritten.
+
+```
+Old seller's product export + blank upload template + new SKU prefix → Process & Download
+```
+
+**Inputs:**
+- **Old seller's product export** — the admin export (ProductId, VariantName, Seller SKU, Parent Sku, Product Image1–8, HighlightEn/Bn, DescriptionEn/Bn, …)
+- **Upload template (blank)** — download a fresh one from the seller center each time; its Brand/Unit/Color/Size lists are used to fill the hidden ID sheet
+- **New seller SKU prefix** — e.g. `CCWT9323` turns `CCWT9196_184_Anycolour` into `CCWT9323_CCWT9196_184_Anycolour` (Parent SKU too)
+
+**How each row is filled:**
+- Image URLs → file name only (`https://…/product/abc.webp` → `abc.webp`), for Product Image 1–8 and Variant Image
+- `VariantName` is split into the variant columns: `Size-One Size, Color-Black` → Size = One Size, Color = Black
+- Warranty Type/Period IDs → their names (3 → No Warranty)
+- Brand, Unit, Color, Size… are matched to the template's own list (exact, case-insensitive — the lists contain near-duplicates such as `Grey` and `Grey `)
+- Special Price 0 → blank (and its dates); duplicate Seller SKUs → first one kept, original order kept
+- Word Replacements from Profile (default `daraz → cartup`) applied to names, highlights, descriptions, what's-in-the-box and warranty text
+
+**The hidden `payload_hidden` sheet** (the one the platform reads — IDs via VLOOKUP formulas) is filled with the values Excel would compute, so the file uploads correctly without opening it in Excel first. Its formulas are rebuilt cleanly on every run, which also repairs templates whose rows were deleted in Excel (they leave `#REF!` rows behind). Everything else in the template — dropdowns, lookup tables, hidden sheets — is kept byte-for-byte.
+
+**Output:** `cartup_shop_duplicate_<prefix>.xlsx`. A template holds ~4,990 rows; bigger shops are split into several files (downloaded as a .zip) and a product's variants are never split across files.
+
+**Warnings** are listed after processing (and downloadable as .xlsx): a value not in the template's list (that row would be rejected — the hidden sheet shows `#N/A` exactly as Excel would), an unknown variant attribute, an empty required field, or a special price not below MRP.
+
 ---
 
 ## 4. Visual

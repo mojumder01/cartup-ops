@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import Production from './pages/Production'
 import DarazUpload from './pages/DarazUpload'
 import ManualUpload from './pages/ManualUpload'
+import ShopDuplicate from './pages/ShopDuplicate'
 import Profile from './pages/Profile'
 import Visual from './pages/Visual'
 import QC from './pages/QC'
@@ -29,6 +30,7 @@ export default function App() {
           <Route index element={<Navigate to="daraz" replace />} />
           <Route path="daraz"  element={<DarazUpload />} />
           <Route path="manual" element={<ManualUpload />} />
+          <Route path="shop-duplicate" element={<ShopDuplicate />} />
         </Route>
         <Route path="visual"      element={<Visual />} />
         <Route path="qc"          element={<QC />} />
