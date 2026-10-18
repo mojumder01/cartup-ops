@@ -1,20 +1,10 @@
-import { callAI, firstKey, loadKeys, saveKeys, testKey } from './aiPool'
+import { callAI, firstKey } from './aiPool'
 import { enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
 
 const CONCURRENCY = 3      // parallel API calls
 
-// Keys live in the key pool (aiPool.js) — several per provider, used in turn.
-export function getApiKey() {
-  return firstKey('gemini')
-}
-
-export function saveApiKey(key) {
-  const keys = loadKeys()
-  saveKeys({ ...keys, gemini: key ? [key, ...keys.gemini.filter(k => k !== key)] : keys.gemini.slice(1) })
-}
-
-// What pages check (and pass along) for "AI is on": the first key of the
-// provider chosen in Profile. The calls themselves use the whole pool.
+// What pages check (and pass along) for "AI is on": the first ticked Gemini
+// key. The calls themselves use every ticked key (aiPool.js).
 export function getActiveApiKey() {
   return firstKey()
 }
@@ -188,9 +178,11 @@ Return ONLY a JSON array, no markdown:
 }
 
 // ── Batch process up to 5 products in ONE API call (no category) ──────────────
-export async function processProductsBatch(products, apiKey) {
+export async function processProductsBatch(products, apiKey, onError) {
   // products: [{pid, name, highlights, description}]
   // returns: {pid: {name, highlights, description}}
+  // onError(message, pids): the AI call failed, so these products got the
+  // local spelling fix only.
   if (!products.length) return {}
   const localFixed = products.map(p => ({ ...p, name: localFixName(p.name || '') }))
   if (!apiKey) {
@@ -222,7 +214,8 @@ Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},
       if (!map[p.pid]) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description }
     }
     return map
-  } catch {
+  } catch (e) {
+    onError?.(e.message || 'Unknown error', localFixed.map(p => p.pid))
     return Object.fromEntries(localFixed.map(p => [p.pid, { name: p.name, highlights: p.highlights, description: p.description }]))
   }
 }
@@ -369,9 +362,4 @@ export async function fixDescription(description, name, highlights, apiKey) {
   if (!apiKey) return description
   const { description: fixed } = await processProductAI(name, highlights, description, apiKey)
   return fixed || description
-}
-
-export async function testConnection(apiKey) {
-  const r = await testKey('gemini', apiKey)
-  return r === 'invalid' ? 'fail' : r
 }

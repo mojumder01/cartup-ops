@@ -25,10 +25,10 @@ CartUp Ops is a browser-based platform for the CartUp catalog team. It converts 
 ### Login
 Sign in with your team email and password.
 
-### API keys (required for AI features)
-1. Get a free key from [Google AI Studio](https://aistudio.google.com/apikey) (or Groq / Grok — see AI Provider below)
-2. Go to **Profile & Settings** (top-right) → **API keys & models** → paste one or more keys (one per line) → **Add keys**, or **Import .txt**
-3. Add **several keys**: when one hits its limit (15 requests/minute, 500/day on Gemini's free tier) the next one takes over automatically — see [AI Provider](#ai-provider-profile--settings)
+### Gemini API keys (required for AI features)
+1. Get free keys from [Google AI Studio](https://aistudio.google.com/apikey) — AI runs on **Gemini only**
+2. Go to **Profile & Settings** (top-right) → **Gemini API — keys & models** → paste one or more keys (one per line, any format: `AIza…`, `AQ.…`, `gen-…`) → **Add keys**, or **Import** a .txt
+3. Add **several keys**: every key has its own limit per model (e.g. 15 a minute and 500 a day on Gemini 3.5 Flash Lite), and requests are spread over the ticked keys — see [Gemini keys & models](#gemini-keys--models-profile--settings)
 
 ### Navigation
 | Section | Purpose |
@@ -80,7 +80,7 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
    - Name: `#` → `-`
    - Stock: never above **99,999**
    - Warranty: *No Warranty* with a period → the period is removed; *Seller / Brand Warranty* without a period → *No Warranty*; a period that isn't on the list goes to review (pick one, keep it, or **Set No Warranty**)
-   - Weight with **two zeros right after the decimal point** (`0.004`, `1.003`) or no weight → flagged in **to check**, not changed (CartUp can show a delivery charge of 0)
+   - Weight that **starts with 0.00** (`0.001`–`0.009` kg) or no weight (`1.003` is fine) → flagged in **to check**, not changed (CartUp can show a delivery charge of 0)
 
 The work runs in three stages (`processor.js`): read + AI (once, the slow part) → match values against the template (`matchItems`, repeatable) → build the file (`buildOutput`: decisions, house rules, image keys, hand edits). So:
 - **Newer template, no re-run:** after values are added to CartUp's lists, "Check again with a newer template" re-matches the same run — your picks and edits stay.
@@ -94,15 +94,35 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 
 **Smart matching** (`frontend/src/utils/listMatch.js`, also used by Shop Duplicate), in order of confidence: exact (case ignored, as VLOOKUP does) → same text apart from spacing/punctuation (`Type-B` = `Type B`; decimal points and ranges kept, so `2.5mm` ≠ `25mm`, `3-4 Years` ≠ `34 Years`) → known equivalents (`EU:40`/`38` → `40 (EU)`/`38 (EU)`, `UK:7` → `7 (UK)`, `Int:XXL`/`XXL` → `2XL`, `Free Size`/`FS` → `One Size`, `King` → `King Size`, `6 Months` → `6 month`, `12 Months` → `1 year`, `Local seller warranty` → `Seller Warranty`, `International Manufacturer Warranty` → `Brand Warranty`, `pcs` → `PCS`, `Mixed Color` → `Multicolor`, `As Picture` → `Same as picture`) → a close spelling (same words in another order, or one or two typos — only when one entry is clearly closest and every number is the same). Brands, units and warranty fields never use close spellings.
 
-**Review window — product by product** (opens by itself when values are left; or "Review product by product"): products needing attention on the left; on the right the product's SKUs with their **variant images** (click to enlarge) and every dropdown value, coloured by state (red = not on CartUp's list, blue = matched automatically / remembered, green = picked, amber = kept as a new value). Click a value to: pick one of the **closest list values**, **search** the whole list (type-ahead), **keep the seller's value as a new value** for CartUp's list, or go back to automatic. Each pick applies to **this SKU**, **this product**, or **every SKU with that value** (the default) — and "every SKU" picks are **remembered in this browser**, so the same value is automatic in later runs (the footer shows how many are remembered, with a "forget them" link). After a pick the window jumps to the next open value. SKUs of a product left with identical variant values are flagged. **Large images** shows bigger variant images and the product's images 1–8 above the table. **Brands** (top right, when the attribute file has brands that aren't on CartUp's list): one row per brand with how many products/SKUs use it — **No Brand**, **Keep as new brand** (for CartUp to add), or **Pick…** the right one from the list; applies to every product with that brand and is remembered.
+**Check list — "Before you upload"** (on the page after processing, `utils/checks.js`): every check with its count, why it matters, and one click to the view that fixes it. Red = fix before uploading, amber = worth a look, green = done; the badge on top says **Ready to upload**, *Ready — n worth a look*, or *n things to fix*. The same counts are used in the review window and the sheet view.
 
-**View & edit sheet** — the whole output, Excel-style (`components/SheetEditor.jsx`): every row and column, rows virtualised so thousands stay smooth, the Seller SKU column and header fixed. Red = required and empty, or a dropdown value not on CartUp's list (#N/A); amber = flagged (weight with .00 after the point, image key); blue = edited. Column headers count their problem cells. Filter to rows with problems, search by SKU or name, click a cell and edit it in the bar below (dropdown columns suggest list values; the row's image is shown). Edits are the last word on a value, logged as "Edited by hand", and survive a newer-template re-check.
+| Check | Level | Opens |
+|---|---|---|
+| Variant values not on CartUp lists (Color, Size…) | fix | Review → By value, variant columns, not on list |
+| Brands not on CartUp list | fix | Review → By value, Brand |
+| Warranty values not on CartUp lists | fix | Review → By value, Warranty |
+| Other values not on the lists (materials, unit…) | fix | Review → By value, other columns |
+| Variants with the same values | fix | Review → By product, same variant |
+| Rows without a CartUp category | fix | Sheet → No category |
+| Required cells empty | fix | Sheet → Required — empty |
+| Close-spelling matches (plus how many were matched automatically in all) | check | Review → By value, matched automatically (riskiest first) |
+| Weight starts with 0.00 | check | Sheet → Weight to check |
+| Image links without a CartUp key (with an image key file) | check | Sheet → Image link without a key |
+| Names not cleaned by AI (AI unavailable — limit used up…) | check | Sheet → Names not cleaned by AI |
+| Kept as new values | info | Review → By value, kept as new |
+| Rows left out (invalid sheet) | info | — |
+
+**Review window — "Check & match values"** (opens by itself when values are left; or from the check list). Two views, both with filters: **column** (all, a group — variant columns / Brand / Warranty / other — or one column, with its open count), **state**, and **search**.
+- **By value** — each seller value once, across all products: column, seller value, how many products and SKUs use it, and what it is now. States: *Not on list* · *Matched automatically* (close-spelling matches first — the ones worth a glance) · *Kept as new* · *All*. For an open value the closest CartUp values are shown as one-click chips; or **Keep as new**, **Pick…** (search the whole list, Enter takes the first), **No Brand** (Brand), **No Warranty** (Warranty Period), undo, and **Products ›** to see the products with that value. A pick here covers every SKU with that value and is remembered in this browser.
+- **By product (Parent SKU)** — products on the left (Parent SKU, SKU count, open values, "same variant"); states *Needs attention* · *Open values* · *Same variant* · *Changed automatically* · *All*; search by Parent SKU, Seller SKU, name or exact value. On the right the product's SKUs with their **variant images** (click to enlarge) and every dropdown value, coloured by state (red = not on CartUp's list, blue = matched automatically — with how: known equivalent, close spelling, numbered… — or remembered, green = picked, amber = kept as a new value); the filtered column is highlighted. Click a value to pick one of the **closest list values**, **search** the list, **keep the seller's value**, **No Brand** / **Set No Warranty**, or go back to automatic. Each pick applies to **this SKU**, **this product**, or **every SKU with that value** (the default, remembered — the footer shows how many, with "forget them"). After a pick the window jumps to the next open value in the filtered column. Keys: **1–8** pick a suggestion, **K** keep, **N** next, **Esc** close. **Large images** shows bigger variant images and the product's images 1–8.
+
+**View & edit sheet** — the whole output, Excel-style (`components/SheetEditor.jsx`): every row and column, rows virtualised so thousands stay smooth, the Seller SKU column and header fixed. Red = would be rejected (not on CartUp's list — #N/A, no category, required and empty); amber = flagged (weight starting with 0.00, image link without a key); blue = edited. **Show** filters by problem type (each with its count), names not cleaned by AI, edited cells, or all rows; a column header's count shows only that column's problems. **Next problem** (F8) goes from problem to problem; **Enter** saves and moves on. Search by Seller / Parent SKU or name. Click a cell and edit it in the bar below (dropdown columns suggest list values; the row's image, Parent SKU and the Daraz name are shown); tick **Same value for all SKUs of Parent SKU …** to fill the whole product at once. Edits are the last word on a value, logged as "Edited by hand", and survive a newer-template re-check.
 
 **Step 3 — Output:** `cartup_daraz_output.xlsx` — downloads at once when nothing needs a decision, otherwise from the review window ("Download file", also on the page). Sheets:
 - **product** — with the decisions applied; the Report column notes each row's changes, values not on the list, and identical variants
 - **invalid** — rows missing required fields (as before)
 - **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
-- **to check** — flagged but not changed: weights with .00 after the point, image links without a key
+- **to check** — flagged but not changed: weights starting with 0.00, image links without a key
 - **new values** (with the template) — every value not on CartUp's lists, once each: column, value, status (*Add to the CartUp list — decided*, or *Not reviewed — shows #N/A until matched or added*), how many SKUs and products use it, the Seller SKUs, and the closest CartUp values
 
 ---
@@ -145,7 +165,7 @@ Old seller's product export + blank upload template + new seller SKU (replace co
 - Brand, Unit, Color, Size, Warranty… are matched to the template's own list with the same smart matching as Daraz Upload (exact first — the lists contain near-duplicates such as `Grey` and `Grey ` with different IDs — then spelling/format differences and known equivalents); every value that was changed is listed under **Auto-matched values**
 - Special Price 0 → blank (and its dates); duplicate Seller SKUs → first one kept, original order kept
 - **Special price** (checkbox on the page): include or leave out; when included it runs from today to the end date you pick, and a **discount of 75% or more** is removed
-- House rules as in Daraz Upload: `#` in names → `-`, stock never above 99,999, *No Warranty* with a period → period removed, *Seller/Brand Warranty* without one → *No Warranty*, a weight with two zeros after the decimal point (`0.004`) flagged as a warning — all listed under **Changed values**
+- House rules as in Daraz Upload: `#` in names → `-`, stock never above 99,999, *No Warranty* with a period → period removed, *Seller/Brand Warranty* without one → *No Warranty*, a weight starting with 0.00 (`0.001`–`0.009`) flagged as a warning — all listed under **Changed values**
 - Word Replacements from Profile (default `daraz → cartup`) applied to names, highlights, descriptions, what's-in-the-box and warranty text
 
 **The hidden `payload_hidden` sheet** (the one the platform reads — IDs via VLOOKUP formulas) is filled with the values Excel would compute, so the file uploads correctly without opening it in Excel first. A small built-in formula engine (`frontend/src/utils/xlsxFormula.js`) reads each column's formula, fills it down every row the way Excel's fill handle does, and calculates it — IF, IFERROR/IFNA, VLOOKUP, INDEX/MATCH, XLOOKUP, TRIM/LEN/LEFT…, AND/OR, ISBLANK… over Excel Tables, plain ranges or defined names. So template variations still work: Excel "shared" formulas, other formula styles, extra blank cells, and templates whose rows were deleted in Excel (`#REF!` rows, or formulas shifted out of line with the product rows — the seller-center template itself has these) are rebuilt so hidden row N always reads product row N+1. A formula using a function the engine doesn't know is written without a cached value and the page says to open the file in Excel and press Save before uploading. Everything else in the template — dropdowns, lookup tables, hidden sheets — is kept byte-for-byte.
@@ -285,7 +305,7 @@ All settings persist in the browser (localStorage).
 
 | Setting | Where | Default |
 |---|---|---|
-| Gemini API key | Profile & Settings | — |
+| Gemini API keys, models and limits, pause between requests | Profile & Settings | Gemini 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite, 1 s |
 | Word replacements (applies to Production output) | Profile & Settings | `daraz` → `cartup` |
 | QC batch size | QC control bar | 5 |
 | Governance batch size | Governance page | 10 |
@@ -312,19 +332,15 @@ All settings persist in the browser (localStorage).
 - Ignore: brand names, model codes, transliterated Bangla words, style variants (colour/color)
 - Every spelling/grammar flag is double-checked by a verify pass
 
-### Rate limiting
-- 2-second delay between API calls, 15s wait + 3 retries on HTTP 429
-- Model: `gemini-3.1-flash-lite` (default), or `grok-4-fast-non-reasoning` when Grok is selected as provider
-
-### AI Provider (Profile & Settings)
-- Choose **Gemini** (Google, 500 free requests/day), **Grok** (xAI — [console.x.ai](https://console.x.ai)) or **Groq** (groqcloud — keys start with `gsk_`)
-- The chosen provider powers all AI calls across Production, QC, and Governance — no per-section switch needed
-
-**API keys & models** (`frontend/src/utils/aiPool.js`) — every provider holds a list of keys and a list of models, used in turn:
-- **Keys:** the first usable key is used until it hits its limit; then it cools down (for the wait the provider reports — 60 s by default — or an hour when the *daily* quota is used up) and the next key takes over. An invalid key is skipped for a day. When every key is cooling down the app waits for the soonest one (up to ~1½ min), then stops with a clear message. Each key shows its state (ready / works / rate limited · back at hh:mm / daily limit / invalid) with **Test**, reorder, remove and "use it again now".
-- **Models:** tried top to bottom — if a model is unavailable (not found) or busy (5xx), the next one is used. Add any model name, reorder, or go back to the defaults (Gemini: `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite` → `gemini-2.5-flash`).
-- **Import / export .txt:** one key per line; lines starting with `#` are ignored. The provider comes from the key's start (`AIza…` Gemini, `gsk_…` Groq, `xai-…` Grok); write `gemini: KEY` if it isn't clear. Export writes every key of every provider — share it only with your team.
-- Keys and cool-downs are stored in this browser only. Grok / Groq calls go through our backend (`/ai/proxy`, which passes the chosen model on) because those APIs block browser calls; the key is sent per request and never stored there.
+### Gemini keys & models (Profile & Settings)
+AI runs on **Gemini only** (Production, QC, Governance) — Grok and Groq were removed. `frontend/src/utils/aiPool.js`, card in `components/AiKeys.jsx`:
+- **Today strip:** keys in use, requests used / capacity today, left today, speed (≈ requests a minute) and when the daily limits reset (midnight Pacific time — shown in local time).
+- **Models:** pick the **main model** from the list, each with its free-tier limits per key — Gemini 3.5 Flash Lite and 3.1 Flash Lite 15/min · 500/day; 3.8, 3.7, 3.6, 3.5, 3 and 2.5 Flash 5/min · 20/day; 2.5 Flash Lite 10/min · 20/day. Tick the **backup** models to use when the main one is full, and reorder them. **Edit limits** changes a model's numbers (Google changes them; paid keys have more). **Check models for my key** lists which models the first ticked key can use (others show *not available*) — a model Google publishes under a longer name (`gemini-3-flash` → `gemini-3-flash-preview`) is found and used automatically, never a different model (`-lite`). Add any other model name; **Defaults** goes back to 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite.
+- **Keys:** *Tick = use here* — **All**, **None**, **Remove ticked**; each key shows *Key n*, the key (masked; **Show** for the full key), today's usage against its capacity (e.g. `280/1,000`, with a bar), and its state: ready / works / resting · back hh:mm (per-minute limit) / *n of m models used up today* / today's limit used / invalid. **Test**, "use it again now" and remove per key. **Import** / **Export** a .txt (one key per line; `#` lines ignored; a label like `Key 1:` before the key is fine; Grok/Groq keys are skipped). **Clear** removes every key.
+- **How requests are spread:** each request goes to the next ticked key that still has room on the main model (its per-minute and per-day count, kept per key and model in this browser); when every key is full on the main model, the next ticked model takes over. A 429 still from Google cools the key down for that model (until the next minute, or the next day for a daily quota); an invalid key is skipped for a day; a model that doesn't exist or is overloaded gives way to the next. When everything is used up for the day the run stops with a clear message, and Daraz Upload lists the products that got the spelling fix only (check list → *Names not cleaned by AI*).
+- **Settings:** **Remember keys in this browser** (off = keys are kept only until the browser window closes) and **Pause between requests** (seconds, default 1).
+- The Daraz page shows the AI line before a run: main model, ticked keys, requests left today (≈ products, 5 per request) and speed.
+- Keys, usage and cool-downs live in this browser only (usage is stored under a fingerprint of the key, not the key) — never on our server.
 
 ---
 
@@ -333,12 +349,12 @@ All settings persist in the browser (localStorage).
 | Problem | Fix |
 |---|---|
 | Old version showing after update | Hard refresh: `Ctrl+Shift+R` (check version in sidebar footer) |
-| "Rate limit" error | Daily quota (500 req) or per-minute limit hit — wait, or Pause and Resume later; progress is saved |
+| "Rate limit" error | Daily or per-minute limit hit on every ticked key — add or tick more keys or backup models in Profile, or wait until the reset time shown there; progress is saved |
 | Selecting a file does nothing | Fixed in v25.6.30+ — hard refresh. All inputs accept re-selecting the same filename |
 | New file shows old data | Fixed — uploading a new file wipes all previous state and stops running checks |
 | Paused, want to continue later | Re-upload the **same** file (same name + size) → Continue/Resume button appears |
 | Category obviously wrong | Check the Report/Note column — low-confidence picks are labelled for manual review. Add a context hint (QC) to improve accuracy |
-| AI checks skipped | No API key — add it in Profile & Settings |
+| AI checks skipped | No Gemini key ticked — add or tick one in Profile & Settings |
 | Output missing products | Check the `invalid` sheet (Governance) or error column (Production) — rows without required fields are listed there |
 
 ---

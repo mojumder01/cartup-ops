@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
-import { getProvider } from '../utils/aiProvider'
-import { loadKeys, PROVIDER_LABEL } from '../utils/aiPool'
+import { poolSummary, onAiChange } from '../utils/aiPool'
 import {
   processDarazFiles, buildOutput, buildDarazWorkbook, templateLists, rematch, rowKey,
   readTableFile, guessImageColumns, makeImageKeyMap, OUTPUT_COLS,
 } from '../utils/processor'
-import { loadMemory, rememberDecisions, forgetMemory } from '../utils/variantReview'
+import { loadMemory, rememberDecisions, forgetMemory, valueGroups } from '../utils/variantReview'
+import { sheetIssues, buildChecklist } from '../utils/checks'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
 import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import VariantReview from '../components/VariantReview'
 import SheetEditor from '../components/SheetEditor'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2 } from 'lucide-react'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck } from 'lucide-react'
 
 // current: text shown while nothing has been picked here (e.g. a remembered file).
 function FileInput({ label, required, onChange, current, hint }) {
@@ -45,10 +45,14 @@ function FileInput({ label, required, onChange, current, hint }) {
   )
 }
 
+const SHEET_COLS = OUTPUT_COLS.filter(c => c !== 'Report')
+const BATCH = 5   // products per AI request (processor.js)
+
 export default function DarazUpload() {
+  const [, redraw] = useState(0)
+  useEffect(() => onAiChange(() => redraw(n => n + 1)), [])
   const apiKey = getApiKey()
-  const provider = getProvider()
-  const keyCount = loadKeys()[provider].length
+  const pool = poolSummary()
   const [files, setFiles]     = useState({})
   const [status, setStatus]   = useState('')
   const [progress, setProgress] = useState('')
@@ -58,8 +62,8 @@ export default function DarazUpload() {
   const [decisions, setDecisions] = useState({})
   const [memory, setMemory]   = useState(loadMemory)
   const [edits, setEdits]     = useState({})
-  const [reviewing, setReviewing] = useState(false)
-  const [sheetOpen, setSheetOpen] = useState(false)
+  const [reviewing, setReviewing] = useState(null)   // where the review window opens: { view, state, col } | null
+  const [sheetOpen, setSheetOpen] = useState(null)   // the sheet view's filter | null
   const [rechecking, setRechecking] = useState('')
 
   // Run options — rows before processing; special price and image keys apply at download (no re-run).
@@ -78,6 +82,13 @@ export default function DarazUpload() {
   // Live output for the current decisions, options and edits.
   const output = useMemo(() => result && buildOutput(result, decisions, memory, options), [result, decisions, memory, options])
   const stats = output?.stats
+  // What still needs a look, for the check list (same counts as the review window and sheet view).
+  const values = useMemo(() => result && result.template ? valueGroups(result, decisions, memory) : [], [result, decisions, memory])
+  const issues = useMemo(() => output ? sheetIssues(output, SHEET_COLS, result.lists) : new Map(), [output])
+  const checks = useMemo(() => output ? buildChecklist({ result, output, issues, values, imageKeys }) : [], [output, issues, values])
+  const toFix = checks.filter(c => c.level === 'fix' && c.count).length
+  const toCheck = checks.filter(c => c.level === 'check' && c.count).length
+  const openCheck = c => c.open?.review ? setReviewing(c.open.review) : c.open?.sheet && setSheetOpen(c.open.sheet)
 
   // The CartUp template picked last time (on this page or Shop Duplicate).
   useEffect(() => {
@@ -112,7 +123,7 @@ export default function DarazUpload() {
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
       const out = buildOutput(res, {}, memory, options)
-      if (out.stats.open || out.stats.dupes) setReviewing(true)
+      if (out.stats.open || out.stats.dupes) setReviewing(out.stats.open ? { view: 'values', state: 'open', col: 'all' } : { view: 'products', state: 'dupes', col: 'all' })
       else download(res, {}, {})
     } catch(e) {
       setStatus('error'); setError(e.message); setProgress('')
@@ -157,7 +168,7 @@ export default function DarazUpload() {
     output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (75%+ discount)`,
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at 99,999`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
-    output.rules.lowWeight && `${output.rules.lowWeight} weights with .00 after the point flagged`,
+    output.rules.lowWeight && `${output.rules.lowWeight} weights starting with 0.00 flagged`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
@@ -242,13 +253,15 @@ export default function DarazUpload() {
         </div>
 
         {apiKey ? (
-          <div style={{ background:'#eef2ff', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#4338ca', marginTop:12 }}>
+          <div style={{ background: pool.left ? '#eef2ff' : '#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color: pool.left ? '#4338ca' : '#92400e', marginTop:12, lineHeight:1.6 }}>
             <Zap size={13} style={{ verticalAlign:'middle', marginRight:6 }} />
-            AI enabled — name fix, category matching &amp; content via {PROVIDER_LABEL[provider]} ({keyCount} key{keyCount > 1 ? 's' : ''}, used in turn)
+            AI on — names, highlights, description &amp; categories with Gemini ({pool.models[0]?.label || 'no model'}) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
+            {' · '}<b>{pool.left.toLocaleString()}</b> requests left today (≈ {(pool.left * BATCH).toLocaleString()} products) · ≈ {pool.perMinute}/min
+            {!pool.left && <> — today's limit is used: names get the spelling fix only. Add or tick keys/models in Profile, or wait until {pool.reset.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })}.</>}
           </div>
         ) : (
           <div style={{ background:'#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#92400e', marginTop:12 }}>
-            No {PROVIDER_LABEL[provider]} API key — AI features disabled. Add keys in Profile.
+            No Gemini key ticked — AI is off (names get the spelling fix only). Add or tick keys in Profile.
           </div>
         )}
 
@@ -269,8 +282,8 @@ export default function DarazUpload() {
             </div>
 
             <div style={{ padding:'14px 16px', fontSize:12.5, color:'#334155', lineHeight:1.7 }}>
-              {/* How much is automatic */}
-              <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10, flexWrap:'wrap' }}>
+              {/* How much is automatic, and is it ready */}
+              <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12, flexWrap:'wrap' }}>
                 <div style={{ fontSize:22, fontWeight:800, color: autoPct >= 90 ? '#15803d' : '#b45309' }}>{autoPct}%</div>
                 <div style={{ flex:1, minWidth:220 }}>
                   <div style={{ fontWeight:600, color:'#1a202c' }}>of rows are ready without you · {needs.toLocaleString()} row{needs === 1 ? '' : 's'} need a look</div>
@@ -278,36 +291,80 @@ export default function DarazUpload() {
                     <div style={{ width:`${autoPct}%`, height:'100%', background:'#22c55e' }} />
                   </div>
                 </div>
+                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:20, fontWeight:700, fontSize:12.5,
+                  background: toFix ? '#fee2e2' : toCheck ? '#fef3c7' : '#dcfce7', color: toFix ? '#b91c1c' : toCheck ? '#92400e' : '#15803d' }}>
+                  {toFix ? <><AlertTriangle size={14} /> {toFix} thing{toFix > 1 ? 's' : ''} to fix{toCheck ? ` · ${toCheck} to check` : ''}</>
+                    : toCheck ? <><ClipboardCheck size={14} /> Ready — {toCheck} thing{toCheck > 1 ? 's' : ''} worth a look</>
+                    : <><CheckCircle size={14} /> Ready to upload</>}
+                </div>
               </div>
 
-              {result.template ? <>
-                <div style={{ display:'flex', alignItems:'center', gap:6, fontWeight:600, color:'#1a202c' }}>
-                  <ListChecks size={14} color='#4f46e5' /> Dropdown values: {stats.checked.toLocaleString()} checked · {valuePct}% settled automatically
+              {/* Check list: each check, how many, why, and one click to the right view */}
+              <div style={{ border:'1px solid #e2e8f0', borderRadius:10, overflow:'hidden', marginBottom:12 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 12px', background:'#f8fafc', borderBottom:'1px solid #e2e8f0', fontWeight:700, color:'#1a202c' }}>
+                  <ListChecks size={14} color='#4f46e5' /> Before you upload — check list
+                  <span style={{ fontWeight:500, color:'#64748b', fontSize:11.5 }}>red = fix · amber = worth a look · green = done</span>
                 </div>
-                <div>· {stats.auto.toLocaleString()} matched automatically (spelling, EU:40 → 40 (EU), XXL → 2XL, Multicolor-1/-2 to keep variants apart, warranty rules)</div>
-                {stats.remembered > 0 && <div>· {stats.remembered.toLocaleString()} from picks remembered from earlier runs</div>}
-                {stats.picked > 0 && <div>· {stats.picked.toLocaleString()} picked by you</div>}
-                {stats.kept > 0 && <div>· {stats.kept.toLocaleString()} kept as new values for CartUp's lists ("new values" sheet)</div>}
-                {stats.open > 0
-                  ? <div style={{ color:'#b91c1c', display:'flex', alignItems:'center', gap:6 }}><AlertTriangle size={13} /> {stats.open.toLocaleString()} values ({stats.openValues.toLocaleString()} different) in {stats.openParents.toLocaleString()} products not on the lists yet — they'd show #N/A in payload_hidden</div>
-                  : <div style={{ color:'#15803d' }}>· Every value is matched or decided — no #N/A expected</div>}
-                {stats.dupes > 0 && <div style={{ color:'#b45309' }}>· {stats.dupes.toLocaleString()} SKUs have the same variant values as a sibling — change them in the review</div>}
-              </> : (
-                <div style={{ color:'#92400e' }}>Values were not checked against CartUp's dropdown lists — add the CartUp template (below or above) to catch #N/A before uploading.</div>
-              )}
-              {ruleLine.length > 0 && <div style={{ marginTop:4, color:'#475569' }}>· {ruleLine.join(' · ')}</div>}
+                {checks.map(c => {
+                  const done = !c.count
+                  const color = c.level === 'info' ? '#64748b' : done ? '#16a34a' : c.level === 'fix' ? '#dc2626' : '#d97706'
+                  const Icon = c.level === 'info' ? Info : done ? CheckCircle : AlertTriangle
+                  return (
+                    <div key={c.id} data-check={c.id} style={{ display:'flex', alignItems:'center', gap:10, padding: done ? '5px 12px' : '8px 12px', borderBottom:'1px solid #f1f5f9', background: done ? '#fff' : c.level === 'fix' ? '#fffafa' : c.level === 'check' ? '#fffdf5' : '#fff' }}>
+                      <Icon size={15} color={color} style={{ flexShrink:0 }} />
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontWeight: done ? 500 : 600, color: done ? '#64748b' : '#1a202c', lineHeight:1.4 }}>{c.title}</div>
+                        {!done && <div style={{ fontSize:11.5, color:'#64748b', lineHeight:1.4 }}>{c.why}</div>}
+                      </div>
+                      <div style={{ textAlign:'right', minWidth:90, lineHeight:1.3 }}>
+                        <div style={{ fontWeight:700, color }}>{done ? '0' : `${c.count.toLocaleString()} ${c.unit}${c.count > 1 ? 's' : ''}`}</div>
+                        {c.extra && <div style={{ fontSize:11, color:'#94a3b8' }}>{c.extra}</div>}
+                      </div>
+                      <div style={{ width:112, display:'flex', justifyContent:'flex-end' }}>
+                        {c.open && (!done || c.id === 'fuzzy' && c.extra) && (
+                          <button onClick={() => openCheck(c)} style={{ ...btn(!done && c.level === 'fix'), padding:'5px 10px', fontSize:12 }}>
+                            {c.open.review ? ({ changed: 'Glance', kept: 'See' }[c.open.review.state] || 'Match') : 'Open'} <ChevronRight size={13} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+                {!result.template && (
+                  <div style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', background:'#fffafa' }}>
+                    <AlertTriangle size={15} color='#dc2626' />
+                    <div style={{ flex:1, color:'#92400e' }}>Values were not checked against CartUp's dropdown lists — add the CartUp template (below) to catch #N/A before uploading.</div>
+                  </div>
+                )}
+              </div>
 
-              <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                 {result.template && (
-                  <button onClick={() => setReviewing(true)} style={btn(true)}>
-                    <Layers size={14} /> Review product by product{stats.open ? ` (${stats.open} open)` : ''}
+                  <button onClick={() => setReviewing({ view: stats.open ? 'values' : 'products', state: stats.open ? 'open' : 'attention', col: 'all' })} style={btn(true)}>
+                    <Layers size={14} /> Check &amp; match values{stats.open ? ` (${stats.openValues} open)` : ''}
                   </button>
                 )}
-                <button onClick={() => setSheetOpen(true)} style={btn(!result.template)}>
+                <button onClick={() => setSheetOpen('problems')} style={btn(!result.template)}>
                   <Table2 size={14} /> View &amp; edit sheet{needs ? ` (${needs} rows to check)` : ''}
                 </button>
                 <button onClick={() => download()} style={btn(false)}><Download size={14} /> Download file</button>
               </div>
+
+              <details style={{ marginTop:12 }}>
+                <summary style={{ cursor:'pointer', fontWeight:600, color:'#4f46e5', fontSize:12.5 }}>What was done automatically</summary>
+                <div style={{ marginTop:6 }}>
+                  {result.template ? <>
+                    <div>· Dropdown values: {stats.checked.toLocaleString()} checked · {valuePct}% settled automatically</div>
+                    <div>· {stats.auto.toLocaleString()} matched automatically (spelling, EU:40 → 40 (EU), XXL → 2XL, Multicolor-1/-2 to keep variants apart, warranty rules)</div>
+                    {stats.remembered > 0 && <div>· {stats.remembered.toLocaleString()} from picks remembered from earlier runs</div>}
+                    {stats.picked > 0 && <div>· {stats.picked.toLocaleString()} picked by you</div>}
+                    {stats.kept > 0 && <div>· {stats.kept.toLocaleString()} kept as new values for CartUp's lists ("new values" sheet)</div>}
+                    {stats.open > 0 && <div style={{ color:'#b91c1c' }}>· {stats.open.toLocaleString()} values ({stats.openValues.toLocaleString()} different) in {stats.openParents.toLocaleString()} products not on the lists yet — they'd show #N/A in payload_hidden</div>}
+                  </> : <div>· Values were not checked against CartUp's lists (no template)</div>}
+                  {result.ai && <div>· AI cleaned {(result.ai.products - result.ai.missed).toLocaleString()} of {result.ai.products.toLocaleString()} products{result.ai.missed ? ` — ${result.ai.missed.toLocaleString()} got the spelling fix only` : ''}</div>}
+                  {ruleLine.length > 0 && <div>· {ruleLine.join(' · ')}</div>}
+                </div>
+              </details>
 
               <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:14, paddingTop:12, borderTop:'1px solid #f1f5f9', flexWrap:'wrap' }}>
                 <RefreshCw size={14} color='#4f46e5' />
@@ -324,15 +381,15 @@ export default function DarazUpload() {
           </div>
         )}
         {reviewing && result && (
-          <VariantReview result={result} decisions={decisions} setDecisions={setDecisions} memory={memory}
+          <VariantReview result={result} decisions={decisions} setDecisions={setDecisions} memory={memory} initial={reviewing}
             onForgetMemory={() => setMemory(forgetMemory())}
             onDownload={() => download()}
-            onClose={() => setReviewing(false)} />
+            onClose={() => setReviewing(null)} />
         )}
         {sheetOpen && output && (
-          <SheetEditor output={output} items={result.items} columns={OUTPUT_COLS.filter(c => c !== 'Report')} lists={result.lists}
+          <SheetEditor output={output} items={result.items} columns={SHEET_COLS} lists={result.lists} issues={issues} initialFilter={sheetOpen}
             keyOf={i => rowKey(result.items[i], i)} edits={edits} setEdits={setEdits}
-            onDownload={() => download()} onClose={() => setSheetOpen(false)} />
+            onDownload={() => download()} onClose={() => setSheetOpen(null)} />
         )}
         {error && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 16px', background:'#fee2e2', borderRadius:8, color:'#dc2626', fontSize:13, marginTop:16 }}>

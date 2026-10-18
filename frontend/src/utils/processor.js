@@ -3,6 +3,7 @@ import MAPPINGS from './mappings.json'
 import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
 import { loadTemplate, weightNeedsCheck } from './shopDuplicate'
+import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, applyDecisions } from './variantReview'
@@ -197,6 +198,11 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
 
   // ── Step 2: AI — batch process unique PIDs (5 per call, CONCURRENCY parallel) ─
   const aiCache = {}   // pid → {name, highlights, description}
+  // Products the AI couldn't do (limit reached, bad response…) get the local
+  // spelling fix only — counted so the page can say so.
+  const aiMissed = new Set()
+  let aiMessage = ''
+  const aiFailed = (message, pids) => { pids.forEach(p => aiMissed.add(p)); aiMessage = message }
   if (apiKey) {
     const batches = []
     for (let i = 0; i < pidList.length; i += BATCH_SIZE) {
@@ -206,7 +212,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     let done = 0
     const tasks = batches.map((batch, bi) => async () => {
       onProgress(`AI processing products ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}... (batch ${bi + 1}/${total_batches})`)
-      const result = await processProductsBatch(batch, apiKey)
+      const result = await processProductsBatch(batch, apiKey, aiFailed)
       Object.assign(aiCache, result)
       done += batch.length
     })
@@ -278,7 +284,6 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     seenSkus.add(sku)
     return true
   })
-  const nameHow = apiKey ? 'Name fixed by AI' : 'Name fixed (spelling rules)'
 
   const items = []
   const invalidRows = []
@@ -424,12 +429,13 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       'Report':                   reportNote,
     }
 
+    const nameHow = !apiKey ? 'Name fixed (spelling rules)' : aiMissed.has(pid) ? 'Name fixed (spelling rules — AI unavailable)' : 'Name fixed by AI'
     items.push({ out, sku, parent: pid, name: fixedName, darazName: name, nameHow, combo, applicable, brandFromFile: !!brandFromFile,
       category: cartupPath, reportNote, image: variantImage, productImage: img1, images: images.filter(Boolean) })
   }
 
   matchItems(items, lists)
-  return { items, invalidRows, duplicateSkus, skipped, lists, template: !!lists }
+  return { items, invalidRows, duplicateSkus, skipped, lists, template: !!lists, ai: apiKey ? { products: pidList.length, missed: aiMissed.size, message: aiMessage } : null }
 }
 
 const groupBy = (arr, key) => {
@@ -497,8 +503,6 @@ export function rematch(result, lists) {
   return { ...result, items, lists, template: !!lists }
 }
 
-const IMAGE_COLS = ['**Product Image 1', 'Product Image 2', 'Product Image 3', 'Product Image 4',
-  'Product Image 5', 'Product Image 6', 'Product Image 7', 'Product Image 8', '*Variant Image']
 // Key of a row for hand edits (Seller SKUs are unique after stage 1).
 export const rowKey = (item, i) => item.sku || `row ${i + 1}`
 
@@ -572,10 +576,10 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
         if (/^https?:\/\//i.test(String(out[c] ?? '').trim())) { flag(c, 'No image key for this link yet'); rules.imageMissing++ }
       }
     }
-    // Weight with two zeros after the point (0.004, 1.003) or none at all: CartUp may show a delivery charge of 0.
+    // Weight starting with 0.00 (0.001–0.009) or none at all: CartUp may show a delivery charge of 0.
     if (weightNeedsCheck(out['**Package Weight (kg)'])) {
-      flag('**Package Weight (kg)', 'Two zeros after the decimal point (or no weight) — CartUp may show a delivery charge of 0')
-      notes.push('Weight to check (.00)')
+      flag('**Package Weight (kg)', 'Starts with 0.00 (or no weight) — CartUp may show a delivery charge of 0')
+      notes.push('Weight to check (0.00x)')
       rules.lowWeight++
     }
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')

@@ -2,7 +2,7 @@ import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from routers import auth, production, ai_proxy
+from routers import auth, production
 
 app = FastAPI(title="CartUp Ops API")
 
@@ -29,7 +29,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(production.router, prefix="/production", tags=["production"])
-app.include_router(ai_proxy.router, prefix="/ai", tags=["ai"])
 
 @app.get("/")
 def root():

@@ -271,6 +271,40 @@ export function reviewGroups(result, decisions, memory) {
   return groups.sort((a, b) => attention(b) - attention(a))
 }
 
+// Which kind of column a value belongs to, for filters and the check list.
+export const colGroup = col => col === '**Brand' ? 'brand' : /^Warranty/.test(colLabel(col)) ? 'warranty' : COMBO_TARGETS.includes(col) ? 'variant' : 'other'
+// How much an automatic change is worth a look — fuzzy spelling first.
+export const RISK = { similar: 3, alias: 2, rule: 2, numbered: 1, format: 1, exact: 0 }
+
+// ── By value ──────────────────────────────────────────────────────────────────
+// Every distinct seller value per column, across all products, with what it
+// ends up as — one decision settles it everywhere (and is remembered).
+//   status: open (some SKUs undecided) · changed (matched to another spelling
+//           or value) · kept (new value) · ok (on the list as written)
+export function valueGroups(result, decisions, memory) {
+  const m = new Map()
+  for (const it of result.items) for (const c of it.cells) {
+    if (!c.listed || c.source !== 'daraz') continue
+    const key = decisionKey.all(c)
+    let g = m.get(key)
+    if (!g) m.set(key, g = { key, col: c.col, raw: c.raw, cell: c, item: it, parents: new Set(), skus: 0, open: 0, kept: 0, changed: 0, values: new Map(), how: null, conflict: '' })
+    const st = cellState(it, c, decisions, memory, result.lists)
+    g.parents.add(it.parent); g.skus++
+    if (st.state === 'open') { g.open++; g.conflict ||= st.conflict || '' }
+    else if (st.state === 'kept') g.kept++
+    else if (st.value !== c.raw) g.changed++
+    if (st.state !== 'open') g.values.set(st.noWarranty ? 'No Warranty' : st.value, (g.values.get(st.noWarranty ? 'No Warranty' : st.value) || 0) + 1)
+    if (st.state === 'auto' && (RISK[st.how] ?? 0) > (RISK[g.how] ?? -1)) g.how = st.how
+    if (st.state === 'picked' || st.state === 'remembered') g.by ||= st.state
+  }
+  return [...m.values()].map(g => ({
+    ...g,
+    status: g.open ? 'open' : g.kept ? 'kept' : g.changed ? 'changed' : 'ok',
+    now: [...g.values].sort((a, b) => b[1] - a[1]).map(([v]) => v),
+    decided: decisions[g.key] || null,
+  }))
+}
+
 // ── Final rows, change log and new values ─────────────────────────────────────
 export function applyDecisions(result, decisions = {}, memory = {}) {
   const rows = [], changes = [], newValues = new Map()

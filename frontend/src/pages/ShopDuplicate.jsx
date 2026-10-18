@@ -331,7 +331,7 @@ export default function ShopDuplicate() {
           · Warranty Type ID → its name (e.g. 3 → No Warranty)<br/>
           · Brand, Color, Size, Warranty… matched to the template's lists — spelling / format differences fixed (EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size); anything still unmatched (#N/A) is listed<br/>
           · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank · a 75%+ discount is removed<br/>
-          · Stock over 99,999 → 99,999 · "#" in names → "-" · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight with two zeros after the point (0.004) flagged<br/>
+          · Stock over 99,999 → 99,999 · "#" in names → "-" · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight starting with 0.00 (0.001–0.009) flagged<br/>
           · Word Replacements from Profile applied to names, highlights &amp; descriptions (e.g. daraz → cartup)<br/>
           · Hidden ID sheet is computed for you — no need to open in Excel first
         </div>
