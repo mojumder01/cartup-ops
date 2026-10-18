@@ -92,13 +92,16 @@ Download template → Fill in products → Upload → AI process → Download ou
 Copies every product of one seller into the CartUp bulk-upload template for another seller — no AI, nothing rewritten.
 
 ```
-Old seller's product export + blank upload template + new SKU prefix → Process & Download
+Old seller's product export + blank upload template + new seller SKU (replace code or prefix) → Process & Download
 ```
 
 **Inputs:**
 - **Old seller's product export** — the admin export (ProductId, VariantName, Seller SKU, Parent Sku, Product Image1–8, HighlightEn/Bn, DescriptionEn/Bn, …)
 - **Upload template (blank)** — download a fresh one from the seller center each time; its Brand/Unit/Color/Size lists are used to fill the hidden ID sheet
-- **New seller SKU prefix** — e.g. `CCWT9323` turns `CCWT9196_184_Anycolour` into `CCWT9323_CCWT9196_184_Anycolour` (Parent SKU too)
+- **New seller SKU** — applied to Seller SKU and Parent SKU, two modes:
+  - **Replace code** (default) — old seller code → new seller code: `CCWT9196 = CCWT9197` turns `CCWT9196_184_Anycolour` into `CCWT9197_184_Anycolour`. One row per old code; the codes found in the export (the part before the first `_`) are pre-filled with their SKU counts, and pasting lines like `CCWT9196 = CCWT9197` (also `->`, `→`, `:`) fills the rows. Codes match whole tokens only (`CCWT9196` never touches `CCWT91961`), case-insensitive, in one pass (so `A = B`, `B = A` swaps rather than chains)
+  - **Add prefix** — e.g. `CCWT9323` turns `CCWT9196_184_Anycolour` into `CCWT9323_CCWT9196_184_Anycolour`
+  - **Clash check** (live, before processing): if two old SKUs would become the same new Seller SKU, or two different old parents the same new Parent SKU (e.g. mapping `CCWT9196` and `CCWT9194` both to `CCWT9197` makes `CCWT9196_184` and `CCWT9194_184` one product), the page shows a red warning — give each old code its own new code, or use Add prefix. SKUs no rule matches keep the old code and are counted too
 
 **How each row is filled:**
 - Image URLs → file name only (`https://…/product/abc.webp` → `abc.webp`), for Product Image 1–8 and Variant Image
@@ -110,9 +113,9 @@ Old seller's product export + blank upload template + new SKU prefix → Process
 
 **The hidden `payload_hidden` sheet** (the one the platform reads — IDs via VLOOKUP formulas) is filled with the values Excel would compute, so the file uploads correctly without opening it in Excel first. Its formulas are rebuilt cleanly on every run, which also repairs templates whose rows were deleted in Excel (they leave `#REF!` rows behind). Everything else in the template — dropdowns, lookup tables, hidden sheets — is kept byte-for-byte.
 
-**Output:** `cartup_shop_duplicate_<prefix>.xlsx`. A template holds ~4,990 rows; bigger shops are split into several files (downloaded as a .zip) and a product's variants are never split across files.
+**Output:** `cartup_shop_duplicate_<new code or prefix>.xlsx`. A template holds ~4,990 rows; bigger shops are split into several files (downloaded as a .zip) and a product's variants are never split across files.
 
-**Warnings** are listed after processing (and downloadable as .xlsx): a value not in the template's list (that row would be rejected — the hidden sheet shows `#N/A` exactly as Excel would), an unknown variant attribute, an empty required field, or a special price not below MRP.
+**Warnings** are listed after processing (and downloadable as .xlsx): a value not in the template's list (that row would be rejected — the hidden sheet shows `#N/A` exactly as Excel would), an unknown variant attribute, an empty required field, a special price not below MRP, a SKU no replace rule matched, or a Seller/Parent SKU clash.
 
 ---
 

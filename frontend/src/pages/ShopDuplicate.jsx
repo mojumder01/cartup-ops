@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import { duplicateShop, readSellerExport, prefixedSku, zipFiles } from '../utils/shopDuplicate'
-import { Copy, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Info } from 'lucide-react'
+import { duplicateShop, readSellerExport, skuCodes, parseSkuRules, planSkus, skuOptionsError, zipFiles } from '../utils/shopDuplicate'
+import { Copy, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Info, Plus, X } from 'lucide-react'
 
 function FileInput({ label, hint, onChange, summary }) {
   const [fileName, setFileName] = useState('')
@@ -41,11 +41,25 @@ function save(bytes, name, type) {
   URL.revokeObjectURL(url)
 }
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const EMPTY_RULE = { from: '', to: '' }
+
+// Adds rules, updating the new code of ones already listed.
+function mergeRules(existing, incoming) {
+  const out = existing.map(r => ({ ...r }))
+  for (const r of incoming) {
+    const hit = out.find(o => o.from.trim().toLowerCase() === r.from.trim().toLowerCase())
+    if (!hit) out.push({ from: r.from, to: r.to })
+    else if (r.to) hit.to = r.to
+  }
+  return out.length ? out : [EMPTY_RULE]
+}
 
 export default function ShopDuplicate() {
   const [exportFile, setExportFile]     = useState(null)
-  const [exportInfo, setExportInfo]     = useState(null)   // { rows, sampleSku }
+  const [exportRows, setExportRows]     = useState(null)
   const [templateFile, setTemplateFile] = useState(null)
+  const [skuMode, setSkuMode] = useState('replace')
+  const [rules, setRules]     = useState([EMPTY_RULE])
   const [prefix, setPrefix]   = useState('')
   const [status, setStatus]   = useState('')
   const [progress, setProgress] = useState('')
@@ -55,14 +69,37 @@ export default function ShopDuplicate() {
   const reset = () => { setStatus(''); setError(''); setResult(null) }
 
   const onExport = async f => {
-    reset(); setExportFile(f); setExportInfo(null)
+    reset(); setExportFile(f); setExportRows(null)
     try {
       const rows = readSellerExport(await f.arrayBuffer())
-      setExportInfo({ rows: rows.length, sampleSku: String(rows.find(r => r.sellersku)?.sellersku || '') })
+      setExportRows(rows)
+      // Pre-fill one replace row per seller code found in the SKUs, when the
+      // SKUs follow the CODE_… pattern; rules already given a new code stay.
+      const codes = skuCodes(rows).slice(0, 10)
+      if (codes.reduce((n, c) => n + c.count, 0) >= rows.length * 0.8) {
+        setRules(rs => mergeRules(rs.filter(r => r.from.trim() && r.to.trim()), codes.map(c => ({ from: c.code, to: '' }))))
+      }
     } catch (e) { setError(e.message) }
   }
 
-  const fileBase = `cartup_shop_duplicate_${(prefix.trim().replace(/[^\w-]+/g, '') || 'output')}`
+  const sku = useMemo(() => skuMode === 'replace' ? { mode: 'replace', rules } : { mode: 'prefix', prefix }, [skuMode, rules, prefix])
+  const skuReady = !skuOptionsError(sku)
+  const plan = useMemo(() => exportRows && planSkus(exportRows, sku), [exportRows, sku])
+  const sampleSku = String(exportRows?.find(r => r.sellersku)?.sellersku || '')
+
+  const setRule = (i, patch) => { setRules(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r)); reset() }
+  const removeRule = i => { setRules(rs => rs.length > 1 ? rs.filter((_, j) => j !== i) : [EMPTY_RULE]); reset() }
+  // Pasting "CCWT9196 = CCWT9197" (or several lines of them) fills the rows.
+  const pasteRules = (i, e) => {
+    const parsed = parseSkuRules(e.clipboardData.getData('text'))
+    if (!parsed.length || (parsed.length === 1 && !parsed[0].to)) return
+    e.preventDefault()
+    setRules(rs => mergeRules(rs.filter((r, j) => j !== i || r.from.trim()), parsed))
+    reset()
+  }
+
+  const newCode = skuMode === 'replace' ? rules.find(r => r.from.trim() && r.to.trim())?.to : prefix
+  const fileBase = `cartup_shop_duplicate_${(String(newCode || '').trim().replace(/[^\w-]+/g, '') || 'output')}`
 
   const download = res => {
     if (res.files.length === 1) save(res.files[0].bytes, `${fileBase}.xlsx`, XLSX_TYPE)
@@ -71,13 +108,14 @@ export default function ShopDuplicate() {
 
   const handleProcess = async () => {
     if (!exportFile || !templateFile) { setError('Please select both files'); return }
-    if (!prefix.trim()) { setError('Enter the new seller\'s SKU prefix'); return }
+    const skuError = skuOptionsError(sku)
+    if (skuError) { setError(skuError); return }
     reset(); setStatus('processing'); setProgress('Starting...')
     try {
       const res = await duplicateShop({
         exportData: await exportFile.arrayBuffer(),
         templateData: await templateFile.arrayBuffer(),
-        prefix,
+        sku,
         onProgress: setProgress,
       })
       if (res.files.length > 1) {
@@ -101,7 +139,7 @@ export default function ShopDuplicate() {
   const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
   const report = result?.report
   const grouped = report ? Object.entries(report.warnings.reduce((acc, w) => {
-    const k = `${w.field} — ${w.message.replace(/"[^"]*"/, '"…"')}`
+    const k = `${w.field} — ${w.message.replace(/"[^"]*"/g, '"…"')}`
     acc[k] = (acc[k] || 0) + 1
     return acc
   }, {})).sort((a, b) => b[1] - a[1]) : []
@@ -127,7 +165,7 @@ export default function ShopDuplicate() {
           label="Old seller's product export"
           hint="The admin export of the seller to copy from (ProductId, VariantName, Seller SKU, Parent Sku, Product Image1–8…)"
           onChange={onExport}
-          summary={exportInfo && `${exportInfo.rows.toLocaleString()} rows${exportInfo.sampleSku ? ` · e.g. ${exportInfo.sampleSku}` : ''}`}
+          summary={exportRows && `${exportRows.length.toLocaleString()} rows${sampleSku ? ` · e.g. ${sampleSku}` : ''}`}
         />
         <FileInput
           label="Upload template (blank)"
@@ -135,19 +173,102 @@ export default function ShopDuplicate() {
           onChange={f => { reset(); setTemplateFile(f) }}
         />
 
-        <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:4, textTransform:'uppercase', letterSpacing:'0.4px' }}>
-          New seller SKU prefix <span style={{ color:'#dc2626' }}>*</span>
-        </label>
-        <div style={{ fontSize:11, color:'#94a3b8', marginBottom:6 }}>Added in front of every Seller SKU and Parent SKU</div>
-        <input
-          value={prefix}
-          onChange={e => { setPrefix(e.target.value); reset() }}
-          placeholder="e.g. CCWT9323"
-          style={{ width:'100%', maxWidth:280, padding:'10px 14px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:14, outline:'none', boxSizing:'border-box' }}
-        />
-        {prefix.trim() && exportInfo?.sampleSku && (
-          <div style={{ fontSize:12, color:'#475569', marginTop:6, fontFamily:'monospace' }}>
-            {exportInfo.sampleSku} → <b style={{ color:'#4f46e5' }}>{prefixedSku(prefix, exportInfo.sampleSku)}</b>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8, marginBottom:6 }}>
+          <label style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px' }}>
+            New seller SKU <span style={{ color:'#dc2626' }}>*</span>
+          </label>
+          <div style={{ display:'flex', gap:3, background:'#f1f5f9', borderRadius:8, padding:3 }}>
+            {[['replace', 'Replace code'], ['prefix', 'Add prefix']].map(([m, label]) => (
+              <button key={m} onClick={() => { setSkuMode(m); reset() }}
+                style={{
+                  padding:'5px 12px', borderRadius:6, border:'none', fontSize:12, fontWeight:600, cursor:'pointer',
+                  background: skuMode === m ? '#fff' : 'transparent',
+                  color: skuMode === m ? '#4f46e5' : '#718096',
+                  boxShadow: skuMode === m ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {skuMode === 'replace' ? (
+          <>
+            <div style={{ fontSize:11, color:'#94a3b8', marginBottom:8 }}>
+              Old seller code → new seller code in every Seller SKU and Parent SKU (e.g. CCWT9196_184_Anycolour → CCWT9197_184_Anycolour). You can paste lines like <code>CCWT9196 = CCWT9197</code>.
+            </div>
+            {rules.map((r, i) => {
+              const st = plan?.rules[i]
+              return (
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                  <input value={r.from} placeholder="Old code, e.g. CCWT9196"
+                    onChange={e => setRule(i, { from: e.target.value })} onPaste={e => pasteRules(i, e)}
+                    style={{ width:170, flexShrink:0, padding:'8px 12px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:13, fontFamily:'monospace', outline:'none', boxSizing:'border-box' }} />
+                  <span style={{ color:'#94a3b8', fontWeight:700 }}>=</span>
+                  <input value={r.to} placeholder="New code, e.g. CCWT9197"
+                    onChange={e => setRule(i, { to: e.target.value })}
+                    style={{ width:170, flexShrink:0, padding:'8px 12px', border:`1.5px solid ${r.from.trim() && !r.to.trim() ? '#fcd34d' : '#e2e8f0'}`, borderRadius:8, fontSize:13, fontFamily:'monospace', outline:'none', boxSizing:'border-box' }} />
+                  <div title={st?.sample && r.to.trim() ? `${st.sample.from} → ${st.sample.to}` : undefined}
+                    style={{ flex:1, minWidth:0, fontSize:11.5, color:'#64748b', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {st && r.from.trim() && (
+                      st.count === 0 ? <span style={{ color:'#b45309' }}>not found in the export</span>
+                        : <>
+                            <b>{st.count.toLocaleString()}</b> SKUs ·{' '}
+                            {r.to.trim()
+                              ? <>e.g. <b style={{ color:'#4f46e5', fontFamily:'monospace' }}>{st.sample.to}</b></>
+                              : <span style={{ color:'#b45309' }}>enter the new code</span>}
+                          </>
+                    )}
+                  </div>
+                  <button onClick={() => removeRule(i)} title="Remove"
+                    style={{ background:'none', border:'none', color:'#94a3b8', cursor:'pointer', padding:4, display:'flex' }}>
+                    <X size={14} />
+                  </button>
+                </div>
+              )
+            })}
+            <button onClick={() => { setRules(rs => [...rs, EMPTY_RULE]); reset() }}
+              style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', background:'none', color:'#4f46e5', border:'1px dashed #c7d2fe', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+              <Plus size={12} /> Add code
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize:11, color:'#94a3b8', marginBottom:6 }}>Added in front of every Seller SKU and Parent SKU</div>
+            <input
+              value={prefix}
+              onChange={e => { setPrefix(e.target.value); reset() }}
+              placeholder="e.g. CCWT9323"
+              style={{ width:'100%', maxWidth:280, padding:'10px 14px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:14, outline:'none', boxSizing:'border-box' }}
+            />
+            {skuReady && plan?.sample && (
+              <div style={{ fontSize:12, color:'#475569', marginTop:6, fontFamily:'monospace' }}>
+                {plan.sample.from} → <b style={{ color:'#4f46e5' }}>{plan.sample.to}</b>
+              </div>
+            )}
+          </>
+        )}
+
+        {skuReady && plan && (plan.sellerClashes > 0 || plan.parentClashes > 0) ? (
+          <div style={{ display:'flex', gap:8, marginTop:10, padding:'10px 12px', background:'#fef2f2', border:'1px solid #fecaca', borderRadius:8, fontSize:12, color:'#991b1b', lineHeight:1.6 }}>
+            <AlertTriangle size={14} style={{ flexShrink:0, marginTop:2 }} />
+            <div>
+              <b>
+                {[plan.sellerClashes > 0 && `${plan.sellerClashes.toLocaleString()} Seller SKUs`, plan.parentClashes > 0 && `${plan.parentClashes.toLocaleString()} Parent SKUs`].filter(Boolean).join(' and ')}
+                {' '}would clash
+              </b>
+              {plan.example && <> — e.g. <code>{plan.example.a}</code> and <code>{plan.example.b}</code> both become <code>{plan.example.to}</code></>}.
+              {' '}Give each old code its own new code{skuMode === 'replace' ? ', or use Add prefix' : ''}. The clashing rows are listed in the warnings after processing.
+            </div>
+          </div>
+        ) : skuReady && plan && plan.unchanged === 0 && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:10, fontSize:12, color:'#15803d' }}>
+            <CheckCircle size={13} /> All {plan.total.toLocaleString()} SKUs get the new code — no clashes
+          </div>
+        )}
+        {skuReady && plan && skuMode === 'replace' && plan.unchanged > 0 && (
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:8, fontSize:12, color:'#b45309' }}>
+            <AlertTriangle size={13} /> {plan.unchanged.toLocaleString()} of {plan.total.toLocaleString()} SKUs match no code above and keep the old seller code
           </div>
         )}
 
@@ -155,6 +276,7 @@ export default function ShopDuplicate() {
           <div style={{ display:'flex', alignItems:'center', gap:6, fontWeight:600, color:'#1a202c', marginBottom:4 }}>
             <Info size={13} color='#4f46e5' /> How it's filled
           </div>
+          · Seller SKU &amp; Parent SKU → old seller code replaced (CCWT9196 → CCWT9197), or a prefix added<br/>
           · Image URLs → file names only (as the template expects)<br/>
           · VariantName <code>Size-One Size, Color-Black</code> → Size and Color columns<br/>
           · Warranty Type ID → its name (e.g. 3 → No Warranty)<br/>

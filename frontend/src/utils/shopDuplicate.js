@@ -285,17 +285,139 @@ function imageName(v) {
   if (blank(v)) return ''
   return String(v).trim().split(/[?#]/)[0].replace(/\/+$/, '').split('/').pop()
 }
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// ── SKUs for the new seller ───────────────────────────────────────────────────
+// Either a prefix in front (CCWT9196_184 → CCWT9323_CCWT9196_184) or the old
+// seller code replaced (CCWT9196_184 → CCWT9197_184).
 export function prefixedSku(prefix, sku) {
   if (blank(sku)) return ''
   const p = String(prefix || '').trim()
   return /[_-]$/.test(p) || !p ? `${p}${sku}` : `${p}_${sku}`
 }
 
+// Seller codes the export's SKUs start with: CCWT9196_184_Anycolour → CCWT9196.
+export function skuCodes(rows) {
+  const codes = new Map()
+  for (const r of rows) {
+    const sku = String(r.sellersku ?? '').trim()
+    const m = /^([A-Za-z0-9]+)[_-]/.exec(sku)
+    if (!m) continue
+    if (!codes.has(m[1])) codes.set(m[1], { code: m[1], count: 0 })
+    codes.get(m[1]).count++
+  }
+  return [...codes.values()].sort((a, b) => b.count - a.count)
+}
+
+// "CCWT9196 = CCWT9197" — one rule per line (or comma); =, ->, →, : or a space between.
+export function parseSkuRules(text) {
+  return String(text ?? '').split(/[\r\n;,]+/).map(line => {
+    const m = /^\s*(\S+?)\s*(?:=>|->|→|=|:|\s)\s*(\S*)\s*$/.exec(line)
+    return m ? { from: m[1], to: m[2] } : { from: line.trim(), to: '' }
+  }).filter(r => r.from)
+}
+
+// Codes match whole tokens only (CCWT9196 never touches CCWT91961),
+// case-insensitive, longest first.
+function codePattern(codes, flags = 'gi') {
+  const alnum = /[A-Za-z0-9]/
+  const alts = [...new Set(codes.map(c => c.toLowerCase()))].sort((a, b) => b.length - a.length).map(c =>
+    `${alnum.test(c[0]) ? '(?<![A-Za-z0-9])' : ''}${escapeRe(c)}${alnum.test(c[c.length - 1]) ? '(?![A-Za-z0-9])' : ''}`)
+  return alts.length ? new RegExp(alts.join('|'), flags) : null
+}
+
+const ruleList = rules => (rules || []).map(r => ({ from: String(r.from ?? '').trim(), to: String(r.to ?? '').trim() }))
+
+export function skuOptionsError({ mode, prefix, rules } = {}) {
+  if (mode === 'replace') {
+    return ruleList(rules).some(r => r.from && r.to) ? '' : 'Add at least one code to replace, e.g. CCWT9196 = CCWT9197'
+  }
+  return String(prefix || '').trim() ? '' : 'Enter the new seller\'s SKU prefix'
+}
+
+// sku → { sku: new SKU, hit: whether anything was changed }. In replace mode
+// each SKU is rewritten in one pass, so rules like A=B, B=C never chain.
+export function skuMapper({ mode, prefix, rules } = {}) {
+  if (mode !== 'replace') return sku => blank(sku) ? { sku: '', hit: false } : { sku: prefixedSku(prefix, sku), hit: true }
+  const map = new Map()
+  for (const { from, to } of ruleList(rules)) if (from && to && !map.has(from.toLowerCase())) map.set(from.toLowerCase(), to)
+  const re = codePattern([...map.keys()])
+  return sku => {
+    let hit = false
+    const out = blank(sku) || !re ? String(sku ?? '') : String(sku).replace(re, m => { hit = true; return map.get(m.toLowerCase()) })
+    return { sku: out, hit }
+  }
+}
+
+// Keep the first row for each Seller SKU, in the export's order.
+function dedupe(exportRows) {
+  const seen = new Set(), unique = [], duplicates = [], missing = []
+  for (const r of exportRows) {
+    const sku = String(r.sellersku ?? '').trim()
+    if (!sku) missing.push(r)
+    else if (seen.has(sku)) duplicates.push(sku)
+    else { seen.add(sku); unique.push(r) }
+  }
+  return { unique, duplicates, missing }
+}
+
+// The SKU rewrite over the deduplicated rows. Flags SKUs no rule touched, and
+// clashes: two old SKUs becoming the same new Seller SKU (the upload rejects
+// one), or two old parents becoming one new Parent SKU (two products merge).
+function planUnique(unique, sku) {
+  const map = skuMapper(sku)
+  const sellerOf = new Map(), parentOf = new Map()
+  const sellerClashes = new Set(), parentClashes = new Set()
+  let unchanged = 0, example = null
+  const items = unique.map(r => {
+    const oldSeller = String(r.sellersku).trim(), oldParent = String(r.parentsku ?? '').trim()
+    const seller = map(oldSeller), parent = map(oldParent)
+    const it = { seller: seller.sku, parent: parent.sku, unchanged: [], clashes: [] }
+    if (!seller.hit) it.unchanged.push('Seller SKU')
+    if (oldParent && !parent.hit) it.unchanged.push('Parent SKU')
+    if (it.unchanged.length) unchanged++
+
+    if (sellerOf.has(seller.sku)) {
+      it.clashes.push({ field: 'Seller SKU', message: `Becomes "${seller.sku}", the same as "${sellerOf.get(seller.sku)}" — the upload will reject one` })
+      sellerClashes.add(seller.sku)
+      example ||= { a: sellerOf.get(seller.sku), b: oldSeller, to: seller.sku }
+    } else sellerOf.set(seller.sku, oldSeller)
+    if (oldParent) {
+      const owner = parentOf.get(parent.sku)
+      if (owner === undefined) parentOf.set(parent.sku, oldParent)
+      else if (owner !== oldParent) {
+        it.clashes.push({ field: 'Parent SKU', message: `Becomes "${parent.sku}", the same as parent "${owner}" — two products would merge into one` })
+        parentClashes.add(parent.sku)
+        example ||= { a: owner, b: oldParent, to: parent.sku }
+      }
+    }
+    return it
+  })
+  return { items, unchanged, sellerClashes: sellerClashes.size, parentClashes: parentClashes.size, example }
+}
+
+// Live preview for the page: totals plus, per replace rule, how many SKUs
+// carry that code and an example of the result.
+export function planSkus(exportRows, sku) {
+  const { unique } = dedupe(exportRows)
+  const plan = planUnique(unique, sku)
+  const rules = sku?.mode === 'replace' ? ruleList(sku.rules).map(({ from }) => {
+    const re = from && codePattern([from], 'i')
+    const i = re ? unique.findIndex(r => re.test(String(r.sellersku))) : -1
+    return {
+      count: i < 0 ? 0 : unique.reduce((n, r) => n + re.test(String(r.sellersku)), 0),
+      sample: i < 0 ? null : { from: String(unique[i].sellersku).trim(), to: plan.items[i].seller },
+    }
+  }) : []
+  const { items, ...totals } = plan
+  return { total: unique.length, ...totals, sample: items[0] && { from: String(unique[0].sellersku).trim(), to: items[0].seller }, rules }
+}
+
 // "Size-One Size, Color-Black" → { size: 'One Size', color: 'Black' }
 function parseAttrList(text, names) {
   const out = {}, unknown = []
   if (blank(text)) return { out, unknown }
-  const alts = [...names].sort((a, b) => b.length - a.length).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const alts = [...names].sort((a, b) => b.length - a.length).map(escapeRe).join('|')
   const parts = alts
     ? String(text).split(new RegExp(`,\\s*(?=(?:${alts})\\s*-)`, 'i'))
     : [String(text)]
@@ -308,20 +430,13 @@ function parseAttrList(text, names) {
   return { out, unknown }
 }
 
-export function buildRows(exportRows, tpl, { prefix }) {
+export function buildRows(exportRows, tpl, sku) {
   const warnings = []
   const warn = (src, field, message) => warnings.push({ row: src.__row, sku: src.sellersku ?? '', field, message })
 
-  // Keep the first row for each Seller SKU, in the export's order.
-  const seen = new Set(), duplicates = []
-  const unique = []
-  for (const r of exportRows) {
-    const sku = String(r.sellersku ?? '').trim()
-    if (!sku) { warn(r, 'Seller SKU', 'Row has no Seller SKU — skipped'); continue }
-    if (seen.has(sku)) { duplicates.push(sku); continue }
-    seen.add(sku)
-    unique.push(r)
-  }
+  const { unique, duplicates, missing } = dedupe(exportRows)
+  for (const r of missing) warn(r, 'Seller SKU', 'Row has no Seller SKU — skipped')
+  const skus = planUnique(unique, sku).items
 
   const variantCols = tpl.columns.filter(c => c.group.includes('variantattribute') && c.lookup)
   const attrCols = tpl.columns.filter(c => c.group.includes('productattribute'))
@@ -334,8 +449,10 @@ export function buildRows(exportRows, tpl, { prefix }) {
     return t.exact.get(s) || t.exact.get(s.trim()) || t.trimmed.get(s.trim()) || null
   }
 
-  const rows = unique.map(src => {
+  const rows = unique.map((src, i) => {
     const values = {}
+    if (skus[i].unchanged.length) warn(src, skus[i].unchanged.join(' & '), 'No replace rule matched — the old seller code is kept')
+    for (const c of skus[i].clashes) warn(src, c.field, c.message)
     const variants = parseAttrList(src.variantname, variantNames)
     if (variants.unknown.length) warn(src, 'Variant', `Unknown variant attribute: ${variants.unknown.join('; ')}`)
     const attrs = parseAttrList(src.productattributes, attrNames)
@@ -352,7 +469,8 @@ export function buildRows(exportRows, tpl, { prefix }) {
       if (blank(v)) v = ''
 
       if (key.startsWith('productimage') || key === 'variantimage') v = imageName(v)
-      else if (key === 'sellersku' || key === 'parentsku') v = prefixedSku(prefix, String(v).trim())
+      else if (key === 'sellersku') v = skus[i].seller
+      else if (key === 'parentsku') v = skus[i].parent
       else if (TEXT_FIELDS.has(key) && v !== '') v = applyReplacements(String(v))
       else if (key === 'specialprice') v = hasSpecial ? toNumber(v) : ''
       else if (key === 'specialstartdate' || key === 'specialenddate') v = hasSpecial ? toDateText(v) : ''
@@ -380,6 +498,7 @@ export function buildRows(exportRows, tpl, { prefix }) {
     return { values, parent: String(src.parentsku ?? '').trim(), source: src }
   })
 
+  warnings.sort((a, b) => a.row - b.row)
   return { rows, warnings, duplicates, totalRead: exportRows.length }
 }
 
@@ -484,8 +603,10 @@ export async function writeTemplate(tpl, rows) {
 }
 
 // Full pipeline: returns one or more filled templates plus a report.
-export async function duplicateShop({ exportData, templateData, prefix, onProgress: report = () => {} }) {
-  if (!String(prefix || '').trim()) throw new Error('Enter the new seller\'s SKU prefix')
+// sku: { mode: 'replace', rules: [{ from, to }] } or { mode: 'prefix', prefix }.
+export async function duplicateShop({ exportData, templateData, sku, onProgress: report = () => {} }) {
+  const skuError = skuOptionsError(sku)
+  if (skuError) throw new Error(skuError)
   // Yield after each message so the browser can paint it before the next heavy step.
   const onProgress = async msg => { report(msg); await new Promise(r => setTimeout(r, 0)) }
   await onProgress('Reading seller export…')
@@ -493,7 +614,7 @@ export async function duplicateShop({ exportData, templateData, prefix, onProgre
   await onProgress('Reading upload template…')
   const tpl = await loadTemplate(templateData)
   await onProgress('Mapping products…')
-  const built = buildRows(exportRows, tpl, { prefix })
+  const built = buildRows(exportRows, tpl, sku)
   if (!built.rows.length) throw new Error('No products to copy')
   const chunks = chunkRows(built.rows, tpl.capacity)
   const files = []
