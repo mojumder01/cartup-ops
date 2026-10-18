@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
-import { processDarazFiles } from '../utils/processor'
+import { processDarazFiles, buildDarazWorkbook } from '../utils/processor'
+import { applyDecisions, loadMemory, rememberDecisions, forgetMemory } from '../utils/variantReview'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks } from 'lucide-react'
+import VariantReview from '../components/VariantReview'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers } from 'lucide-react'
 
 // current: text shown while nothing has been picked here (e.g. a remembered file).
 function FileInput({ label, required, onChange, current, hint }) {
@@ -42,8 +44,14 @@ export default function DarazUpload() {
   const [status, setStatus]   = useState('')
   const [progress, setProgress] = useState('')
   const [error, setError]     = useState('')
-  const [stats, setStats]     = useState(null)
   const [saved, setSaved]     = useState(null)
+  const [result, setResult]   = useState(null)       // processed run, kept for review + download
+  const [decisions, setDecisions] = useState({})
+  const [memory, setMemory]   = useState(loadMemory)
+  const [reviewing, setReviewing] = useState(false)
+
+  // Live totals for the current decisions.
+  const stats = useMemo(() => result && applyDecisions(result, decisions, memory).stats, [result, decisions, memory])
 
   // The CartUp template picked last time (on this page or Shop Duplicate).
   useEffect(() => {
@@ -55,7 +63,7 @@ export default function DarazUpload() {
   }, [])
 
   const pick = key => f => {
-    setFiles(p => ({ ...p, [key]: f })); setStatus(''); setError(''); setStats(null)
+    setFiles(p => ({ ...p, [key]: f })); setStatus(''); setError(''); setResult(null)
     if (key === 'template') saveTemplate(f)
   }
 
@@ -63,19 +71,27 @@ export default function DarazUpload() {
     if (!files.price || !files.basic || !files.weight || !files.skuimg) {
       setError('Please select all required files'); return
     }
-    setError(''); setStatus('processing'); setProgress('Starting...'); setStats(null)
+    setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({})
     try {
-      const { bytes, stats } = await processDarazFiles(files, apiKey, msg => setProgress(msg))
-      setStats(stats)
-      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url  = URL.createObjectURL(blob)
-      const a    = document.createElement('a')
-      a.href = url; a.download = 'cartup_daraz_output.xlsx'; a.click()
-      URL.revokeObjectURL(url)
-      setStatus('success'); setProgress('')
+      const res = await processDarazFiles(files, apiKey, msg => setProgress(msg))
+      setResult(res); setStatus('success'); setProgress('')
+      // Values still undecided (or variants left identical) → review first; otherwise download now.
+      const { stats } = applyDecisions(res, {}, memory)
+      if (stats.open || stats.dupes) setReviewing(true)
+      else download(res, {})
     } catch(e) {
       setStatus('error'); setError(e.message); setProgress('')
     }
+  }
+
+  function download(res = result, dec = decisions) {
+    const { bytes } = buildDarazWorkbook(res, dec, memory)
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href = url; a.download = 'cartup_daraz_output.xlsx'; a.click()
+    URL.revokeObjectURL(url)
+    setMemory(rememberDecisions(dec))
   }
 
   const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
@@ -127,24 +143,50 @@ export default function DarazUpload() {
         )}
         {status === 'success' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 16px', background:'#dcfce7', borderRadius:8, color:'#16a34a', fontSize:13, fontWeight:500, marginTop:16 }}>
-            <CheckCircle size={14} /> Done! File downloaded — {stats.rows.toLocaleString()} rows{stats.invalid ? `, ${stats.invalid.toLocaleString()} in the "invalid" sheet` : ''}.
+            <CheckCircle size={14} /> Processed — {result.items.length.toLocaleString()} rows{result.invalidRows.length ? `, ${result.invalidRows.length.toLocaleString()} in the "invalid" sheet` : ''}{result.duplicateSkus.length ? `, ${result.duplicateSkus.length} repeated Seller SKU rows removed` : ''}.
           </div>
         )}
-        {status === 'success' && stats.template && (
-          <div style={{ padding:'12px 16px', background: stats.unmatched ? '#fef2f2' : '#f8fafc', border:`1px solid ${stats.unmatched ? '#fecaca' : '#e2e8f0'}`, borderRadius:8, fontSize:12.5, color:'#334155', marginTop:10, lineHeight:1.7 }}>
+        {status === 'success' && result.template && (
+          <div style={{ padding:'12px 16px', background: stats.open ? '#fef2f2' : '#f8fafc', border:`1px solid ${stats.open ? '#fecaca' : '#e2e8f0'}`, borderRadius:8, fontSize:12.5, color:'#334155', marginTop:10, lineHeight:1.7 }}>
             <div style={{ display:'flex', alignItems:'center', gap:6, fontWeight:600, color:'#1a202c' }}>
               <ListChecks size={14} color='#4f46e5' /> Dropdown values checked against the CartUp template: {stats.checked.toLocaleString()}
             </div>
-            <div>· {stats.fixed.toLocaleString()} auto-matched to the list's spelling (e.g. EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size)</div>
-            {stats.unmatched > 0
-              ? <div style={{ color:'#b91c1c', display:'flex', alignItems:'center', gap:6 }}><AlertTriangle size={13} /> {stats.unmatched.toLocaleString()} not on the CartUp lists — they would show #N/A in payload_hidden. See the "value check" sheet and the Report column.</div>
-              : <div style={{ color:'#15803d' }}>· Every value is on the CartUp lists — no #N/A expected</div>}
+            <div>· {stats.auto.toLocaleString()} matched automatically (spelling, EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size, Multicolor-1/-2 to keep variants apart)</div>
+            {stats.remembered > 0 && <div>· {stats.remembered.toLocaleString()} from picks remembered from earlier runs</div>}
+            {stats.picked > 0 && <div>· {stats.picked.toLocaleString()} picked by you</div>}
+            {stats.kept > 0 && <div>· {stats.kept.toLocaleString()} kept as new values for CartUp's lists ("new values" sheet)</div>}
+            {stats.open > 0
+              ? <div style={{ color:'#b91c1c', display:'flex', alignItems:'center', gap:6 }}><AlertTriangle size={13} /> {stats.open.toLocaleString()} values ({stats.openValues.toLocaleString()} different) in {stats.openParents.toLocaleString()} products still not on the lists — they'd show #N/A in payload_hidden</div>
+              : <div style={{ color:'#15803d' }}>· Every value is matched or decided — no #N/A expected</div>}
+            {stats.dupes > 0 && <div style={{ color:'#b45309' }}>· {stats.dupes.toLocaleString()} SKUs have the same variant values as a sibling — change them in the review</div>}
+            <div style={{ display:'flex', gap:8, marginTop:10, flexWrap:'wrap' }}>
+              <button onClick={() => setReviewing(true)} className="btn-primary"
+                style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 14px', background:'#4f46e5', color:'#fff', border:'none', borderRadius:8, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+                <Layers size={14} /> Review product by product{stats.open ? ` (${stats.open} open)` : ''}
+              </button>
+              <button onClick={() => download()}
+                style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 14px', background:'#fff', color:'#4f46e5', border:'1.5px solid #c7d2fe', borderRadius:8, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+                <Download size={14} /> Download file
+              </button>
+            </div>
+            <div style={{ fontSize:11.5, color:'#64748b', marginTop:8 }}>
+              The file has a <b>changes</b> sheet (every change, one row per Seller SKU) and a <b>new values</b> sheet (values not on CartUp's lists, with the closest list values).
+            </div>
           </div>
         )}
-        {status === 'success' && !stats.template && (
+        {status === 'success' && !result.template && (
           <div style={{ background:'#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#92400e', marginTop:10 }}>
             Values were not checked against CartUp's dropdown lists — add the CartUp upload template above to catch #N/A before uploading.
+            <button onClick={() => download()} style={{ display:'flex', alignItems:'center', gap:6, marginTop:8, padding:'6px 12px', background:'#fff', color:'#92400e', border:'1.5px solid #fde68a', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+              <Download size={12} /> Download again
+            </button>
           </div>
+        )}
+        {reviewing && result && (
+          <VariantReview result={result} decisions={decisions} setDecisions={setDecisions} memory={memory}
+            onForgetMemory={() => setMemory(forgetMemory())}
+            onDownload={() => download()}
+            onClose={() => setReviewing(false)} />
         )}
         {error && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 16px', background:'#fee2e2', borderRadius:8, color:'#dc2626', fontSize:13, marginTop:16 }}>

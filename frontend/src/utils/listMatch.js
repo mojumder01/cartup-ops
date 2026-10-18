@@ -184,10 +184,54 @@ export function listMatcher(rows, kind = 'other') {
     return best !== null && !tie ? { value: best, how: 'similar' } : null
   }
 
+  // For people picking by hand (built on first use — the Color list has 26k entries).
+  let entries = null
+  // Shared words count only when they have letters — a shared "1" means nothing.
+  const words = s => tokens(s).filter(t => /[a-z]{2}/.test(t))
+  const allEntries = () => (entries ||= [...exact.keys()].map(name => ({ name, lower: name.toLowerCase(), sq: squash(name), toks: words(name) })))
+
   const cache = new Map()
   return {
     kind,
     size: exact.size,
+    // Closest entries to a value no rule matched safely — shared words,
+    // one containing the other, or a few typos — best first.
+    suggest(input, limit = 6) {
+      const v = String(input ?? '').trim()
+      if (!v) return []
+      const q = squash(v), vt = new Set(words(v))
+      const found = new Map()
+      const add = (name, score) => { if (score > (found.get(name) ?? 0)) found.set(name, score) }
+      for (const c of aliases(v, kind)) { const f = find(c); if (f) add(f.value, 0.97) }
+      for (const e of allEntries()) {
+        let s = 0
+        if (vt.size) {
+          let common = 0
+          for (const t of e.toks) if (vt.has(t)) common++
+          if (common) s = 0.9 * common / Math.max(vt.size, e.toks.length)
+        }
+        if (q.length >= 3 && e.sq.length >= 3 && (e.sq.includes(q) || q.includes(e.sq))) {
+          s = Math.max(s, 0.5 + 0.4 * Math.min(q.length, e.sq.length) / Math.max(q.length, e.sq.length))
+        }
+        if (q.length >= 3 && Math.abs(e.sq.length - q.length) <= 3) {
+          const d = distance(q, e.sq, 3)
+          if (d <= 3) s = Math.max(s, 1 - d / Math.max(q.length, e.sq.length))
+        }
+        if (s >= 0.4) add(e.name, s)
+      }
+      return [...found].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([name]) => name)
+    },
+    // Type-ahead: entries containing the text, the ones starting with it first.
+    search(text, limit = 30) {
+      const t = spaced(text)
+      if (!t) return []
+      const starts = [], contains = []
+      for (const e of allEntries()) {
+        if (e.lower.startsWith(t)) { if (starts.push(e.name) >= limit) break }
+        else if (contains.length < limit && e.lower.includes(t)) contains.push(e.name)
+      }
+      return [...starts, ...contains].slice(0, limit)
+    },
     // → { value, how } or null when nothing on the list is a safe match.
     match(input) {
       const v = String(input ?? '').trim()

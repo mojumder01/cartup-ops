@@ -3,7 +3,8 @@ import MAPPINGS from './mappings.json'
 import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
 import { loadTemplate } from './shopDuplicate'
-import { listMatcher, columnKind, valueKind, MATCH_LABEL } from './listMatch'
+import { listMatcher, columnKind } from './listMatch'
+import { COMBO_TARGETS, headerKey, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, applyDecisions } from './variantReview'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -104,56 +105,6 @@ function cleanDescription(html) {
   return text ? `<p>${text}</p>` : ''
 }
 
-const headerKey = h => String(h).replace(/^\*+/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
-
-// Columns a "Variations Combo" part can go to: colour, then the size types in
-// the order the category rules prefer them.
-const COMBO_TARGETS = ['Color', 'Shoe Size', 'Clothing Size', 'Bedding Size', 'Size', 'Age Group', 'Model']
-const MATCH_SCORE = { exact: 100, format: 92, alias: 85, similar: 70 }
-
-// "Black, EU:40" → Color = Black, Shoe Size = 40 (EU). Each part goes to the
-// column whose CartUp list it matches best (when the template is given), then
-// by what it looks like (a size or a colour), then by position (Daraz lists
-// the colour first). lists: header key → listMatcher, or null.
-function assignVariants(combo, applicable, lists) {
-  const values = Object.fromEntries(VARIANT_COLS.map(c => [c, '']))
-  const checks = [], unused = []
-  const parts = String(combo || '').split(',').map(s => s.trim()).filter(Boolean)
-  if (!parts.length) return { values, checks, unused }
-  let targets = COMBO_TARGETS.filter(t => applicable.includes(t))
-  if (!targets.length) targets = ['Color', 'Size']   // category unknown: colour + size
-  const pairs = []
-  parts.forEach((part, i) => {
-    const kind = valueKind(part)
-    for (const t of targets) {
-      const sizeLike = t !== 'Color' && t !== 'Model'
-      const hit = lists?.[headerKey(t)]?.match(part) ?? null
-      let score = hit ? MATCH_SCORE[hit.how] : 0
-      if ((kind === 'size' && sizeLike) || (kind === 'color' && t === 'Color')) score += 20
-      if ((kind === 'size' && t === 'Color') || (kind === 'color' && sizeLike)) score -= 20
-      if ((i === 0) === (t === 'Color')) score += 3
-      pairs.push({ i, t, score, hit })
-    }
-  })
-  pairs.sort((a, b) => b.score - a.score)   // stable: ties keep the target order
-  const placed = new Map(), taken = new Set()
-  const place = p => { placed.set(p.i, p); taken.add(p.t) }
-  for (const p of pairs) if (p.score > 0 && !placed.has(p.i) && !taken.has(p.t)) place(p)
-  // A part nothing fits still goes to a free column — a variant needs its value.
-  parts.forEach((part, i) => {
-    const t = !placed.has(i) && targets.find(t => !taken.has(t))
-    if (t) place({ i, t, hit: lists?.[headerKey(t)]?.match(part) ?? null })
-  })
-  parts.forEach((part, i) => {
-    const p = placed.get(i)
-    if (!p) { unused.push(part); return }
-    values[p.t] = p.hit ? p.hit.value : part
-    if (p.hit && p.hit.how !== 'exact') checks.push({ col: p.t, from: part, to: p.hit.value, how: p.hit.how })
-    else if (!p.hit && lists?.[headerKey(p.t)]) checks.push({ col: p.t, from: part, to: null })
-  })
-  return { values, checks, unused }
-}
-
 function getCartupCategories() {
   return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
 }
@@ -178,8 +129,6 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     lists = {}
     for (const c of tpl.columns) if (c.lookup) lists[headerKey(c.header)] = listMatcher(c.lookup.rows, columnKind(c.header))
   }
-  const valueChecks = []
-  const stats = { template: !!lists, checked: 0, fixed: 0, unmatched: 0 }
 
   let brandDict = {}
   if (files.attr) {
@@ -302,12 +251,34 @@ export async function processDarazFiles(files, apiKey, onProgress) {
   }
 
   // ── Step 4: Build output rows — separate valid vs invalid ──────────────────
-  const validRows = []
-  const invalidRows = []
-  const total = priceRows.length
+  // Seller SKU must be unique: a repeated one is dropped (the first row kept).
+  const seenSkus = new Set(), duplicateSkus = []
+  const rowsToBuild = priceRows.filter(row => {
+    const sku = String(row['SellerSKU'] || '').trim()
+    if (!sku) return true
+    if (seenSkus.has(sku)) {
+      duplicateSkus.push({ sku, parent: String(row['Product ID'] || '').trim(), name: String(row['*Product Name(English)'] || '').trim() })
+      return false
+    }
+    seenSkus.add(sku)
+    return true
+  })
+  // Every Variations Combo of a product — its variant columns are decided once, from all of them.
+  const combosByPid = new Map()
+  for (const row of rowsToBuild) {
+    const pid = String(row['Product ID'] || '').trim()
+    if (!combosByPid.has(pid)) combosByPid.set(pid, [])
+    combosByPid.get(pid).push(String(row['Variations Combo'] || '').trim())
+  }
+  const plans = new Map()
+  const nameHow = apiKey ? 'Name fixed by AI' : 'Name fixed (spelling rules)'
 
-  for (let i = 0; i < priceRows.length; i++) {
-    const row = priceRows[i]
+  const items = []
+  const invalidRows = []
+  const total = rowsToBuild.length
+
+  for (let i = 0; i < rowsToBuild.length; i++) {
+    const row = rowsToBuild[i]
     if (i % 10 === 0) onProgress(`Building output row ${i + 1} of ${total}...`)
 
     const pid    = String(row['Product ID'] || '').trim()
@@ -376,20 +347,28 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     }
 
     // ── Valid row — use AI cache ───────────────────────────────────────────────
-    const brand = brandDict[pid] || 'No Brand'
+    const brandFromFile = brandDict[pid]
+    const brand = brandFromFile || 'No Brand'
     const ai    = aiCache[pid] || { name, highlights: '', description: '' }
     const fixedName   = ai.name
     const highlights  = ai.highlights
     const description = ai.description
-    const { values: vr, checks, unused } = assignVariants(combo, applicable, lists)
     const warrantyPolicy  = String(b['Warranty Policy'] || '').trim()
     const warrantyTypeCol = b['*Warranty Type'] !== undefined ? '*Warranty Type' : 'Warranty Type'
+
+    // Variations Combo → variant columns, guided by the pattern of the product's other SKUs.
+    if (!plans.has(pid)) plans.set(pid, planParent(combosByPid.get(pid), applicable, lists))
+    const parts = splitCombo(combo)
+    const placed = placeParts(parts, plans.get(pid), applicable, lists)
+    const cells = [], unused = []
+    parts.forEach((part, p) => placed[p] ? cells.push(makeCell(placed[p], part, lists)) : unused.push(part))
 
     const images = Array.from({length: 8}, (_, idx) => {
       const k = idx === 0 ? '*Product Images1' : `Product Images${idx + 1}`
       return String(b[k] || '').trim()
     })
 
+    // Variant columns are filled from `cells` when the file is built (after review).
     const out = {
       '**Category Id':            cartupId,
       '**Name (English)':         fixedName,
@@ -402,14 +381,14 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       '**Brand':                  brand,
       '**Unit':                   'pcs',
       'Tags':                     tags,
-      'Clothing Materials':       vr['Clothing Materials'],
-      'Shoe Material':            vr['Shoe Material'],
-      'Bag Material':             vr['Bag Material'],
-      'Dial Materials':           vr['Dial Materials'],
-      'Strap Materials':          vr['Strap Materials'],
-      'Recommended Age':          vr['Recommended Age'],
-      'Watch Type':               vr['Watch TYespe'],
-      'Main Materials':           vr['Main Materials'],
+      'Clothing Materials':       '',
+      'Shoe Material':            '',
+      'Bag Material':             '',
+      'Dial Materials':           '',
+      'Strap Materials':          '',
+      'Recommended Age':          '',
+      'Watch Type':               '',
+      'Main Materials':           '',
       'Highlights(English)':      highlights,
       'Highlights(Bengali)':      highlights,
       'Description (Bengali)':    description,
@@ -423,13 +402,13 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       '**Package Length(cm)':     String(f['*Package Length (cm)'] || '').trim(),
       '*Package Width (cm)':      String(f['*Package Width (cm)'] || '').trim(),
       '*Package Height(cm)':      String(f['*Package Height (cm)'] || '').trim(),
-      'Clothing Size':            vr['Clothing Size'],
-      'Color':                    vr['Color'],
-      'Model':                    vr['Model'],
-      'Age Group':                vr['Age Group'],
-      'Size':                     vr['Size'],
-      'Shoe Size':                vr['Shoe Size'],
-      'Bedding Size':             vr['Bedding Size'],
+      'Clothing Size':            '',
+      'Color':                    '',
+      'Model':                    '',
+      'Age Group':                '',
+      'Size':                     '',
+      'Shoe Size':                '',
+      'Bedding Size':             '',
       '**Seller SKU':             sku,
       '**Parent Sku':             pid,
       '*Variant Image':           variantImage,
@@ -447,39 +426,36 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     // Every other dropdown column (Brand, Unit, Warranty…) against its CartUp list.
     if (lists) {
       for (const col of OUTPUT_COLS) {
-        if (COMBO_TARGETS.includes(col)) continue   // matched while assigning the combo
-        const m = lists[headerKey(col)]
         const v = String(out[col] ?? '').trim()
-        if (!m || !v) continue
-        const hit = m.match(v)
-        if (!hit) checks.push({ col, from: v, to: null })
-        else {
-          if (hit.how !== 'exact') checks.push({ col, from: v, to: hit.value, how: hit.how })
-          out[col] = hit.value
-        }
+        if (COMBO_TARGETS.includes(col) || !v || !lists[headerKey(col)]) continue
+        const ours = col === '**Unit' || (col === '**Brand' && !brandFromFile)   // filled in by us, not the seller
+        cells.push(makeCell(col, v, lists, ours ? 'default' : 'daraz'))
       }
-      stats.checked += OUTPUT_COLS.filter(c => lists[headerKey(c)] && String(out[c] ?? '').trim()).length
     }
-    const fixed = checks.filter(c => c.to !== null), notFound = checks.filter(c => c.to === null)
-    stats.fixed += fixed.length
-    stats.unmatched += notFound.length
-    const label = c => c.col.replace(/^\*+/, '')
-    const notes = [reportNote]
-    if (notFound.length) notes.push(`Not in CartUp list (#N/A): ${notFound.map(c => `${label(c)} "${c.from}"`).join(', ')}`)
-    if (fixed.length) notes.push(`Auto-matched: ${fixed.map(c => `${label(c)} ${c.from} → ${c.to}`).join(', ')}`)
-    if (unused.length) notes.push(`Not used from Variations Combo: ${unused.join(', ')}`)
-    out['Report'] = notes.join(' | ')
-    const fileRow = validRows.length + 3   // product sheet: 2 header rows
-    for (const c of checks) valueChecks.push({ row: fileRow, sku, ...c, col: label(c) })
-    validRows.push(out)
+    items.push({ out, cells, unused, sku, parent: pid, name: fixedName, darazName: name, nameHow, combo, category: cartupPath, reportNote, image: variantImage, productImage: img1 })
   }
 
-  onProgress('Building Excel output...')
-  return { bytes: buildExcel(validRows, invalidRows, lists ? valueChecks : null), stats: { ...stats, rows: validRows.length, invalid: invalidRows.length } }
+  // Per product: one size format, and variants that would end up identical numbered apart (Multicolor-1, -2…).
+  const byPid = new Map()
+  for (const it of items) {
+    if (!byPid.has(it.parent)) byPid.set(it.parent, [])
+    byPid.get(it.parent).push(it)
+  }
+  for (const group of byPid.values()) { harmonizeSizes(group, lists); separateCollisions(group, lists) }
+
+  return { items, invalidRows, duplicateSkus, lists, template: !!lists }
 }
 
-function buildExcel(validRows, invalidRows = [], valueChecks = null) {
+// The output workbook for a processed run, with the review decisions applied.
+export function buildDarazWorkbook(result, decisions = {}, memory = {}) {
+  const applied = applyDecisions(result, decisions, memory)
+  return { bytes: buildExcel(applied, result.invalidRows, result.lists), applied }
+}
+
+// applied: applyDecisions(...) — final rows, change log, values not on the lists.
+function buildExcel(applied, invalidRows = [], lists = null) {
   const wb = XLSX.utils.book_new()
+  const validRows = applied.rows
 
   // ── Sheet 1: product (valid rows) ──────────────────────────────────────────
   const wsData = []
@@ -519,18 +495,29 @@ function buildExcel(validRows, invalidRows = [], valueChecks = null) {
     XLSX.utils.book_append_sheet(wb, wsInv, 'invalid')
   }
 
-  // ── Sheet 3: value check (dropdown values vs the CartUp template's lists) ──
-  if (valueChecks) {
-    const cols = ['Row', 'Seller SKU', 'Column', 'Daraz value', 'CartUp value', 'Result']
-    const sorted = [...valueChecks].sort((a, b) => (a.to === null ? 0 : 1) - (b.to === null ? 0 : 1) || a.row - b.row)
-    const data = [cols, ...sorted.map(c => [
-      c.row, c.sku, c.col, c.from, c.to ?? '',
-      c.to === null ? 'NOT IN CARTUP LIST — will show #N/A in payload_hidden; pick a value from the dropdown' : `Auto-matched (${MATCH_LABEL[c.how]})`,
+  // ── Sheet 3: changes — every change, one row per Seller SKU and column ─────
+  const chCols = ['Seller SKU', 'Parent SKU', 'Product', 'Column', 'Daraz value', 'Output value', 'Change', 'Detail']
+  const chData = [chCols, ...applied.changes.map(c => [c.sku, c.parent, c.name, c.column, c.from, c.to, c.change, c.detail])]
+  if (!applied.changes.length) chData.push(['', '', '', '', '', '', 'No changes'])
+  const wsCh = XLSX.utils.aoa_to_sheet(chData)
+  wsCh['!cols'] = [{ wch: 24 }, { wch: 16 }, { wch: 36 }, { wch: 16 }, { wch: 30 }, { wch: 30 }, { wch: 40 }, { wch: 34 }]
+  XLSX.utils.book_append_sheet(wb, wsCh, 'changes')
+
+  // ── Sheet 4: new values — not on CartUp's lists (to match, or to add to the list)
+  if (lists) {
+    const nvCols = ['Column', 'Value', 'Status', 'SKUs', 'Parent SKUs', 'Seller SKUs', 'Closest CartUp values']
+    const sorted = [...applied.newValues].sort((a, b) => a.decided - b.decided || b.skus.length - a.skus.length)
+    const nvData = [nvCols, ...sorted.map((nv, k) => [
+      nv.column, nv.value,
+      nv.decided ? 'Add to the CartUp list (decided)' : 'Not reviewed — shows #N/A until matched or added',
+      nv.skus.length, nv.parents.length,
+      nv.skus.slice(0, 10).join(', ') + (nv.skus.length > 10 ? ` … +${nv.skus.length - 10}` : ''),
+      k < 300 ? (lists[nv.listKey]?.suggest(nv.value, 3) || []).join(' · ') : '',
     ])]
-    if (!sorted.length) data.push(['', '', '', '', '', 'All dropdown values are on the CartUp lists'])
-    const wsChk = XLSX.utils.aoa_to_sheet(data)
-    wsChk['!cols'] = [{ wch: 7 }, { wch: 28 }, { wch: 16 }, { wch: 28 }, { wch: 28 }, { wch: 70 }]
-    XLSX.utils.book_append_sheet(wb, wsChk, 'value check')
+    if (!sorted.length) nvData.push(['', '', 'Every value is on the CartUp lists'])
+    const wsNv = XLSX.utils.aoa_to_sheet(nvData)
+    wsNv['!cols'] = [{ wch: 16 }, { wch: 30 }, { wch: 44 }, { wch: 7 }, { wch: 11 }, { wch: 40 }, { wch: 50 }]
+    XLSX.utils.book_append_sheet(wb, wsNv, 'new values')
   }
 
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
