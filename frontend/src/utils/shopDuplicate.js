@@ -12,6 +12,7 @@
 import JSZip from 'jszip'
 import * as XLSX from 'xlsx'
 import { applyReplacements } from './wordReplacements'
+import { listMatcher, columnKind, MATCH_LABEL } from './listMatch'
 import {
   tokenize, parse, fillDown, moveRef, refText, evaluate, finalValue,
   Range, Unsupported, EMPTY, err, isErr, colToNum, numToCol,
@@ -205,16 +206,7 @@ function lookupList(node, ctx) {
     if (paired) idx = 2
   }
   rows = rows.map(vals => vals.map(v => v === EMPTY || isErr(v) ? '' : v)).filter(vals => vals[0] !== '')
-  // VLOOKUP is case-insensitive but space-sensitive and returns the first
-  // match — the lists contain near-duplicates like "Grey" and "Grey " with
-  // different IDs, so exact matching must win over a trimmed fallback.
-  const exact = new Map(), trimmed = new Map()
-  for (const vals of rows) {
-    const k = String(vals[0]).toLowerCase()
-    if (!exact.has(k)) exact.set(k, vals)
-    if (!trimmed.has(k.trim())) trimmed.set(k.trim(), vals)
-  }
-  return { rows, exact, trimmed, idx }
+  return { rows, idx }
 }
 
 // ── Template loading ──────────────────────────────────────────────────────────
@@ -373,7 +365,8 @@ export async function loadTemplate(data) {
       if (e instanceof Unsupported) throw new Error(`Could not read the template's hidden formula in payload_hidden!${f.col}${f.row} (${e.message}): ${f.text}`)
       throw e
     }
-    return { col: f.col, c: f.c, row: f.row, s: f.s, render: fillDown(tokens), ast }
+    const reads = tokens.find(t => isProductRef(t) && !t.bad && t.kind === 'cells')
+    return { col: f.col, c: f.c, row: f.row, s: f.s, render: fillDown(tokens), ast, productCol: reads ? letter(reads.a.c) : null }
   }
   for (const f of found.values()) cols.push(compile(f, false))
   for (const f of broken.values()) {
@@ -643,7 +636,7 @@ function parseAttrList(text, names) {
 }
 
 export function buildRows(exportRows, tpl, sku) {
-  const warnings = []
+  const warnings = [], fixes = []
   const warn = (src, field, message) => warnings.push({ row: src.__row, sku: src.sellersku ?? '', field, message })
 
   const { unique, duplicates, missing } = dedupe(exportRows)
@@ -655,10 +648,10 @@ export function buildRows(exportRows, tpl, sku) {
   const variantNames = variantCols.map(c => c.header.replace(/^\*+/, '').trim())
   const attrNames = attrCols.map(c => c.header.replace(/^\*+/, '').trim())
 
-  const lookup = (col, value) => {
-    const t = col.lookup
-    const s = String(value).toLowerCase()
-    return t.exact.get(s) || t.exact.get(s.trim()) || t.trimmed.get(s.trim()) || null
+  const matchers = new Map()
+  const matcherFor = col => {
+    if (!matchers.has(col.col)) matchers.set(col.col, listMatcher(col.lookup.rows, columnKind(col.header)))
+    return matchers.get(col.col)
   }
 
   const rows = unique.map((src, i) => {
@@ -692,13 +685,20 @@ export function buildRows(exportRows, tpl, sku) {
       // Dropdown columns must hold the exact name from the template's list,
       // or the hidden VLOOKUP fails (#N/A) and the platform rejects the row.
       if (col.lookup && v !== '') {
-        let hit = lookup(col, v)
+        const field = col.header.replace(/^\*+/, '')
+        let hit = matcherFor(col).match(v)
         // Exports carry Warranty Type/Period as IDs (e.g. 3 = "No Warranty").
         if (!hit && col.lookup.idx && /^\d+$/.test(String(v).trim())) {
-          hit = col.lookup.rows.find(r => String(r[col.lookup.idx - 1]) === String(v).trim()) || null
+          const r = col.lookup.rows.find(r => String(r[col.lookup.idx - 1]) === String(v).trim())
+          if (r) hit = { value: r[0], how: 'id' }
         }
-        if (hit) v = hit[0]
-        else warn(src, col.header.replace(/^\*+/, ''), `"${v}" is not in the template's list — the upload will reject this row`)
+        if (!hit) warn(src, field, `"${v}" is not in the template's list — the upload will reject this row`)
+        else {
+          if (['format', 'alias', 'similar'].includes(hit.how)) {
+            fixes.push({ row: src.__row, sku: src.sellersku ?? '', field, from: String(v), to: hit.value, how: MATCH_LABEL[hit.how] })
+          }
+          v = hit.value
+        }
       }
 
       if (col.required && v === '') warn(src, col.header.replace(/^\*+/, ''), 'Required field is empty')
@@ -719,7 +719,7 @@ export function buildRows(exportRows, tpl, sku) {
     keptRow: kept.__row,
     difference: rowDifference(kept, row, exportRows.headers),
   }))
-  return { rows, warnings, duplicates: removed, totalRead: exportRows.length }
+  return { rows, warnings, fixes, duplicates: removed, totalRead: exportRows.length }
 }
 
 // Variants of one product must land in the same file, so split by parent SKU.
@@ -760,9 +760,10 @@ function payloadCell(ref, s, formula, v) {
   return `<c r="${ref}"${st} t="str">${f}<v>${xmlEscape(v)}</v></c>`
 }
 
-// makeReport (optional): () => rows for the Report tab, built after the
-// payload so it can include notes from calculating it.
-export async function writeTemplate(tpl, rows, makeReport = null) {
+// report (optional): () => rows for the Report tab, built after the payload
+// so it can include what calculating it found. errors (optional): an array
+// that receives every data row whose hidden cell came out as an error (#N/A…).
+export async function writeTemplate(tpl, rows, { report: makeReport = null, errors = null } = {}) {
   if (rows.length > tpl.capacity) throw new Error(`Too many rows for one template (${rows.length} > ${tpl.capacity})`)
   const { zip } = tpl
 
@@ -789,6 +790,7 @@ export async function writeTemplate(tpl, rows, makeReport = null) {
   // with the result Excel would compute stored as the cell's cached value.
   const pl = tpl.payload
   const ctx = evalContext(tpl, rows)
+  const skuCol = tpl.columns.find(c => c.key === 'sellersku')?.col
   const existing = new Map(pl.parts.rows.map(r => [r.r, r]))
   const firstPayload = pl.parts.rows.find(r => r.r >= pl.start)
   const payloadRows = []
@@ -800,6 +802,18 @@ export async function writeTemplate(tpl, rows, makeReport = null) {
         if (!(e instanceof Unsupported)) throw e
         const note = `Hidden column ${pc.col} uses ${e.message}, which this tool can't calculate — open the file in Excel and press Save before uploading, so Excel fills it in`
         if (!tpl.notes.includes(note)) tpl.notes.push(note)
+      }
+      if (errors && isErr(v) && p - pl.start < rows.length) {
+        const data = rows[p - pl.start]
+        errors.push({
+          fileRow: p + tpl.product.dataStart - pl.start,
+          row: data.source.__row,
+          sku: String(data.values[skuCol] ?? ''),
+          column: tpl.columns.find(c => c.col === pc.productCol)?.header.replace(/^\*+/, '') || `hidden column ${pc.col}`,
+          value: pc.productCol ? String(data.values[pc.productCol] ?? '') : '',
+          error: v.error,
+          cell: `${pc.col}${p}`,
+        })
       }
       return [pc.c, payloadCell(`${pc.col}${p}`, pc.s, pc.render(p - pc.row), v)]
     })
@@ -903,7 +917,7 @@ function reportSheetXml(rows, styles) {
     }).join('')
     return xml ? `<row r="${i + 1}">${xml}</row>` : ''
   }).join('')
-  const widths = [16, 34, 22, 60, 11, 70]
+  const widths = [14, 34, 22, 45, 30, 60]
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
     '<sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +
@@ -919,11 +933,15 @@ function skuText(sku) {
   return `Prefix: ${String(sku?.prefix || '').trim()}`
 }
 
-function reportRows({ built, sku, meta, notes, part, parts, partRows }) {
+const errorText = e => e.error === '#N/A'
+  ? `#N/A — "${e.value}" is not in the template's ${e.column} list. Pick one from the dropdown in row ${e.fileRow}, or the platform rejects this row`
+  : `${e.error} — the hidden formula for ${e.column} failed on row ${e.fileRow}`
+
+function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErrors }) {
   const T = v => ({ v, s: 'title' }), H = v => ({ v, s: 'head' }), B = v => ({ v, s: 'bold' })
   const now = new Date(), p2 = n => String(n).padStart(2, '0')
   const stamp = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
-  const { duplicates, warnings } = built
+  const { duplicates, warnings, fixes } = built
   return [
     [T('Shop Duplicate — Report')],
     [],
@@ -936,16 +954,30 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows }) {
     [B('Rows written'), built.rows.length],
     [B('Products'), new Set(built.rows.map(r => r.parent)).size],
     parts > 1 && [B('This file'), `Part ${part} of ${parts} — ${partRows.toLocaleString()} rows`],
+    [B('Hidden sheet errors'), parts > 1 ? `${hiddenErrors.length} in this file` : hiddenErrors.length],
+    [B('Auto-matched values'), fixes.length],
     [B('Warnings'), warnings.length],
     ...notes.map(n => [B('Note'), n]),
     [],
+    [T(`Hidden sheet errors (${hiddenErrors.length})`)],
+    ['Cells in payload_hidden (the sheet the platform reads) that still show an error after auto-matching. Fix these before uploading.'],
+    [H('File Row'), H('Seller SKU (in file)'), H('Column'), H('Value'), H('Export Row'), H('Problem')],
+    ...(hiddenErrors.length
+      ? hiddenErrors.map(e => [e.fileRow, e.sku, e.column, e.value, e.row, errorText(e)])
+      : [['None — every hidden cell has a value']]),
+    [],
+    [T(`Auto-matched values (${fixes.length})`)],
+    ['Values not written exactly as in the template\'s list, replaced with the closest entry. Check any that look wrong.'],
+    [H('Export Row'), H('Seller SKU (export)'), H('Column'), H('Export value'), H('Written as'), H('How matched')],
+    ...(fixes.length ? fixes.map(f => [f.row, f.sku, f.field, f.from, f.to, f.how]) : [['None']]),
+    [],
     [T(`Duplicates removed (${duplicates.length})`)],
     ['The first row of each Seller SKU was kept; these later rows with the same Seller SKU were left out.'],
-    [H('Export Row'), H('Seller SKU'), H('Parent SKU'), H('Product Name'), H('Kept Row'), H('Difference from kept row')],
+    [H('Export Row'), H('Seller SKU (export)'), H('Parent SKU'), H('Product Name'), H('Kept Row'), H('Difference from kept row')],
     ...(duplicates.length ? duplicates.map(d => [d.row, d.sku, d.parent, d.name, d.keptRow, d.difference]) : [['None']]),
     [],
     [T(`Warnings (${warnings.length})`)],
-    [H('Export Row'), H('Seller SKU'), H('Field'), H('Issue')],
+    [H('Export Row'), H('Seller SKU (export)'), H('Field'), H('Issue')],
     ...(warnings.length ? warnings.map(w => [w.row, w.sku, w.field, w.message]) : [['None — every Brand, Unit, Color and Size matched the template\'s lists']]),
   ].filter(Boolean)
 }
@@ -966,13 +998,15 @@ export async function duplicateShop({ exportData, templateData, sku, reportTab =
   const built = buildRows(exportRows, tpl, sku)
   if (!built.rows.length) throw new Error('No products to copy')
   const chunks = chunkRows(built.rows, tpl.capacity)
-  const files = []
+  const files = [], hiddenErrors = []
   for (let i = 0; i < chunks.length; i++) {
     await onProgress(chunks.length > 1 ? `Writing file ${i + 1} of ${chunks.length}…` : 'Writing upload file…')
-    const makeReport = reportTab
-      ? () => reportRows({ built, sku, meta, notes: tpl.notes, part: i + 1, parts: chunks.length, partRows: chunks[i].length })
+    const errors = []
+    const report = reportTab
+      ? () => reportRows({ built, sku, meta, notes: tpl.notes, part: i + 1, parts: chunks.length, partRows: chunks[i].length, hiddenErrors: errors })
       : null
-    files.push({ rows: chunks[i].length, bytes: await writeTemplate(tpl, chunks[i], makeReport) })
+    files.push({ rows: chunks[i].length, bytes: await writeTemplate(tpl, chunks[i], { report, errors }) })
+    hiddenErrors.push(...errors.map(e => ({ ...e, file: i + 1 })))
   }
   return {
     files,
@@ -983,6 +1017,8 @@ export async function duplicateShop({ exportData, templateData, sku, reportTab =
       products: new Set(built.rows.map(r => r.parent)).size,
       capacity: tpl.capacity,
       warnings: built.warnings,
+      fixes: built.fixes,
+      hiddenErrors,
       notes: tpl.notes,
     },
   }

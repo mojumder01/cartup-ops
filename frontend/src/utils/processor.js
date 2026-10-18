@@ -2,6 +2,8 @@ import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
+import { loadTemplate } from './shopDuplicate'
+import { listMatcher, columnKind, valueKind, MATCH_LABEL } from './listMatch'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -102,21 +104,54 @@ function cleanDescription(html) {
   return text ? `<p>${text}</p>` : ''
 }
 
-function parseVariations(combo, applicable) {
-  const result = Object.fromEntries(VARIANT_COLS.map(c => [c, '']))
-  if (!combo) return result
-  const parts = combo.split(',')
-  const color = parts[0]?.trim() || ''
-  const sizeVal = parts.slice(1).join(',').trim() || 'Yes'
-  if (applicable?.includes('Color')) result['Color'] = color
-  if (sizeVal) {
-    if (applicable?.includes('Shoe Size')) result['Shoe Size'] = sizeVal
-    else if (applicable?.includes('Clothing Size')) result['Clothing Size'] = sizeVal
-    else if (applicable?.includes('Bedding Size')) result['Bedding Size'] = sizeVal
-    else if (applicable?.includes('Size')) result['Size'] = sizeVal
-    else result['Size'] = sizeVal
-  }
-  return result
+const headerKey = h => String(h).replace(/^\*+/, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+
+// Columns a "Variations Combo" part can go to: colour, then the size types in
+// the order the category rules prefer them.
+const COMBO_TARGETS = ['Color', 'Shoe Size', 'Clothing Size', 'Bedding Size', 'Size', 'Age Group', 'Model']
+const MATCH_SCORE = { exact: 100, format: 92, alias: 85, similar: 70 }
+
+// "Black, EU:40" → Color = Black, Shoe Size = 40 (EU). Each part goes to the
+// column whose CartUp list it matches best (when the template is given), then
+// by what it looks like (a size or a colour), then by position (Daraz lists
+// the colour first). lists: header key → listMatcher, or null.
+function assignVariants(combo, applicable, lists) {
+  const values = Object.fromEntries(VARIANT_COLS.map(c => [c, '']))
+  const checks = [], unused = []
+  const parts = String(combo || '').split(',').map(s => s.trim()).filter(Boolean)
+  if (!parts.length) return { values, checks, unused }
+  let targets = COMBO_TARGETS.filter(t => applicable.includes(t))
+  if (!targets.length) targets = ['Color', 'Size']   // category unknown: colour + size
+  const pairs = []
+  parts.forEach((part, i) => {
+    const kind = valueKind(part)
+    for (const t of targets) {
+      const sizeLike = t !== 'Color' && t !== 'Model'
+      const hit = lists?.[headerKey(t)]?.match(part) ?? null
+      let score = hit ? MATCH_SCORE[hit.how] : 0
+      if ((kind === 'size' && sizeLike) || (kind === 'color' && t === 'Color')) score += 20
+      if ((kind === 'size' && t === 'Color') || (kind === 'color' && sizeLike)) score -= 20
+      if ((i === 0) === (t === 'Color')) score += 3
+      pairs.push({ i, t, score, hit })
+    }
+  })
+  pairs.sort((a, b) => b.score - a.score)   // stable: ties keep the target order
+  const placed = new Map(), taken = new Set()
+  const place = p => { placed.set(p.i, p); taken.add(p.t) }
+  for (const p of pairs) if (p.score > 0 && !placed.has(p.i) && !taken.has(p.t)) place(p)
+  // A part nothing fits still goes to a free column — a variant needs its value.
+  parts.forEach((part, i) => {
+    const t = !placed.has(i) && targets.find(t => !taken.has(t))
+    if (t) place({ i, t, hit: lists?.[headerKey(t)]?.match(part) ?? null })
+  })
+  parts.forEach((part, i) => {
+    const p = placed.get(i)
+    if (!p) { unused.push(part); return }
+    values[p.t] = p.hit ? p.hit.value : part
+    if (p.hit && p.hit.how !== 'exact') checks.push({ col: p.t, from: part, to: p.hit.value, how: p.hit.how })
+    else if (!p.hit && lists?.[headerKey(p.t)]) checks.push({ col: p.t, from: part, to: null })
+  })
+  return { values, checks, unused }
 }
 
 function getCartupCategories() {
@@ -132,6 +167,19 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     readSheet(files.weight, 'template'),
     readSheet(files.skuimg, 'template'),
   ])
+
+  // Optional: the CartUp upload template. Its dropdown lists (Color, Size,
+  // Brand, Warranty…) are what the hidden payload sheet looks values up in —
+  // a value not on its list shows #N/A there and the upload rejects the row.
+  let lists = null
+  if (files.template) {
+    onProgress('Reading the CartUp template\'s lists...')
+    const tpl = await loadTemplate(await files.template.arrayBuffer())
+    lists = {}
+    for (const c of tpl.columns) if (c.lookup) lists[headerKey(c.header)] = listMatcher(c.lookup.rows, columnKind(c.header))
+  }
+  const valueChecks = []
+  const stats = { template: !!lists, checked: 0, fixed: 0, unmatched: 0 }
 
   let brandDict = {}
   if (files.attr) {
@@ -333,7 +381,7 @@ export async function processDarazFiles(files, apiKey, onProgress) {
     const fixedName   = ai.name
     const highlights  = ai.highlights
     const description = ai.description
-    const vr = parseVariations(combo, applicable)
+    const { values: vr, checks, unused } = assignVariants(combo, applicable, lists)
     const warrantyPolicy  = String(b['Warranty Policy'] || '').trim()
     const warrantyTypeCol = b['*Warranty Type'] !== undefined ? '*Warranty Type' : 'Warranty Type'
 
@@ -342,7 +390,7 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       return String(b[k] || '').trim()
     })
 
-    validRows.push({
+    const out = {
       '**Category Id':            cartupId,
       '**Name (English)':         fixedName,
       'Name (Bengali)':           fixedName,
@@ -394,14 +442,43 @@ export async function processDarazFiles(files, apiKey, onProgress) {
       'Cartup Category Path':     cartupPath,
       'Variations Combo':         combo,
       'Report':                   reportNote,
-    })
+    }
+
+    // Every other dropdown column (Brand, Unit, Warranty…) against its CartUp list.
+    if (lists) {
+      for (const col of OUTPUT_COLS) {
+        if (COMBO_TARGETS.includes(col)) continue   // matched while assigning the combo
+        const m = lists[headerKey(col)]
+        const v = String(out[col] ?? '').trim()
+        if (!m || !v) continue
+        const hit = m.match(v)
+        if (!hit) checks.push({ col, from: v, to: null })
+        else {
+          if (hit.how !== 'exact') checks.push({ col, from: v, to: hit.value, how: hit.how })
+          out[col] = hit.value
+        }
+      }
+      stats.checked += OUTPUT_COLS.filter(c => lists[headerKey(c)] && String(out[c] ?? '').trim()).length
+    }
+    const fixed = checks.filter(c => c.to !== null), notFound = checks.filter(c => c.to === null)
+    stats.fixed += fixed.length
+    stats.unmatched += notFound.length
+    const label = c => c.col.replace(/^\*+/, '')
+    const notes = [reportNote]
+    if (notFound.length) notes.push(`Not in CartUp list (#N/A): ${notFound.map(c => `${label(c)} "${c.from}"`).join(', ')}`)
+    if (fixed.length) notes.push(`Auto-matched: ${fixed.map(c => `${label(c)} ${c.from} → ${c.to}`).join(', ')}`)
+    if (unused.length) notes.push(`Not used from Variations Combo: ${unused.join(', ')}`)
+    out['Report'] = notes.join(' | ')
+    const fileRow = validRows.length + 3   // product sheet: 2 header rows
+    for (const c of checks) valueChecks.push({ row: fileRow, sku, ...c, col: label(c) })
+    validRows.push(out)
   }
 
   onProgress('Building Excel output...')
-  return buildExcel(validRows, invalidRows)
+  return { bytes: buildExcel(validRows, invalidRows, lists ? valueChecks : null), stats: { ...stats, rows: validRows.length, invalid: invalidRows.length } }
 }
 
-function buildExcel(validRows, invalidRows = []) {
+function buildExcel(validRows, invalidRows = [], valueChecks = null) {
   const wb = XLSX.utils.book_new()
 
   // ── Sheet 1: product (valid rows) ──────────────────────────────────────────
@@ -440,6 +517,20 @@ function buildExcel(validRows, invalidRows = []) {
     // Red fill on header
     wsInv['!rows'] = [{ hpt: 20 }]
     XLSX.utils.book_append_sheet(wb, wsInv, 'invalid')
+  }
+
+  // ── Sheet 3: value check (dropdown values vs the CartUp template's lists) ──
+  if (valueChecks) {
+    const cols = ['Row', 'Seller SKU', 'Column', 'Daraz value', 'CartUp value', 'Result']
+    const sorted = [...valueChecks].sort((a, b) => (a.to === null ? 0 : 1) - (b.to === null ? 0 : 1) || a.row - b.row)
+    const data = [cols, ...sorted.map(c => [
+      c.row, c.sku, c.col, c.from, c.to ?? '',
+      c.to === null ? 'NOT IN CARTUP LIST — will show #N/A in payload_hidden; pick a value from the dropdown' : `Auto-matched (${MATCH_LABEL[c.how]})`,
+    ])]
+    if (!sorted.length) data.push(['', '', '', '', '', 'All dropdown values are on the CartUp lists'])
+    const wsChk = XLSX.utils.aoa_to_sheet(data)
+    wsChk['!cols'] = [{ wch: 7 }, { wch: 28 }, { wch: 16 }, { wch: 28 }, { wch: 28 }, { wch: 70 }]
+    XLSX.utils.book_append_sheet(wb, wsChk, 'value check')
   }
 
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })

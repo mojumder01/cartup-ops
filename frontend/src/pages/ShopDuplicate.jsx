@@ -1,10 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { duplicateShop, readSellerExport, skuCodes, parseSkuRules, planSkus, skuOptionsError, zipFiles } from '../utils/shopDuplicate'
+import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
 import { Copy, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Info, Plus, X } from 'lucide-react'
 
-function FileInput({ label, hint, onChange, summary }) {
-  const [fileName, setFileName] = useState('')
+// current: text shown while nothing has been picked here (e.g. a remembered file).
+function FileInput({ label, hint, onChange, summary, current }) {
+  const [picked, setPicked] = useState('')
+  const fileName = picked || current
   return (
     <div style={{ marginBottom: 14 }}>
       <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:4, textTransform:'uppercase', letterSpacing:'0.4px' }}>
@@ -21,7 +24,7 @@ function FileInput({ label, hint, onChange, summary }) {
           onChange={e => {
             const f = e.target.files[0]
             e.target.value = ''
-            if (f) { setFileName(f.name); onChange(f) }
+            if (f) { setPicked(f.name); onChange(f) }
           }}
         />
         {fileName
@@ -31,6 +34,31 @@ function FileInput({ label, hint, onChange, summary }) {
       </label>
       {summary && <div style={{ fontSize:11.5, color:'#475569', marginTop:6 }}>{summary}</div>}
     </div>
+  )
+}
+
+// Small scrolling table for the result lists.
+function MiniTable({ columns, rows, max = 300, height = 220 }) {
+  return (
+    <>
+      <div style={{ maxHeight:height, overflow:'auto', border:'1px solid #e2e8f0', borderRadius:8 }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+          <thead>
+            <tr style={{ background:'#f8fafc', position:'sticky', top:0 }}>
+              {columns.map(c => <th key={c.label} style={{ textAlign:'left', padding:'7px 10px', color:'#64748b', fontWeight:600, borderBottom:'1px solid #e2e8f0' }}>{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, max).map((r, i) => (
+              <tr key={i} style={{ borderBottom:'1px solid #f1f5f9' }}>
+                {columns.map(c => <td key={c.label} style={{ padding:'6px 10px', ...(c.style ? c.style(r) : {}) }}>{c.get(r)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > max && <div style={{ fontSize:11, color:'#94a3b8', marginTop:6 }}>Showing first {max} — all are in the Report tab.</div>}
+    </>
   )
 }
 
@@ -67,7 +95,18 @@ export default function ShopDuplicate() {
   const [error, setError]     = useState('')
   const [result, setResult]   = useState(null)
 
+  const [saved, setSaved]     = useState(null)
+
   const reset = () => { setStatus(''); setError(''); setResult(null) }
+
+  // The CartUp template picked last time (on this page or Daraz Upload).
+  useEffect(() => {
+    loadSavedTemplate().then(t => {
+      if (!t) return
+      setSaved(t)
+      setTemplateFile(f => f || t.file)
+    })
+  }, [])
 
   const onExport = async f => {
     reset(); setExportFile(f); setExportRows(null)
@@ -174,7 +213,8 @@ export default function ShopDuplicate() {
         <FileInput
           label="Upload template (blank)"
           hint="Download a fresh one from the seller center — its Brand / Color / Size lists are used to fill the hidden ID columns"
-          onChange={f => { reset(); setTemplateFile(f) }}
+          onChange={f => { reset(); setTemplateFile(f); saveTemplate(f) }}
+          current={saved && savedLabel(saved)}
         />
 
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8, marginBottom:6 }}>
@@ -284,6 +324,7 @@ export default function ShopDuplicate() {
           · Image URLs → file names only (as the template expects)<br/>
           · VariantName <code>Size-One Size, Color-Black</code> → Size and Color columns<br/>
           · Warranty Type ID → its name (e.g. 3 → No Warranty)<br/>
+          · Brand, Color, Size, Warranty… matched to the template's lists — spelling / format differences fixed (EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size); anything still unmatched (#N/A) is listed<br/>
           · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank<br/>
           · Word Replacements from Profile applied to names, highlights &amp; descriptions (e.g. daraz → cartup)<br/>
           · Hidden ID sheet is computed for you — no need to open in Excel first
@@ -291,7 +332,7 @@ export default function ShopDuplicate() {
 
         <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:14, fontSize:13, color:'#334155', cursor:'pointer', width:'fit-content' }}>
           <input type="checkbox" checked={reportTab} onChange={e => { setReportTab(e.target.checked); reset() }} style={{ width:15, height:15, accentColor:'#4f46e5' }} />
-          Add a <b>Report</b> tab to the file — summary, removed duplicates and warnings
+          Add a <b>Report</b> tab to the file — summary, #N/A cells, auto-matched values, removed duplicates and warnings
         </label>
 
         {status === 'processing' && (
@@ -353,37 +394,53 @@ export default function ShopDuplicate() {
             </div>
           )}
 
+          {report.hiddenErrors.length > 0 && (
+            <div style={{ marginTop:16 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, fontWeight:600, color:'#b91c1c', marginBottom:8 }}>
+                <AlertCircle size={14} /> {report.hiddenErrors.length.toLocaleString()} cells in payload_hidden still show #N/A — the platform will reject these rows. Pick the value from the dropdown in the file{result.reportTab ? ' (also listed in its Report tab)' : ''}.
+              </div>
+              <MiniTable rows={report.hiddenErrors} columns={[
+                ...(result.files.length > 1 ? [{ label:'File', get: e => `Part ${e.file}` }] : []),
+                { label:'File row', get: e => e.fileRow, style: () => ({ color:'#94a3b8' }) },
+                { label:'Seller SKU', get: e => e.sku, style: () => ({ fontFamily:'monospace' }) },
+                { label:'Column', get: e => e.column },
+                { label:'Value', get: e => e.value || '(blank)', style: () => ({ color:'#b91c1c', fontWeight:600 }) },
+                { label:'Error', get: e => e.error, style: () => ({ color:'#b91c1c' }) },
+              ]} />
+            </div>
+          )}
+
+          {report.fixes.length > 0 && (
+            <div style={{ marginTop:16 }}>
+              <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
+                {report.fixes.length.toLocaleString()} values auto-matched to the template's lists — check any that look wrong
+              </div>
+              <MiniTable rows={report.fixes} columns={[
+                { label:'Row', get: f => f.row, style: () => ({ color:'#94a3b8' }) },
+                { label:'Seller SKU', get: f => f.sku, style: () => ({ fontFamily:'monospace' }) },
+                { label:'Column', get: f => f.field },
+                { label:'Export value → written as', get: f => <>{f.from} → <b style={{ color:'#4f46e5' }}>{f.to}</b></> },
+                { label:'How', get: f => f.how, style: () => ({ color:'#64748b' }) },
+              ]} />
+            </div>
+          )}
+
           {report.duplicates.length > 0 && (
             <div style={{ marginTop:16 }}>
               <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
                 {report.duplicates.length.toLocaleString()} duplicate rows removed — the first row of each Seller SKU was kept
               </div>
-              <div style={{ maxHeight:220, overflow:'auto', border:'1px solid #e2e8f0', borderRadius:8 }}>
-                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-                  <thead>
-                    <tr style={{ background:'#f8fafc', position:'sticky', top:0 }}>
-                      {['Row', 'Seller SKU', 'Kept row', 'Difference from kept row'].map(h => (
-                        <th key={h} style={{ textAlign:'left', padding:'7px 10px', color:'#64748b', fontWeight:600, borderBottom:'1px solid #e2e8f0' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.duplicates.slice(0, 300).map(d => (
-                      <tr key={d.row} style={{ borderBottom:'1px solid #f1f5f9' }}>
-                        <td style={{ padding:'6px 10px', color:'#94a3b8' }}>{d.row}</td>
-                        <td style={{ padding:'6px 10px', fontFamily:'monospace' }}>{d.sku}</td>
-                        <td style={{ padding:'6px 10px', color:'#94a3b8' }}>{d.keptRow}</td>
-                        <td style={{ padding:'6px 10px', color: d.difference === 'Same as kept row' ? '#94a3b8' : '#b45309' }}>{d.difference}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <MiniTable rows={report.duplicates} columns={[
+                { label:'Row', get: d => d.row, style: () => ({ color:'#94a3b8' }) },
+                { label:'Seller SKU', get: d => d.sku, style: () => ({ fontFamily:'monospace' }) },
+                { label:'Kept row', get: d => d.keptRow, style: () => ({ color:'#94a3b8' }) },
+                { label:'Difference from kept row', get: d => d.difference, style: d => ({ color: d.difference === 'Same as kept row' ? '#94a3b8' : '#b45309' }) },
+              ]} />
             </div>
           )}
 
-          {report.warnings.length === 0 ? (
-            <div style={{ marginTop:14, fontSize:12.5, color:'#15803d' }}>No problems found — every Brand, Unit, Color and Size matched the template's lists.</div>
+          {report.warnings.length === 0 ? (report.hiddenErrors.length === 0 &&
+            <div style={{ marginTop:14, fontSize:12.5, color:'#15803d' }}>No problems found — every Brand, Unit, Color and Size matched the template's lists, and no hidden cell shows #N/A.</div>
           ) : (
             <div style={{ marginTop:16 }}>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>

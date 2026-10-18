@@ -60,15 +60,21 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 | Weight | ✅ | Package weight/dimensions |
 | SKU Image | ✅ | Variant images, seller SKU, variations |
 | Attribute | optional | Extra attributes |
+| CartUp upload template | recommended | Its dropdown lists (Color, Size, Brand, Warranty…) — remembered in the browser after the first pick, shared with Shop Duplicate |
 
 **Step 2 — Click "Process & Download".** The system:
 1. Joins all files on Product ID
 2. AI cleans names (spelling zero-tolerance), recreates highlights/description (strict rules — see [AI Rules](#8-ai-rules-reference))
 3. Matches each product to a CartUp category (3,815-category tree)
 4. Applies word replacements (default: `daraz` → `cartup`)
-5. Fills variant columns (Color, Size…) only if valid for the matched category
+5. Fills variant columns (Color, Size…) only if valid for the matched category — see below
+6. With the template: checks every dropdown value (variant columns, Brand, Unit, Warranty Type/Period…) against CartUp's lists — the lists `payload_hidden` looks values up in — and writes the list's own spelling
 
-**Step 3 — Output:** `cartup_daraz_output.xlsx` downloads automatically. Products that failed category matching get a note in the error column — fix manually.
+**Variant attributes from "Variations Combo"** (e.g. `Black, EU:40`): each part goes to the column whose CartUp list it matches best, then by what it looks like (a size such as `XL`, `EU:40`, `Free Size`, or a colour word), then by position (Daraz lists the colour first) — so `38, Navy Blue` still gives Color = Navy Blue and Shoe Size = 38 (EU), and a size-only combo like `XL` goes to the size column, not Color. A product with only a colour no longer gets `Size = Yes` (that value is on no CartUp list, so every such row showed #N/A in payload_hidden). If the category's variant columns are unknown, Color + Size are used.
+
+**Smart matching** (`frontend/src/utils/listMatch.js`, also used by Shop Duplicate), in order of confidence: exact (case ignored, as VLOOKUP does) → same text apart from spacing/punctuation (`Type-B` = `Type B`; decimal points and ranges kept, so `2.5mm` ≠ `25mm`, `3-4 Years` ≠ `34 Years`) → known equivalents (`EU:40`/`38` → `40 (EU)`/`38 (EU)`, `UK:7` → `7 (UK)`, `Int:XXL`/`XXL` → `2XL`, `Free Size`/`FS` → `One Size`, `King` → `King Size`, `6 Months` → `6 month`, `12 Months` → `1 year`, `Local seller warranty` → `Seller Warranty`, `International Manufacturer Warranty` → `Brand Warranty`, `pcs` → `PCS`, `Mixed Color` → `Multicolor`, `As Picture` → `Same as picture`) → a close spelling (same words in another order, or one or two typos — only when one entry is clearly closest and every number is the same). Brands, units and warranty fields never use close spellings.
+
+**Step 3 — Output:** `cartup_daraz_output.xlsx` downloads automatically. Products that failed category matching get a note in the Report column — fix manually. With the template, the Report column also lists what was auto-matched and any value **not on the CartUp lists** (it would show `#N/A` in payload_hidden), and a **value check** sheet lists every one of them (row, Seller SKU, column, Daraz value, CartUp value) with the #N/A ones first. The page shows how many values were checked, auto-matched and not found.
 
 ---
 
@@ -107,13 +113,13 @@ Old seller's product export + blank upload template + new seller SKU (replace co
 - Image URLs → file name only (`https://…/product/abc.webp` → `abc.webp`), for Product Image 1–8 and Variant Image
 - `VariantName` is split into the variant columns: `Size-One Size, Color-Black` → Size = One Size, Color = Black
 - Warranty Type/Period IDs → their names (3 → No Warranty)
-- Brand, Unit, Color, Size… are matched to the template's own list (exact, case-insensitive — the lists contain near-duplicates such as `Grey` and `Grey `)
+- Brand, Unit, Color, Size, Warranty… are matched to the template's own list with the same smart matching as Daraz Upload (exact first — the lists contain near-duplicates such as `Grey` and `Grey ` with different IDs — then spelling/format differences and known equivalents); every value that was changed is listed under **Auto-matched values**
 - Special Price 0 → blank (and its dates); duplicate Seller SKUs → first one kept, original order kept
 - Word Replacements from Profile (default `daraz → cartup`) applied to names, highlights, descriptions, what's-in-the-box and warranty text
 
 **The hidden `payload_hidden` sheet** (the one the platform reads — IDs via VLOOKUP formulas) is filled with the values Excel would compute, so the file uploads correctly without opening it in Excel first. A small built-in formula engine (`frontend/src/utils/xlsxFormula.js`) reads each column's formula, fills it down every row the way Excel's fill handle does, and calculates it — IF, IFERROR/IFNA, VLOOKUP, INDEX/MATCH, XLOOKUP, TRIM/LEN/LEFT…, AND/OR, ISBLANK… over Excel Tables, plain ranges or defined names. So template variations still work: Excel "shared" formulas, other formula styles, extra blank cells, and templates whose rows were deleted in Excel (`#REF!` rows, or formulas shifted out of line with the product rows — the seller-center template itself has these) are rebuilt so hidden row N always reads product row N+1. A formula using a function the engine doesn't know is written without a cached value and the page says to open the file in Excel and press Save before uploading. Everything else in the template — dropdowns, lookup tables, hidden sheets — is kept byte-for-byte.
 
-**Report tab** (on by default — checkbox on the page): a visible **Report** sheet is added after the template's own sheets (so their order doesn't change) with the run summary (files used, SKU rule, rows read / duplicates removed / rows written / products, any template notes), every **removed duplicate** (export row, Seller SKU, Parent SKU, name, the row that was kept, and what differs from it — e.g. `Price(MRP): 1550 → 1234`, or "Same as kept row"), and every warning. The removed duplicates are listed on the page as well. If the platform ever rejects files with an extra sheet, untick the checkbox.
+**Report tab** (on by default — checkbox on the page): a visible **Report** sheet is added after the template's own sheets (so their order doesn't change) with the run summary (files used, SKU rule, rows read / duplicates removed / rows written / products, any template notes); **Hidden sheet errors** — every data row whose payload_hidden cell still shows `#N/A` (or another error) after matching, with the file row, column and value, so it can be fixed from the dropdown before uploading; **Auto-matched values**; every **removed duplicate** (export row, Seller SKU, Parent SKU, name, the row that was kept, and what differs from it — e.g. `Price(MRP): 1550 → 1234`, or "Same as kept row"), and every warning. The #N/A cells, auto-matched values and removed duplicates are listed on the page as well. If the platform ever rejects files with an extra sheet, untick the checkbox.
 
 **Output:** `cartup_shop_duplicate_<new code or prefix>.xlsx`. A template holds ~4,990 rows; bigger shops are split into several files (downloaded as a .zip) and a product's variants are never split across files.
 
