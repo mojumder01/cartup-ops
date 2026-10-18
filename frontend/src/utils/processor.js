@@ -216,7 +216,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       Object.assign(aiCache, result)
       done += batch.length
     })
-    await runConcurrent(tasks, 3)
+    await runConcurrent(tasks)
   } else {
     // No AI — local fix + basic fallback
     for (const p of pidList) {
@@ -268,7 +268,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
         catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat}` }
       }
     })
-    await runConcurrent(catTasks, 3)
+    await runConcurrent(catTasks)
   }
 
   // ── Step 4: Build output rows — separate valid vs invalid ──────────────────
@@ -508,12 +508,13 @@ export const rowKey = (item, i) => item.sku || `row ${i + 1}`
 
 // Stage 3 — the final rows: review decisions, then the house rules, then hand
 // edits from the sheet view (the last word). Every change goes to the log.
-// options: { specialPrice: { include, start, end }, imageKeys (makeImageKeyMap), edits: { [rowKey]: { [col]: value } } }
+// options: { specialPrice: { include, start, end }, stock: { set: number | null }, imageKeys (makeImageKeyMap), edits: { [rowKey]: { [col]: value } } }
 export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const applied = applyDecisions(result, decisions, memory)
-  const { specialPrice = { include: true, start: todayISO(), end: '' }, imageKeys = null, edits = {} } = options
+  const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {} } = options
   const problems = []
-  const rules = { discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0, edited: 0, specialPrices: 0 }
+  const rules = { discountRemoved: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0, edited: 0, specialPrices: 0 }
+  const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
     const log = (column, from, to, change) => applied.changes.push({ sku: item.sku, parent: item.parent, name: item.name, column, from: String(from ?? ''), to: String(to ?? ''), change, detail: '' })
@@ -531,6 +532,12 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       log('Name (English)', item.darazName, out['**Name (English)'], [item.name !== item.darazName ? item.nameHow : '', hash ? '"#" replaced with "-"' : ''].filter(Boolean).join(' · '))
     }
 
+    // Stock: one number for every row when chosen (a seller who wants to upload with 0 stock).
+    if (stockSet !== null && String(out['**Current Stock Qty'] ?? '') !== String(stockSet)) {
+      log('Current Stock Qty', out['**Current Stock Qty'], stockSet, `Stock set to ${stockSet} for every row (upload option)`)
+      out['**Current Stock Qty'] = String(stockSet)
+      rules.stockSet++
+    }
     // Stock never above 99,999.
     if (Number(out['**Current Stock Qty']) > 99999) {
       log('Current Stock Qty', out['**Current Stock Qty'], 99999, 'Stock capped at 99,999')
@@ -582,6 +589,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       notes.push('Weight to check (0.00x)')
       rules.lowWeight++
     }
+    if (Number(out['**Current Stock Qty']) === 0) rules.stockZero++
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
   })
   return { ...applied, problems, rules }

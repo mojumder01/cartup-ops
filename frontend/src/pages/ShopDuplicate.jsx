@@ -93,6 +93,8 @@ export default function ShopDuplicate() {
   const [reportTab, setReportTab] = useState(true)
   const [spInclude, setSpInclude] = useState(true)
   const [spEnd, setSpEnd]     = useState(loadSpecialEnd)
+  const [stockSame, setStockSame] = useState(false)   // one stock for every row
+  const [stockValue, setStockValue] = useState('0')
   const [status, setStatus]   = useState('')
   const [progress, setProgress] = useState('')
   const [error, setError]     = useState('')
@@ -161,6 +163,7 @@ export default function ShopDuplicate() {
         templateData: await templateFile.arrayBuffer(),
         sku,
         specialPrice: { include: spInclude, start: todayISO(), end: spEnd },
+        stock: { set: stockSame && stockValue !== '' ? stockValue : null },
         reportTab,
         meta: { exportName: exportFile.name, templateName: templateFile.name },
         onProgress: setProgress,
@@ -348,6 +351,18 @@ export default function ShopDuplicate() {
           </>}
         </div>
 
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:10, fontSize:13, color:'#334155', flexWrap:'wrap' }}>
+          <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer' }}>
+            <input type="checkbox" checked={stockSame} onChange={e => { setStockSame(e.target.checked); reset() }} style={{ width:15, height:15, accentColor:'#4f46e5' }} />
+            Same <b>stock</b> for every row
+          </label>
+          {stockSame ? <>
+            <input type="number" min={0} max={99999} value={stockValue} onChange={e => { setStockValue(e.target.value); reset() }} aria-label="Stock for every row"
+              style={{ width:90, padding:'5px 8px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12.5 }} />
+            <span style={{ fontSize:12, color:'#94a3b8' }}>e.g. 0 when the seller wants to upload with no stock — listed under Changed values</span>
+          </> : <span style={{ fontSize:12, color:'#94a3b8' }}>off: stock as in the export (never above 99,999)</span>}
+        </div>
+
         <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:10, fontSize:13, color:'#334155', cursor:'pointer', width:'fit-content' }}>
           <input type="checkbox" checked={reportTab} onChange={e => { setReportTab(e.target.checked); reset() }} style={{ width:15, height:15, accentColor:'#4f46e5' }} />
           Add a <b>Report</b> tab to the file — summary, #N/A cells, auto-matched values, removed duplicates and warnings
@@ -431,7 +446,7 @@ export default function ShopDuplicate() {
           {report.fixes.length > 0 && (
             <div style={{ marginTop:16 }}>
               <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
-                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, 75%+ discounts, stock cap, "#" in names, warranty) — check any that look wrong
+                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, 75%+ discounts, stock option / cap, "#" in names, warranty) — check any that look wrong
               </div>
               <MiniTable rows={report.fixes} columns={[
                 { label:'Row', get: f => f.row, style: () => ({ color:'#94a3b8' }) },

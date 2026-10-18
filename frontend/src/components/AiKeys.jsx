@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_MODELS, loadKeys, saveKeys, loadSettings, saveSettings, setRemember, knownModels, modelInfo,
   poolSummary, onAiChange, unavailableModels, clearKeyStatus, testKey, listModels, applyModelList, usableKeys,
-  parseKeyFile, keyFileText, maskKey,
+  parseKeyFile, keyFileText, maskKey, resetText, setUsed, usedToday,
 } from '../utils/aiPool'
 import {
   KeyRound, Upload, Download, Plus, Trash2, ArrowUp, ArrowDown, CheckCircle, XCircle, AlertTriangle,
@@ -26,6 +26,7 @@ export default function AiKeys() {
   const [available, setAvailable] = useState(null)   // model → true/false, from "Check models"
   const [checking, setChecking] = useState(false)
   const [note, setNote] = useState(null)
+  const [usageEdit, setUsageEdit] = useState(null)   // key whose counts are being set to AI Studio's numbers
   const fileRef = useRef(null)
 
   useEffect(() => onAiChange(() => redraw(n => n + 1)), [])
@@ -132,17 +133,19 @@ export default function AiKeys() {
       </div>
 
       {/* Today */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(110px, 1fr))', gap:8, marginBottom:18 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(96px, 1fr))', gap:8, marginBottom:18 }}>
         {[
           ['Keys in use', `${sum.ticked} of ${keys.length}`, sum.ticked ? '#1a202c' : '#d97706'],
           ['Used today', `${fmt(sum.used)} / ${fmt(sum.cap)}`, '#1a202c'],
           ['Left today', fmt(sum.left), sum.left ? '#15803d' : '#dc2626'],
+          ['Tokens today', fmt(sum.tokens), '#1a202c'],
           ['Speed', `≈ ${fmt(sum.perMinute)}/min`, '#1a202c'],
-          ['Limits reset', time(sum.reset), '#1a202c'],
-        ].map(([label, value, color]) => (
+          ['Daily reset', time(sum.reset), '#1a202c', resetText().split(' · ')[1]],
+        ].map(([label, value, color, sub]) => (
           <div key={label} style={{ background:'#f8fafc', borderRadius:8, padding:'8px 10px' }}>
             <div style={{ fontSize:10.5, fontWeight:600, color:'#94a3b8', textTransform:'uppercase', letterSpacing:'0.4px' }}>{label}</div>
             <div style={{ fontSize:14, fontWeight:700, color }}>{value}</div>
+            {sub && <div style={{ fontSize:11, color:'#64748b' }}>{sub}</div>}
           </div>
         ))}
       </div>
@@ -210,7 +213,7 @@ export default function AiKeys() {
         <button onClick={() => fileRef.current?.click()} style={small}><Upload size={13} /> Import</button>
         <button onClick={exportFile} disabled={!keys.length} style={small}><Download size={13} /> Export</button>
         <button onClick={clearAll} disabled={!keys.length} style={{ ...small, color:'#dc2626' }}><Trash2 size={13} /> Clear</button>
-        <input ref={fileRef} type="file" accept=".txt,text/plain" style={{ display:'none' }}
+        <input ref={fileRef} type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" style={{ display:'none' }}
           onChange={async e => { const f = e.target.files[0]; e.target.value = ''; if (f) addKeys(await f.text(), f.name) }} />
       </div>
       {keys.length ? (
@@ -218,12 +221,15 @@ export default function AiKeys() {
           {sum.keys.map((k, i) => {
             const pct = k.cap ? Math.min(100, Math.round(k.used / k.cap * 100)) : 0
             return (
-              <div key={k.key} style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', borderBottom: i < keys.length - 1 ? '1px solid #f1f5f9' : 'none', fontSize:12.5, opacity: k.on ? 1 : 0.55, flexWrap:'wrap' }}>
+              <div key={k.key} style={{ borderBottom: i < keys.length - 1 ? '1px solid #f1f5f9' : 'none' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', fontSize:12.5, opacity: k.on ? 1 : 0.55, flexWrap:'wrap' }}>
                 <input type="checkbox" checked={k.on} aria-label={`Use key ${k.n}`}
                   onChange={() => saveKeys(keys.map(x => x.key === k.key ? { ...x, on: !x.on } : x))} />
                 <span style={{ fontWeight:600, color:'#475569', width:44 }}>Key {k.n}</span>
                 <span style={{ fontFamily:'monospace', flex:1, minWidth:90, wordBreak:'break-all' }}>{show ? k.key : maskKey(k.key)}</span>
-                <span title={`${fmt(k.used)} requests today of ${fmt(k.cap)} (all ticked models)`} style={{ display:'flex', alignItems:'center', gap:6, width:120 }}>
+                <span onClick={() => setUsageEdit(usageEdit === k.key ? null : k.key)} role="button" aria-label={`Usage of key ${k.n}`}
+                  title={`${fmt(k.used)} requests today of ${fmt(k.cap)} (ticked models) — click to enter the numbers AI Studio shows`}
+                  style={{ display:'flex', alignItems:'center', gap:6, width:120, cursor:'pointer' }}>
                   <span style={{ flex:1, height:5, background:'#f1f5f9', borderRadius:3, overflow:'hidden' }}>
                     <span style={{ display:'block', height:'100%', width:`${pct}%`, background: pct >= 100 ? '#dc2626' : pct > 80 ? '#d97706' : '#22c55e' }} />
                   </span>
@@ -233,6 +239,22 @@ export default function AiKeys() {
                 <button onClick={() => runTest(k.key)} style={{ ...small, padding:'2px 8px', fontSize:11 }}>Test</button>
                 {k.state !== 'ready' && <button onClick={() => clearKeyStatus(k.key)} title="Use it again now" style={icon}><RotateCcw size={13} /></button>}
                 <button onClick={() => saveKeys(keys.filter(x => x.key !== k.key))} title="Remove" style={{ ...icon, color:'#dc2626' }}><Trash2 size={13} /></button>
+              </div>
+              {usageEdit === k.key && (
+                <div style={{ padding:'6px 10px 10px 38px', background:'#fafaff', fontSize:12, color:'#475569' }}>
+                  <div style={{ marginBottom:6 }}>Requests used today on Key {k.n} — enter the numbers <a href="https://aistudio.google.com/usage" target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>AI Studio</a> shows (when the key is also used elsewhere):</div>
+                  <div style={{ display:'flex', gap:12, flexWrap:'wrap' }}>
+                    {sum.models.map(m => (
+                      <label key={m.id} style={{ display:'flex', alignItems:'center', gap:5 }}>
+                        {m.label}
+                        <input type="number" min={0} value={usedToday(k.key, m.id)} onChange={e => setUsed(k.key, m.id, e.target.value)}
+                          aria-label={`Key ${k.n} ${m.label} used today`} style={num} />
+                        <span style={{ color:'#94a3b8' }}>/ {fmt(m.rpd)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               </div>
             )
           })}
@@ -269,11 +291,21 @@ export default function AiKeys() {
             onChange={e => saveSettings({ delaySec: Math.min(30, Math.max(0, Number(e.target.value) || 0)) })}
             style={{ ...num, width:56 }} /> seconds
         </label>
+        <label style={{ display:'flex', alignItems:'center', gap:6 }}>
+          Requests at the same time
+          <input type="number" min={1} max={10} value={settings.parallel} aria-label="Requests at the same time"
+            onChange={e => saveSettings({ parallel: Math.min(10, Math.max(1, Math.round(Number(e.target.value) || 1))) })}
+            style={{ ...num, width:48 }} />
+        </label>
+        <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer' }} title="Off only for paid keys with higher limits">
+          <input type="checkbox" checked={settings.rpmGuard} onChange={e => saveSettings({ rpmGuard: e.target.checked })} />
+          Stay under the per-minute limit automatically
+        </label>
       </div>
       <div style={{ fontSize:11, color:'#94a3b8', marginTop:8, lineHeight:1.5 }}>
         {settings.remember ? 'Keys are saved in this browser only, never on our server.' : 'Keys are kept only until this browser window closes.'}
-        {' '}Daily limits reset at midnight Pacific time ({time(sum.reset)} here). With {mainInfo.label} each key does about {mainInfo.rpm} requests a minute.
-        {' '}.txt file: one key per line; lines starting with # are ignored. Get keys at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>aistudio.google.com</a>.
+        {' '}Daily limits reset every day at midnight Pacific time — {time(sum.reset)} here (1:00 PM in Bangladesh in summer, 2:00 PM in winter). Counts are for this browser; click a key's usage to enter AI Studio's numbers. With {mainInfo.label} each key does about {mainInfo.rpm} requests a minute.
+        {' '}Import: .txt / .csv with one key per line (lines starting with # are ignored), or .json. Get keys at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>aistudio.google.com</a>.
       </div>
     </div>
   )

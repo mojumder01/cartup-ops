@@ -1,7 +1,5 @@
-import { callAI, firstKey } from './aiPool'
+import { callAI, firstKey, loadSettings } from './aiPool'
 import { enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
-
-const CONCURRENCY = 3      // parallel API calls
 
 // What pages check (and pass along) for "AI is on": the first ticked Gemini
 // key. The calls themselves use every ticked key (aiPool.js).
@@ -332,7 +330,8 @@ export async function matchCategory(productName, cartupCategories, apiKey) {
 }
 
 // ── Run async tasks with max concurrency ─────────────────────────────────────
-export async function runConcurrent(tasks, concurrency = CONCURRENCY) {
+// Default: "Requests at the same time" from Profile.
+export async function runConcurrent(tasks, concurrency = loadSettings().parallel) {
   const results = []
   let idx = 0
   async function worker() {

@@ -17,12 +17,15 @@ const ROW_H = 30, HEAD_H = 34, FIRST_W = 210
 const WIDE = /name|highlight|description|box|policy|path|report|image|combo/i
 const widthOf = c => (WIDE.test(c) ? 220 : 130)
 const AI_MISSED = 'AI unavailable'
+const STOCK_COL = '**Current Stock Qty'
+// Filters that aren't problem types: the column they are about.
+const SPECIAL_COL = { name: '**Name (English)', stock0: STOCK_COL }
 
-// initialFilter: 'problems' | 'all' | 'edited' | 'name' | an ISSUE_TYPES key
+// initialFilter: 'problems' | 'all' | 'edited' | 'name' | 'stock0' | an ISSUE_TYPES key
 export default function SheetEditor({ output, items, columns, lists, issues, keyOf, edits, setEdits, initialFilter = 'problems', onDownload, onClose }) {
   const rows = output.rows
   const [filter, setFilter] = useState(initialFilter)
-  const [colOnly, setColOnly] = useState(initialFilter === 'name' ? '**Name (English)' : null)
+  const [colOnly, setColOnly] = useState(SPECIAL_COL[initialFilter] || null)
   const [query, setQuery] = useState('')
   const [sel, setSel] = useState(null)       // { i, col }
   const [draft, setDraft] = useState('')
@@ -57,12 +60,15 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
   }, [issues])
   const editedRows = useMemo(() => rows.map((_, i) => i).filter(i => Object.keys(edits[keyOf(i)] || {}).length), [rows, edits])
   const missedRows = useMemo(() => rows.map((_, i) => i).filter(aiMissed), [rows, items])
+  const stockZero = i => String(rows[i][STOCK_COL] ?? '').trim() !== '' && Number(rows[i][STOCK_COL]) === 0
+  const zeroRows = useMemo(() => rows.map((_, i) => i).filter(stockZero), [rows])
 
   // Is this cell one the current filter is about?
   const wanted = (i, c) => {
     if (colOnly && c !== colOnly) return false
     if (filter === 'edited') return isEdited(i, c)
     if (filter === 'name') return c === '**Name (English)' && aiMissed(i)
+    if (filter === 'stock0') return c === STOCK_COL && stockZero(i)
     const issue = issues.get(`${i}|${c}`)
     return !!issue && (filter === 'problems' || filter === 'all' || issue.type === filter)
   }
@@ -162,8 +168,11 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
   const item = sel && items[sel.i]
   const pickFilter = f => {
     setFilter(f)
-    if (f === 'name') setColOnly('**Name (English)')
-    if (scroller.current) { scroller.current.scrollTop = 0; if (f === 'name') scroller.current.scrollLeft = 0 }
+    if (SPECIAL_COL[f]) setColOnly(SPECIAL_COL[f])
+    if (scroller.current) {
+      scroller.current.scrollTop = 0
+      if (SPECIAL_COL[f]) scroller.current.scrollLeft = Math.max(0, colX[SPECIAL_COL[f]] - FIRST_W - 40)
+    }
   }
 
   const tbtn = { display:'flex', alignItems:'center', gap:6, padding:'7px 12px', borderRadius:8, fontSize:12.5, fontWeight:600, cursor:'pointer', border:'1.5px solid #e2e8f0', background:'#fff', color:'#334155' }
@@ -185,6 +194,7 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
               <option value="problems">Rows with problems ({problemRows.size.toLocaleString()})</option>
               {Object.entries(ISSUE_TYPES).filter(([t]) => typeCounts[t]).map(([t, { label }]) => <option key={t} value={t}>{label} ({typeCounts[t].toLocaleString()})</option>)}
               {missedRows.length > 0 && <option value="name">Names not cleaned by AI ({missedRows.length.toLocaleString()})</option>}
+              {zeroRows.length > 0 && <option value="stock0">Stock 0 ({zeroRows.length.toLocaleString()})</option>}
               <option value="edited">Edited by hand ({editedRows.length.toLocaleString()})</option>
               <option value="all">All rows ({rows.length.toLocaleString()})</option>
             </select>

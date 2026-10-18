@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
-import { poolSummary, onAiChange } from '../utils/aiPool'
+import { poolSummary, onAiChange, sessionStats, resetText, maskKey } from '../utils/aiPool'
 import {
   processDarazFiles, buildOutput, buildDarazWorkbook, templateLists, rematch, rowKey,
   readTableFile, guessImageColumns, makeImageKeyMap, OUTPUT_COLS,
@@ -70,6 +70,9 @@ export default function DarazUpload() {
   const [activeOnly, setActiveOnly] = useState(false)
   const [spInclude, setSpInclude] = useState(true)
   const [spEnd, setSpEnd]         = useState(loadSpecialEnd)
+  const [stockMode, setStockMode] = useState('file')   // 'file' | 'set' — one number for every row
+  const [stockValue, setStockValue] = useState('0')
+  const [aiRun, setAiRun]         = useState(null)     // AI calls of the latest run: { start, end }
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   const [keyPick, setKeyPick]     = useState({ sheet: 0, link: '', key: '' })
 
@@ -77,7 +80,8 @@ export default function DarazUpload() {
     const sh = keySheets?.[keyPick.sheet]
     return sh && keyPick.link && keyPick.key ? makeImageKeyMap(sh.rows, keyPick.link, keyPick.key) : null
   }, [keySheets, keyPick])
-  const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, imageKeys, edits }), [spInclude, spEnd, imageKeys, edits])
+  const stockSet = stockMode === 'set' && stockValue !== '' ? stockValue : null
+  const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, stock: { set: stockSet }, imageKeys, edits }), [spInclude, spEnd, stockSet, imageKeys, edits])
 
   // Live output for the current decisions, options and edits.
   const output = useMemo(() => result && buildOutput(result, decisions, memory, options), [result, decisions, memory, options])
@@ -118,8 +122,10 @@ export default function DarazUpload() {
       setError('Please select all required files'); return
     }
     setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({})
+    setAiRun({ start: sessionStats(), end: null })
     try {
       const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly })
+      setAiRun(r => r && { ...r, end: sessionStats() })
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
       const out = buildOutput(res, {}, memory, options)
@@ -152,6 +158,11 @@ export default function DarazUpload() {
     setMemory(rememberDecisions(dec))
   }
 
+  // AI calls since the run started (live while it runs).
+  const aiNow = aiRun && (aiRun.end || sessionStats())
+  const aiUse = aiNow && { calls: aiNow.calls - aiRun.start.calls, failed: aiNow.failed - aiRun.start.failed, tokens: aiNow.tokens - aiRun.start.tokens,
+    key: aiNow.key, keyNo: pool.keys.find(k => k.key === aiNow.key)?.n, model: pool.models.find(m => m.id === aiNow.model)?.label || aiNow.model }
+
   const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
   const seg = (on, label, click) => (
     <button key={label} onClick={click} style={{ padding:'5px 12px', border:'none', borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', background: on ? '#fff' : 'transparent', color: on ? '#4f46e5' : '#64748b', boxShadow: on ? '0 1px 3px rgba(0,0,0,0.08)' : 'none' }}>{label}</button>
@@ -166,6 +177,7 @@ export default function DarazUpload() {
   const valuePct = stats?.checked ? Math.round(((stats.checked - stats.open) / stats.checked) * 100) : 100
   const ruleLine = output && [
     output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (75%+ discount)`,
+    output.rules.stockSet && `${output.rules.stockSet} stocks set to ${stockSet}`,
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at 99,999`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
     output.rules.lowWeight && `${output.rules.lowWeight} weights starting with 0.00 flagged`,
@@ -224,6 +236,17 @@ export default function DarazUpload() {
               <span style={{ fontSize:11.5, color:'#94a3b8' }}>a discount of 75% or more is removed</span>
             </>}
           </div>
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <span style={lbl}>Stock</span>
+            <div style={{ display:'flex', gap:3, background:'#eef2f7', borderRadius:8, padding:3 }}>
+              {seg(stockMode === 'file', 'As in file', () => setStockMode('file'))}
+              {seg(stockMode === 'set', 'Same for every row', () => setStockMode('set'))}
+            </div>
+            {stockMode === 'set' ? <>
+              <input type="number" min={0} max={99999} value={stockValue} onChange={e => setStockValue(e.target.value)} aria-label="Stock for every row" style={{ ...sel, width:90 }} />
+              <span style={{ fontSize:11.5, color:'#94a3b8' }}>e.g. 0 when the seller wants to upload with no stock — every change is logged</span>
+            </> : <span style={{ fontSize:11.5, color:'#94a3b8' }}>from the price file, never above 99,999</span>}
+          </div>
           <div style={{ display:'flex', alignItems:'flex-start', gap:10, flexWrap:'wrap' }}>
             <span style={{ ...lbl, paddingTop:8 }}>Image keys</span>
             <div style={{ flex:1, minWidth:260 }}>
@@ -256,8 +279,8 @@ export default function DarazUpload() {
           <div style={{ background: pool.left ? '#eef2ff' : '#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color: pool.left ? '#4338ca' : '#92400e', marginTop:12, lineHeight:1.6 }}>
             <Zap size={13} style={{ verticalAlign:'middle', marginRight:6 }} />
             AI on — names, highlights, description &amp; categories with Gemini ({pool.models[0]?.label || 'no model'}) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
-            {' · '}<b>{pool.left.toLocaleString()}</b> requests left today (≈ {(pool.left * BATCH).toLocaleString()} products) · ≈ {pool.perMinute}/min
-            {!pool.left && <> — today's limit is used: names get the spelling fix only. Add or tick keys/models in Profile, or wait until {pool.reset.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' })}.</>}
+            {' · '}<b>{pool.left.toLocaleString()}</b> requests left today (≈ {(pool.left * BATCH).toLocaleString()} products) · ≈ {pool.perMinute}/min · resets {resetText()}
+            {!pool.left && <> — today's limit is used: names get the spelling fix only. Add or tick keys/models in Profile, or wait for the reset.</>}
           </div>
         ) : (
           <div style={{ background:'#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color:'#92400e', marginTop:12 }}>
@@ -266,8 +289,14 @@ export default function DarazUpload() {
         )}
 
         {status === 'processing' && (
-          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 16px', background:'#eff6ff', borderRadius:8, color:'#2563eb', fontSize:13, marginTop:16 }}>
-            <Loader size={14} style={{ animation:'spin 1s linear infinite' }} />{progress}
+          <div style={{ padding:'12px 16px', background:'#eff6ff', borderRadius:8, color:'#2563eb', fontSize:13, marginTop:16 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}><Loader size={14} style={{ animation:'spin 1s linear infinite' }} />{progress}</div>
+            {apiKey && aiUse && (
+              <div data-ai-live style={{ fontSize:11.5, color:'#475569', marginTop:6, fontVariantNumeric:'tabular-nums' }}>
+                AI · {aiUse.calls.toLocaleString()} request{aiUse.calls === 1 ? '' : 's'}{aiUse.failed ? ` (${aiUse.failed} failed)` : ''} · {aiUse.tokens.toLocaleString()} tokens
+                {aiUse.key && <> · now Key {aiUse.keyNo || '?'} ({maskKey(aiUse.key)}) on {aiUse.model}</>} · {pool.left.toLocaleString()} left today
+              </div>
+            )}
           </div>
         )}
         {status === 'success' && output && (
@@ -361,7 +390,7 @@ export default function DarazUpload() {
                     {stats.kept > 0 && <div>· {stats.kept.toLocaleString()} kept as new values for CartUp's lists ("new values" sheet)</div>}
                     {stats.open > 0 && <div style={{ color:'#b91c1c' }}>· {stats.open.toLocaleString()} values ({stats.openValues.toLocaleString()} different) in {stats.openParents.toLocaleString()} products not on the lists yet — they'd show #N/A in payload_hidden</div>}
                   </> : <div>· Values were not checked against CartUp's lists (no template)</div>}
-                  {result.ai && <div>· AI cleaned {(result.ai.products - result.ai.missed).toLocaleString()} of {result.ai.products.toLocaleString()} products{result.ai.missed ? ` — ${result.ai.missed.toLocaleString()} got the spelling fix only` : ''}</div>}
+                  {result.ai && <div>· AI cleaned {(result.ai.products - result.ai.missed).toLocaleString()} of {result.ai.products.toLocaleString()} products{result.ai.missed ? ` — ${result.ai.missed.toLocaleString()} got the spelling fix only` : ''}{aiUse ? ` · ${aiUse.calls.toLocaleString()} request${aiUse.calls === 1 ? '' : 's'}, ${aiUse.tokens.toLocaleString()} tokens` : ''}</div>}
                   {ruleLine.length > 0 && <div>· {ruleLine.join(' · ')}</div>}
                 </div>
               </details>

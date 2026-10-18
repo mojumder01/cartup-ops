@@ -333,7 +333,7 @@ export async function processManualFile(file, apiKey, onProgress) {
           : { cartupId: '', cartupPath: '', tags: '', reportNote: r.categoryError ? `API error: ${r.categoryError}` : 'No category match found' }
       }
     })
-    await runConcurrent(tasks, 2)
+    await runConcurrent(tasks)
   } else {
     for (const p of pidList) {
       aiCache[p.pid] = { name: p.name, highlights: p.highlights || '', description: p.description || '' }

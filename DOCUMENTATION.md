@@ -66,8 +66,9 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 **Options** (on the page):
 - **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
 - **Special price:** include or leave out. When included it runs **from the day the file is made to the end date you pick** (remembered while it is still ahead); a special price that is a **discount of 75% or more** is removed and logged. Nothing else is removed.
+- **Stock:** *As in file* (never above 99,999), or **the same stock for every row** — e.g. `0` when the seller wants to upload with no stock; every changed row is logged in **changes**
 - **Image keys:** every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key — links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`); links without a key are listed in **to check**
-- Special price and image keys apply when the file is built, so they can be changed after processing without running again
+- Special price, stock and image keys apply when the file is built, so they can be changed after processing without running again
 
 **Step 2 — Click "Process & Download".** The system:
 1. Joins all files on Product ID
@@ -94,6 +95,8 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 
 **Smart matching** (`frontend/src/utils/listMatch.js`, also used by Shop Duplicate), in order of confidence: exact (case ignored, as VLOOKUP does) → same text apart from spacing/punctuation (`Type-B` = `Type B`; decimal points and ranges kept, so `2.5mm` ≠ `25mm`, `3-4 Years` ≠ `34 Years`) → known equivalents (`EU:40`/`38` → `40 (EU)`/`38 (EU)`, `UK:7` → `7 (UK)`, `Int:XXL`/`XXL` → `2XL`, `Free Size`/`FS` → `One Size`, `King` → `King Size`, `6 Months` → `6 month`, `12 Months` → `1 year`, `Local seller warranty` → `Seller Warranty`, `International Manufacturer Warranty` → `Brand Warranty`, `pcs` → `PCS`, `Mixed Color` → `Multicolor`, `As Picture` → `Same as picture`) → a close spelling (same words in another order, or one or two typos — only when one entry is clearly closest and every number is the same). Brands, units and warranty fields never use close spellings.
 
+**While it runs** the progress box shows the AI line live: requests and tokens so far, the key and model in use, and requests left today; afterwards *What was done automatically* gives the run's requests and tokens.
+
 **Check list — "Before you upload"** (on the page after processing, `utils/checks.js`): every check with its count, why it matters, and one click to the view that fixes it. Red = fix before uploading, amber = worth a look, green = done; the badge on top says **Ready to upload**, *Ready — n worth a look*, or *n things to fix*. The same counts are used in the review window and the sheet view.
 
 | Check | Level | Opens |
@@ -110,6 +113,7 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 | Image links without a CartUp key (with an image key file) | check | Sheet → Image link without a key |
 | Names not cleaned by AI (AI unavailable — limit used up…) | check | Sheet → Names not cleaned by AI |
 | Kept as new values | info | Review → By value, kept as new |
+| Rows with 0 stock (from the file, or set by the Stock option) | info | Sheet → Stock 0 |
 | Rows left out (invalid sheet) | info | — |
 
 **Review window — "Check & match values"** (opens by itself when values are left; or from the check list). Two views, both with filters: **column** (all, a group — variant columns / Brand / Warranty / other — or one column, with its open count), **state**, and **search**.
@@ -121,7 +125,7 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 **Step 3 — Output:** `cartup_daraz_output.xlsx` — downloads at once when nothing needs a decision, otherwise from the review window ("Download file", also on the page). Sheets:
 - **product** — with the decisions applied; the Report column notes each row's changes, values not on the list, and identical variants
 - **invalid** — rows missing required fields (as before)
-- **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
+- **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock set by the Stock option, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
 - **to check** — flagged but not changed: weights starting with 0.00, image links without a key
 - **new values** (with the template) — every value not on CartUp's lists, once each: column, value, status (*Add to the CartUp list — decided*, or *Not reviewed — shows #N/A until matched or added*), how many SKUs and products use it, the Seller SKUs, and the closest CartUp values
 
@@ -165,6 +169,7 @@ Old seller's product export + blank upload template + new seller SKU (replace co
 - Brand, Unit, Color, Size, Warranty… are matched to the template's own list with the same smart matching as Daraz Upload (exact first — the lists contain near-duplicates such as `Grey` and `Grey ` with different IDs — then spelling/format differences and known equivalents); every value that was changed is listed under **Auto-matched values**
 - Special Price 0 → blank (and its dates); duplicate Seller SKUs → first one kept, original order kept
 - **Special price** (checkbox on the page): include or leave out; when included it runs from today to the end date you pick, and a **discount of 75% or more** is removed
+- **Same stock for every row** (checkbox + number): e.g. `0` when the seller wants to upload with no stock; off = stock as in the export (never above 99,999). Each changed row is listed under **Changed values**
 - House rules as in Daraz Upload: `#` in names → `-`, stock never above 99,999, *No Warranty* with a period → period removed, *Seller/Brand Warranty* without one → *No Warranty*, a weight starting with 0.00 (`0.001`–`0.009`) flagged as a warning — all listed under **Changed values**
 - Word Replacements from Profile (default `daraz → cartup`) applied to names, highlights, descriptions, what's-in-the-box and warranty text
 
@@ -305,7 +310,7 @@ All settings persist in the browser (localStorage).
 
 | Setting | Where | Default |
 |---|---|---|
-| Gemini API keys, models and limits, pause between requests | Profile & Settings | Gemini 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite, 1 s |
+| Gemini API keys, models and limits, pause between requests, requests at the same time, per-minute guard | Profile & Settings | Gemini 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite, 1 s, 3, on |
 | Word replacements (applies to Production output) | Profile & Settings | `daraz` → `cartup` |
 | QC batch size | QC control bar | 5 |
 | Governance batch size | Governance page | 10 |
@@ -334,12 +339,12 @@ All settings persist in the browser (localStorage).
 
 ### Gemini keys & models (Profile & Settings)
 AI runs on **Gemini only** (Production, QC, Governance) — Grok and Groq were removed. `frontend/src/utils/aiPool.js`, card in `components/AiKeys.jsx`:
-- **Today strip:** keys in use, requests used / capacity today, left today, speed (≈ requests a minute) and when the daily limits reset (midnight Pacific time — shown in local time).
+- **Today strip:** keys in use, requests used / capacity today, left today, tokens today, speed (≈ requests a minute) and the **daily reset** with a countdown. Free-tier limits reset at midnight Pacific time — **1:00 PM in Bangladesh** while the US is on summer time, **2:00 PM** in winter (shown in local time, so it is always right).
 - **Models:** pick the **main model** from the list, each with its free-tier limits per key — Gemini 3.5 Flash Lite and 3.1 Flash Lite 15/min · 500/day; 3.8, 3.7, 3.6, 3.5, 3 and 2.5 Flash 5/min · 20/day; 2.5 Flash Lite 10/min · 20/day. Tick the **backup** models to use when the main one is full, and reorder them. **Edit limits** changes a model's numbers (Google changes them; paid keys have more). **Check models for my key** lists which models the first ticked key can use (others show *not available*) — a model Google publishes under a longer name (`gemini-3-flash` → `gemini-3-flash-preview`) is found and used automatically, never a different model (`-lite`). Add any other model name; **Defaults** goes back to 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite.
-- **Keys:** *Tick = use here* — **All**, **None**, **Remove ticked**; each key shows *Key n*, the key (masked; **Show** for the full key), today's usage against its capacity (e.g. `280/1,000`, with a bar), and its state: ready / works / resting · back hh:mm (per-minute limit) / *n of m models used up today* / today's limit used / invalid. **Test**, "use it again now" and remove per key. **Import** / **Export** a .txt (one key per line; `#` lines ignored; a label like `Key 1:` before the key is fine; Grok/Groq keys are skipped). **Clear** removes every key.
+- **Keys:** *Tick = use here* — **All**, **None**, **Remove ticked**; each key shows *Key n*, the key (masked; **Show** for the full key), today's usage against its capacity (e.g. `280/1,000`, with a bar), and its state: ready / works / resting · back hh:mm (per-minute limit) / *n of m models used up today* / today's limit used / invalid. **Test**, "use it again now" and remove per key. **Click a key's usage** to enter the numbers **AI Studio** shows for each model — counts are kept per browser, so when the same key is used elsewhere (another app or browser) this keeps them right. **Import** a .txt / .csv (one key per line; `#` lines ignored; a label like `Key 1:` or a CSV column next to the key is fine) or a .json (keys anywhere in it); Grok/Groq keys are skipped. **Export** writes a .txt. **Clear** removes every key.
 - **How requests are spread:** each request goes to the next ticked key that still has room on the main model (its per-minute and per-day count, kept per key and model in this browser); when every key is full on the main model, the next ticked model takes over. A 429 still from Google cools the key down for that model (until the next minute, or the next day for a daily quota); an invalid key is skipped for a day; a model that doesn't exist or is overloaded gives way to the next. When everything is used up for the day the run stops with a clear message, and Daraz Upload lists the products that got the spelling fix only (check list → *Names not cleaned by AI*).
-- **Settings:** **Remember keys in this browser** (off = keys are kept only until the browser window closes) and **Pause between requests** (seconds, default 1).
-- The Daraz page shows the AI line before a run: main model, ticked keys, requests left today (≈ products, 5 per request) and speed.
+- **Settings:** **Remember keys in this browser** (off = keys are kept only until the browser window closes), **Pause between requests** (seconds, default 1), **Requests at the same time** (1–10, default 3 — Daraz and Manual Upload) and **Stay under the per-minute limit automatically** (on; turn off only for paid keys with higher limits).
+- The Daraz page shows the AI line before a run: main model, ticked keys, requests left today (≈ products, 5 per request), speed and the next reset; during the run the same line counts requests, tokens and the key in use.
 - Keys, usage and cool-downs live in this browser only (usage is stored under a fingerprint of the key, not the key) — never on our server.
 
 ---

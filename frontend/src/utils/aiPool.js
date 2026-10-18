@@ -25,7 +25,8 @@ export const MODEL_CATALOG = [
   { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', rpm: 10, rpd: 20 },
 ]
 export const DEFAULT_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite']
-const DEFAULT_SETTINGS = { models: DEFAULT_MODELS, limits: {}, aliases: {}, delaySec: 1, remember: true }
+// parallel: requests sent at the same time · rpmGuard: keep each key under its per-minute limit
+const DEFAULT_SETTINGS = { models: DEFAULT_MODELS, limits: {}, aliases: {}, delaySec: 1, remember: true, parallel: 3, rpmGuard: true }
 
 const storage = kind => { try { return kind === 'session' ? window.sessionStorage : window.localStorage } catch { return null } }
 const read = (k, fallback, kind = 'local') => { try { return JSON.parse(storage(kind).getItem(k)) ?? fallback } catch { return fallback } }
@@ -110,13 +111,23 @@ export const usableKeys = () => loadKeys().filter(k => k.on).map(k => k.key)
 // What pages check (and pass along) for "AI is on". Calls use the whole pool.
 export const firstKey = () => usableKeys()[0] || ''
 
-// .txt import: one key per line; "#" lines are comments. A line may carry a
-// label ("Key 1: AIza…") — the key is the longest word on it. Keys of any
+// Import: a .txt / .csv with one key per line ("#" lines are comments; a line
+// may carry a label — "Key 1: AIza…" — the key is the longest word on it), or
+// a .json holding the keys anywhere (a list, or { keys: [...] }…). Keys of any
 // format are taken (AIza…, AQ.…, gen-…), except Grok/Groq ones.
 export function parseKeyFile(text) {
   const keys = []
   let skipped = 0
-  for (const raw of String(text).split(/\r?\n/)) {
+  let lines = String(text).split(/\r?\n/)
+  if (/^\s*[[{]/.test(text)) {
+    try {
+      const found = []
+      const walk = v => typeof v === 'string' ? found.push(...v.split(/[\n,]+/)) : v && typeof v === 'object' && Object.values(v).forEach(walk)
+      walk(JSON.parse(text))
+      lines = found.filter(v => !/\s/.test(v.trim()) && v.trim().length >= 20)
+    } catch { /* not JSON after all: read it line by line */ }
+  }
+  for (const raw of lines) {
     const line = raw.trim().replace(/^gemini\s*[:=,\t]\s*/i, '')
     if (!line || line.startsWith('#')) continue
     const key = line.split(/[\s,;|]+/).sort((a, b) => b.length - a.length)[0].replace(/^["']|["']$/g, '')
@@ -140,18 +151,39 @@ export function nextReset(now = new Date()) {
   return new Date(now.getTime() - passed + 86400_000)
 }
 
-// { day, used: { [fp]: { [model]: n } } } — requests sent today
+// When the daily limits reset, as text: "1:00 PM · in 3h 12m".
+export function resetText(now = new Date()) {
+  const at = nextReset(now), mins = Math.max(1, Math.round((at - now) / 60000))
+  return `${at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · in ${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`}`
+}
+
+// { day, used: { [fp]: { [model]: n } }, tokens } — requests and tokens today
 function usage() {
   const u = read(USAGE_STORE, null), day = quotaDay()
-  return u?.day === day ? u : { day, used: {} }
+  return u?.day === day ? { tokens: 0, ...u } : { day, used: {}, tokens: 0 }
 }
-function countUse(id, model, d) {
+function countUse(id, model, d, tokens = 0) {
   const u = usage()
   const k = (u.used[id] ||= {})
   k[model] = Math.max(0, (k[model] || 0) + d)
+  u.tokens += tokens
   write(USAGE_STORE, u)
   emit()
 }
+// Today's count for one key and model, set by hand — the number AI Studio
+// shows (the same key may be used elsewhere, e.g. another app).
+export function setUsed(key, model, n) {
+  const u = usage(), id = fp(key)
+  ;(u.used[id] ||= {})[model] = Math.max(0, Math.round(Number(n) || 0))
+  write(USAGE_STORE, u)
+  emit()
+}
+export const usedToday = (key, model) => usage().used[fp(key)]?.[model] || 0
+
+// This page's AI calls since it was opened: requests, answers, failures,
+// tokens, and the key + model in use — for the live line while a run goes.
+const session = { calls: 0, ok: 0, failed: 0, tokens: 0, key: '', model: '', at: 0 }
+export const sessionStats = () => ({ ...session })
 // { ["fp|model" or "fp|*"]: { until, reason } } — reason: 'minute' | 'day' | 'invalid'
 export function keyStatus() {
   const s = read(STATUS_STORE, {}), now = Date.now()
@@ -203,7 +235,7 @@ export function poolSummary() {
     cap: on.reduce((s, k) => s + k.cap, 0),
     left: on.reduce((s, k) => s + k.left, 0),
     perMinute: main ? on.filter(k => k.state !== 'invalid' && k.state !== 'day').length * main.rpm : 0,
-    reset: nextReset(),
+    reset: nextReset(), tokens: u.tokens,
   }
 }
 
@@ -223,7 +255,7 @@ async function requestOnce(model, key, prompt, { maxOutputTokens, temperature })
   } catch (e) { return { kind: 'busy', message: `Network error: ${e.message}` } }
   if (res.ok) {
     const data = await res.json()
-    return { ok: true, text: (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('') }
+    return { ok: true, text: (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join(''), tokens: data.usageMetadata?.totalTokenCount || 0 }
   }
   const body = await res.json().catch(() => ({}))
   const message = body.error?.message || `Gemini error ${res.status}`
@@ -295,7 +327,7 @@ function pickSlot(keys, settings) {
       if ((u.used[id]?.[model] || 0) >= rpd) continue
       const times = (recent.get(slot) || []).filter(t => t > now - 60_000)
       recent.set(slot, times)
-      if (times.length >= rpm) { wait = Math.min(wait, times[0] + 60_000 - now); continue }
+      if (settings.rpmGuard && times.length >= rpm) { wait = Math.min(wait, times[0] + 60_000 - now); continue }
       cursor = i + 1
       times.push(now)
       return { key: keys[i], id, model }
@@ -303,8 +335,6 @@ function pickSlot(keys, settings) {
   }
   return { wait }
 }
-
-const resetText = () => nextReset().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 
 // The one AI call every feature uses (Production, Daraz Upload, QC, Governance).
 export async function callAI(prompt, { maxOutputTokens = 4096, temperature = 0.1 } = {}) {
@@ -328,12 +358,18 @@ export async function callAI(prompt, { maxOutputTokens = 4096, temperature = 0.1
     if (start > Date.now()) await sleep(start - Date.now())
 
     countUse(id, model, 1)
+    Object.assign(session, { calls: session.calls + 1, key, model, at: Date.now() })
     let r = await requestOnce(apiName(model, settings), key, prompt, { maxOutputTokens, temperature })
     if (r.kind === 'model' && !settings.aliases[model]) {
       const alt = await resolveModel(model, key)
       if (alt) r = await requestOnce(alt, key, prompt, { maxOutputTokens, temperature })
     }
-    if (r.ok) return r.text
+    if (r.ok) {
+      session.ok++; session.tokens += r.tokens
+      countUse(id, model, 0, r.tokens)
+      return r.text
+    }
+    session.failed++
     problems.push(`${maskKey(key)} · ${model}: ${r.message}`)
     if (r.kind === 'limit') {
       countUse(id, model, -1)
@@ -351,7 +387,7 @@ export async function callAI(prompt, { maxOutputTokens = 4096, temperature = 0.1
     } else throw new Error(r.message)
   }
   const { left } = poolSummary()
-  if (!left) throw new Error(`Today's Gemini limit is used on every ticked key and model — add or tick more keys or models in Profile, or wait until ${resetText()} (midnight Pacific time)`)
+  if (!left) throw new Error(`Today's Gemini limit is used on every ticked key and model — add or tick more keys or models in Profile, or wait for the daily reset (${resetText()})`)
   throw new Error(`Gemini keys/models are at their limit or unavailable right now. ${problems.slice(-3).join(' | ')}`)
 }
 

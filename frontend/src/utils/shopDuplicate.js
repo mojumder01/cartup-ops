@@ -642,10 +642,12 @@ function parseAttrList(text, names) {
 }
 
 // rules.specialPrice: { include, start, end } — without it the export's own
-// special price dates are kept.
+// special price dates are kept. rules.stock: { set } — one stock for every row
+// (e.g. 0 when the seller wants to upload with no stock).
 export function buildRows(exportRows, tpl, sku, rules = {}) {
   const warnings = [], fixes = []
   const spRule = rules.specialPrice
+  const stockSet = rules.stock?.set == null || rules.stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(rules.stock.set) || 0)))
   const wtCol = tpl.columns.find(c => c.key === 'warrantytype'), wpCol = tpl.columns.find(c => c.key === 'warrantyperiod')
   const warn = (src, field, message) => warnings.push({ row: src.__row, sku: src.sellersku ?? '', field, message })
 
@@ -704,6 +706,10 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
       if ((key === 'nameenglish' || key === 'namebengali') && /#/.test(v)) {
         if (key === 'nameenglish') change(col.header.replace(/^\*+/, ''), v, v.replace(/#/g, '-'), '"#" replaced with "-"')
         v = v.replace(/#/g, '-')
+      }
+      if (key === 'currentstockqty' && stockSet !== null) {
+        if (String(v) !== String(stockSet)) change('Current Stock Qty', v === '' ? '(empty)' : v, stockSet, `Stock set to ${stockSet} for every row (option)`)
+        v = stockSet
       }
       if (key === 'currentstockqty' && Number(v) > 99999) { change('Current Stock Qty', v, 99999, 'Stock capped at 99,999'); v = 99999 }
       if (key === 'packageweightkg' && v !== '' && weightNeedsCheck(v)) {
@@ -1023,7 +1029,7 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
 // Full pipeline: returns one or more filled templates plus a report.
 // sku: { mode: 'replace', rules: [{ from, to }] } or { mode: 'prefix', prefix }.
 // reportTab adds a "Report" sheet to each file; meta: { exportName, templateName } for it.
-export async function duplicateShop({ exportData, templateData, sku, specialPrice, reportTab = true, meta = {}, onProgress: report = () => {} }) {
+export async function duplicateShop({ exportData, templateData, sku, specialPrice, stock, reportTab = true, meta = {}, onProgress: report = () => {} }) {
   const skuError = skuOptionsError(sku)
   if (skuError) throw new Error(skuError)
   // Yield after each message so the browser can paint it before the next heavy step.
@@ -1033,7 +1039,7 @@ export async function duplicateShop({ exportData, templateData, sku, specialPric
   await onProgress('Reading upload template…')
   const tpl = await loadTemplate(templateData)
   await onProgress('Mapping products…')
-  const built = buildRows(exportRows, tpl, sku, { specialPrice })
+  const built = buildRows(exportRows, tpl, sku, { specialPrice, stock })
   if (!built.rows.length) throw new Error('No products to copy')
   const chunks = chunkRows(built.rows, tpl.capacity)
   const files = [], hiddenErrors = []

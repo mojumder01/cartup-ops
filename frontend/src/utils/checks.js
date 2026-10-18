@@ -99,6 +99,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Kept as new values', why: 'In the "new values" sheet — CartUp adds them to its lists, or they show #N/A',
       open: { review: { view: 'values', state: 'kept', col: 'all' } } })
   }
+  if (output.rules.stockZero) add({ id: 'stock0', level: 'info', count: output.rules.stockZero, unit: 'row',
+    title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
+    open: { sheet: 'stock0' } })
   if (result.invalidRows.length) add({ id: 'invalid', level: 'info', count: result.invalidRows.length, unit: 'row',
     title: 'Rows left out', why: 'Missing name, price or image — listed in the "invalid" sheet, not in the upload' })
   return items
