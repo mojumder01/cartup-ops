@@ -25,10 +25,10 @@ CartUp Ops is a browser-based platform for the CartUp catalog team. It converts 
 ### Login
 Sign in with your team email and password.
 
-### Gemini API Key (required for AI features)
-1. Get a free key from [Google AI Studio](https://aistudio.google.com/apikey)
-2. Go to **Profile & Settings** (top-right) → paste the key → Save
-3. Free tier limits: **500 requests/day**, 15 requests/minute — the app auto-throttles (2s delay between calls, retries on rate-limit)
+### API keys (required for AI features)
+1. Get a free key from [Google AI Studio](https://aistudio.google.com/apikey) (or Groq / Grok — see AI Provider below)
+2. Go to **Profile & Settings** (top-right) → **API keys & models** → paste one or more keys (one per line) → **Add keys**, or **Import .txt**
+3. Add **several keys**: when one hits its limit (15 requests/minute, 500/day on Gemini's free tier) the next one takes over automatically — see [AI Provider](#ai-provider-profile--settings)
 
 ### Navigation
 | Section | Purpose |
@@ -296,9 +296,14 @@ All settings persist in the browser (localStorage).
 - Model: `gemini-3.1-flash-lite` (default), or `grok-4-fast-non-reasoning` when Grok is selected as provider
 
 ### AI Provider (Profile & Settings)
-- Choose **Gemini** (Google, 500 free requests/day) or **Grok** (xAI, free trial credits for new accounts) — get a Grok key at [console.x.ai](https://console.x.ai)
+- Choose **Gemini** (Google, 500 free requests/day), **Grok** (xAI — [console.x.ai](https://console.x.ai)) or **Groq** (groqcloud — keys start with `gsk_`)
 - The chosen provider powers all AI calls across Production, QC, and Governance — no per-section switch needed
-- Each provider's key is stored and tested independently in Profile; switching providers doesn't clear the other key
+
+**API keys & models** (`frontend/src/utils/aiPool.js`) — every provider holds a list of keys and a list of models, used in turn:
+- **Keys:** the first usable key is used until it hits its limit; then it cools down (for the wait the provider reports — 60 s by default — or an hour when the *daily* quota is used up) and the next key takes over. An invalid key is skipped for a day. When every key is cooling down the app waits for the soonest one (up to ~1½ min), then stops with a clear message. Each key shows its state (ready / works / rate limited · back at hh:mm / daily limit / invalid) with **Test**, reorder, remove and "use it again now".
+- **Models:** tried top to bottom — if a model is unavailable (not found) or busy (5xx), the next one is used. Add any model name, reorder, or go back to the defaults (Gemini: `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite` → `gemini-2.5-flash`).
+- **Import / export .txt:** one key per line; lines starting with `#` are ignored. The provider comes from the key's start (`AIza…` Gemini, `gsk_…` Groq, `xai-…` Grok); write `gemini: KEY` if it isn't clear. Export writes every key of every provider — share it only with your team.
+- Keys and cool-downs are stored in this browser only. Grok / Groq calls go through our backend (`/ai/proxy`, which passes the chosen model on) because those APIs block browser calls; the key is sent per request and never stored there.
 
 ---
 

@@ -1,28 +1,22 @@
-import { getProvider, callGrok, getGrokApiKey, callGroq, getGroqApiKey } from './aiProvider'
+import { callAI, firstKey, loadKeys, saveKeys, testKey } from './aiPool'
 import { enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
 
-const GEMINI_MODEL = 'gemini-3.1-flash-lite'
-const DELAY_MS = 2000
-const MAX_RETRIES = 3
 const CONCURRENCY = 3      // parallel API calls
 
+// Keys live in the key pool (aiPool.js) — several per provider, used in turn.
 export function getApiKey() {
-  return localStorage.getItem('gemini_api_key') || ''
+  return firstKey('gemini')
 }
 
 export function saveApiKey(key) {
-  localStorage.setItem('gemini_api_key', key)
+  const keys = loadKeys()
+  saveKeys({ ...keys, gemini: key ? [key, ...keys.gemini.filter(k => k !== key)] : keys.gemini.slice(1) })
 }
 
-// The key that actually gets used for AI calls — Grok's key when Grok is the
-// selected provider, otherwise the Gemini key. Every page reads this (not the
-// raw getApiKey above) so switching provider in Profile is enough to re-route
-// Production/QC/Governance without touching those pages.
+// What pages check (and pass along) for "AI is on": the first key of the
+// provider chosen in Profile. The calls themselves use the whole pool.
 export function getActiveApiKey() {
-  const p = getProvider()
-  if (p === 'grok') return getGrokApiKey()
-  if (p === 'groq') return getGroqApiKey()
-  return getApiKey()
+  return firstKey()
 }
 
 const TYPO_MAP = {
@@ -86,31 +80,10 @@ export function localFixName(name) {
   return result
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
-
-async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
-  const provider = getProvider()
-  if (provider === 'grok') return callGrok(prompt, apiKey, retries)
-  if (provider === 'groq') return callGroq(prompt, apiKey, retries)
-  await sleep(DELAY_MS)
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
-      })
-    }
-  )
-  if (res.status === 429) {
-    if (retries > 0) { await sleep(15000); return callGemini(prompt, apiKey, retries - 1) }
-    throw new Error('Gemini rate limit — please wait a minute and try again')
-  }
-  if (!res.ok) throw new Error(`Gemini error: ${res.status}`)
-  const data = await res.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+// Every AI pass goes through the key pool: provider from Profile, keys and
+// models used in turn (apiKey is only the "AI is on" flag the pages pass).
+function callGemini(prompt) {
+  return callAI(prompt, { maxOutputTokens: 4096 })
 }
 
 // ── Combined: clean + categorise in ONE API call ─────────────────────────────
@@ -399,18 +372,6 @@ export async function fixDescription(description, name, highlights, apiKey) {
 }
 
 export async function testConnection(apiKey) {
-  try {
-    await sleep(DELAY_MS)
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: 'Say "ok"' }] }], generationConfig: { maxOutputTokens: 10 } })
-      }
-    )
-    if (res.status === 429) return 'rate_limited'
-    if (res.ok) return 'ok'
-    return 'fail'
-  } catch { return 'fail' }
+  const r = await testKey('gemini', apiKey)
+  return r === 'invalid' ? 'fail' : r
 }

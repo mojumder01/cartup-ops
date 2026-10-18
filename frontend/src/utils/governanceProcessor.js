@@ -1,13 +1,10 @@
 import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { applyReplacements } from './wordReplacements'
-import { getProvider, callGrok, callGroq } from './aiProvider'
+import { callAI } from './aiPool'
 import { stripImagesFromHighlights, fixDescriptionImages, enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
 
 const { cartup_map } = MAPPINGS
-const GEMINI_MODEL = 'gemini-3.1-flash-lite'
-const DELAY_MS = 2000
-const MAX_RETRIES = 3
 // batch size is user-configurable (smaller = better accuracy, more API calls)
 export function getGovBatchSize() {
   const v = parseInt(localStorage.getItem('gov_batch_size'), 10)
@@ -18,31 +15,9 @@ export function saveGovBatchSize(v) {
 }
 const CHECKPOINT_KEY = 'gov_checkpoint'
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
-
-async function callGemini(prompt, apiKey, retries = MAX_RETRIES) {
-  const provider = getProvider()
-  if (provider === 'grok') return callGrok(prompt, apiKey, retries)
-  if (provider === 'groq') return callGroq(prompt, apiKey, retries)
-  await sleep(DELAY_MS)
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: 8192 },
-      }),
-    }
-  )
-  if (res.status === 429) {
-    if (retries > 0) { await sleep(15000); return callGemini(prompt, apiKey, retries - 1) }
-    throw new Error('Rate limit — please wait and retry')
-  }
-  if (!res.ok) throw new Error(`Gemini error: ${res.status}`)
-  const data = await res.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+// Through the key pool: provider from Profile, keys and models used in turn.
+function callGemini(prompt) {
+  return callAI(prompt, { maxOutputTokens: 8192 })
 }
 
 function readSheet(file) {

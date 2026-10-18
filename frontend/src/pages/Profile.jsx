@@ -1,26 +1,15 @@
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
-import { getApiKey, saveApiKey, testConnection } from '../utils/gemini'
-import {
-  getProvider, saveProvider,
-  getGrokApiKey, saveGrokApiKey, testGrokConnection,
-  getGroqApiKey, saveGroqApiKey, testGroqConnection,
-} from '../utils/aiProvider'
+import { getProvider, saveProvider } from '../utils/aiProvider'
+import { loadKeys, PROVIDER_LABEL } from '../utils/aiPool'
+import AiKeys from '../components/AiKeys'
 import { getReplacements, saveReplacements } from '../utils/wordReplacements'
-import { User, Key, CheckCircle, XCircle, Loader, Zap, AlertTriangle, Replace, Plus, Trash2, Sparkles } from 'lucide-react'
+import { User, Replace, Plus, Trash2, Sparkles } from 'lucide-react'
 
 export default function Profile() {
   const { user } = useAuth()
-  const [apiKeyInput, setApiKeyInput] = useState(getApiKey())
-  const [saved, setSaved]             = useState(!!getApiKey())
-  const [testStatus, setTestStatus]   = useState('')
   const [provider, setProvider]       = useState(getProvider())
-  const [grokKeyInput, setGrokKeyInput] = useState(getGrokApiKey())
-  const [grokSaved, setGrokSaved]       = useState(!!getGrokApiKey())
-  const [grokTestStatus, setGrokTestStatus] = useState('')
-  const [groqKeyInput, setGroqKeyInput] = useState(getGroqApiKey())
-  const [groqSaved, setGroqSaved]       = useState(!!getGroqApiKey())
-  const [groqTestStatus, setGroqTestStatus] = useState('')
+  const [keys, setKeys]               = useState(loadKeys)
   const [replacements, setReplacements] = useState(getReplacements())
   const [replSaved, setReplSaved]       = useState(true)
 
@@ -32,66 +21,6 @@ export default function Profile() {
   const addRepl = () => { setReplacements([...replacements, { find: '', replace: '' }]); setReplSaved(false) }
   const removeRepl = i => { setReplacements(replacements.filter((_, idx) => idx !== i)); setReplSaved(false) }
   const saveRepl = () => { saveReplacements(replacements.filter(r => r.find)); setReplSaved(true) }
-
-  const handleSave = () => {
-    saveApiKey(apiKeyInput.trim())
-    setSaved(true)
-    setTestStatus('')
-  }
-
-  const handleTest = async () => {
-    if (!apiKeyInput.trim()) return
-    setTestStatus('testing')
-    const result = await testConnection(apiKeyInput.trim())
-    setTestStatus(result)
-  }
-
-  const handleClear = () => {
-    saveApiKey('')
-    setApiKeyInput('')
-    setSaved(false)
-    setTestStatus('')
-  }
-
-  const handleSaveGrok = () => {
-    saveGrokApiKey(grokKeyInput.trim())
-    setGrokSaved(true)
-    setGrokTestStatus('')
-  }
-
-  const handleTestGrok = async () => {
-    if (!grokKeyInput.trim()) return
-    setGrokTestStatus('testing')
-    const result = await testGrokConnection(grokKeyInput.trim())
-    setGrokTestStatus(result)
-  }
-
-  const handleClearGrok = () => {
-    saveGrokApiKey('')
-    setGrokKeyInput('')
-    setGrokSaved(false)
-    setGrokTestStatus('')
-  }
-
-  const handleSaveGroq = () => {
-    saveGroqApiKey(groqKeyInput.trim())
-    setGroqSaved(true)
-    setGroqTestStatus('')
-  }
-
-  const handleTestGroq = async () => {
-    if (!groqKeyInput.trim()) return
-    setGroqTestStatus('testing')
-    const result = await testGroqConnection(groqKeyInput.trim())
-    setGroqTestStatus(result)
-  }
-
-  const handleClearGroq = () => {
-    saveGroqApiKey('')
-    setGroqKeyInput('')
-    setGroqSaved(false)
-    setGroqTestStatus('')
-  }
 
   const handleProvider = p => { setProvider(p); saveProvider(p) }
 
@@ -125,117 +54,6 @@ export default function Profile() {
               <div style={{ fontSize:14, fontWeight:500, color:'#1a202c' }}>{value}</div>
             </div>
           ))}
-        </div>
-      </div>
-
-      {/* Gemini API Key */}
-      <div style={card}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
-          <div style={{ width:36, height:36, borderRadius:8, background: saved ? '#dcfce7' : '#fef3c7', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            {saved ? <Zap size={18} color='#16a34a' /> : <Key size={18} color='#d97706' />}
-          </div>
-          <div>
-            <div style={{ fontWeight:600, fontSize:15, color:'#1a202c' }}>Gemini API Key</div>
-            <div style={{ fontSize:12, color:'#718096' }}>
-              {saved ? 'Key saved — AI features enabled' : 'No key set — AI features disabled'}
-            </div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom:12 }}>
-          <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
-            API Key
-          </label>
-          <input
-            type="password"
-            value={apiKeyInput}
-            onChange={e => { setApiKeyInput(e.target.value); setSaved(false); setTestStatus('') }}
-            placeholder="AIza..."
-            style={{
-              width:'100%', padding:'10px 14px',
-              border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:14, outline:'none',
-              boxSizing:'border-box',
-            }}
-            onFocus={e => e.target.style.borderColor = '#6366f1'}
-            onBlur={e => e.target.style.borderColor = '#e2e8f0'}
-          />
-          <div style={{ fontSize:11, color:'#94a3b8', marginTop:5 }}>
-            Get a free key from{' '}
-            <a href="https://aistudio.google.com" target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>
-              aistudio.google.com
-            </a>{' '}
-            — stored in this browser only, never sent to our server.
-          </div>
-        </div>
-
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-          <button
-            onClick={handleSave}
-            disabled={!apiKeyInput.trim()}
-            style={{
-              padding:'9px 18px', background: apiKeyInput.trim() ? '#4f46e5' : '#a5b4fc',
-              color:'#fff', border:'none', borderRadius:7, fontWeight:600, fontSize:13,
-              cursor: apiKeyInput.trim() ? 'pointer' : 'not-allowed',
-            }}
-          >
-            Save Key
-          </button>
-
-          <button
-            onClick={handleTest}
-            disabled={!apiKeyInput.trim() || testStatus === 'testing'}
-            style={{
-              padding:'9px 18px', background:'none',
-              border:`1.5px solid ${testStatus === 'ok' ? '#bbf7d0' : testStatus === 'rate_limited' ? '#fde68a' : testStatus === 'fail' ? '#fecaca' : '#e2e8f0'}`,
-              borderRadius:7, fontSize:13,
-              cursor: apiKeyInput.trim() ? 'pointer' : 'not-allowed',
-              color: testStatus === 'ok' ? '#16a34a' : testStatus === 'rate_limited' ? '#d97706' : testStatus === 'fail' ? '#dc2626' : '#718096',
-              display:'flex', alignItems:'center', gap:6,
-            }}
-          >
-            {testStatus === 'testing'      && <Loader size={13} style={{ animation:'spin 1s linear infinite' }} />}
-            {testStatus === 'ok'           && <CheckCircle size={13} color='#16a34a' />}
-            {testStatus === 'rate_limited' && <AlertTriangle size={13} color='#d97706' />}
-            {testStatus === 'fail'         && <XCircle size={13} color='#dc2626' />}
-            {testStatus === 'testing'      ? 'Testing...'
-              : testStatus === 'ok'        ? 'Connected'
-              : testStatus === 'rate_limited' ? 'Rate limited — key is valid'
-              : testStatus === 'fail'      ? 'Failed — check key'
-              : 'Test Connection'}
-          </button>
-
-          {saved && (
-            <button
-              onClick={handleClear}
-              style={{
-                padding:'9px 14px', background:'none',
-                border:'1.5px solid #fee2e2', borderRadius:7, fontSize:13,
-                cursor:'pointer', color:'#dc2626',
-              }}
-            >
-              Clear Key
-            </button>
-          )}
-        </div>
-
-        {/* Feature list */}
-        <div style={{ marginTop:20, borderTop:'1px solid #f1f5f9', paddingTop:16 }}>
-          <div style={{ fontSize:12, fontWeight:600, color:'#718096', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.4px' }}>
-            AI Features Enabled With Key
-          </div>
-          <div style={{ display:'grid', gap:6 }}>
-            {[
-              'Name spelling fix & duplicate word removal',
-              'Category matching by product name',
-              'Highlights: format clean, non-Latin removal, deduplication',
-              'Description: format clean, boilerplate replacement',
-              'Fallback content generation from Name only (no invented data)',
-            ].map(f => (
-              <div key={f} style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'#374151' }}>
-                <CheckCircle size={13} color='#16a34a' />{f}
-              </div>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -279,199 +97,15 @@ export default function Profile() {
         <div style={{ marginTop:12, padding:'8px 12px', background:'#eef2ff', border:'1px solid #c7d2fe', borderRadius:8, fontSize:11.5, color:'#4338ca' }}>
           <strong>Grok</strong> (xAI, by Elon Musk's company) and <strong>Groq</strong> (groqcloud, a fast-inference company) are two different providers with similar names — easy to mix up. Grok keys start with <code>xai-</code>, Groq keys start with <code>gsk_</code>.
         </div>
-        {provider === 'grok' && !grokSaved && (
+        {!keys[provider].length && (
           <div style={{ marginTop:8, padding:'8px 12px', background:'#fef3c7', border:'1px solid #fde68a', borderRadius:8, fontSize:12, color:'#92400e' }}>
-            Grok is selected but no Grok key is saved yet — add one below.
-          </div>
-        )}
-        {provider === 'groq' && !groqSaved && (
-          <div style={{ marginTop:8, padding:'8px 12px', background:'#fef3c7', border:'1px solid #fde68a', borderRadius:8, fontSize:12, color:'#92400e' }}>
-            Groq is selected but no Groq key is saved yet — add one below.
+            {PROVIDER_LABEL[provider]} is selected but has no API key yet — add one below.
           </div>
         )}
       </div>
 
-      {/* Grok API Key */}
-      <div style={card}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
-          <div style={{ width:36, height:36, borderRadius:8, background: grokSaved ? '#dcfce7' : '#fef3c7', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            {grokSaved ? <Zap size={18} color='#16a34a' /> : <Key size={18} color='#d97706' />}
-          </div>
-          <div>
-            <div style={{ fontWeight:600, fontSize:15, color:'#1a202c' }}>Grok API Key (xAI)</div>
-            <div style={{ fontSize:12, color:'#718096' }}>
-              {grokSaved ? 'Key saved' : 'No key set'} — used only when AI Provider above is set to Grok
-            </div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom:12 }}>
-          <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
-            API Key
-          </label>
-          <input
-            type="password"
-            value={grokKeyInput}
-            onChange={e => { setGrokKeyInput(e.target.value); setGrokSaved(false); setGrokTestStatus('') }}
-            placeholder="xai-..."
-            style={{
-              width:'100%', padding:'10px 14px',
-              border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:14, outline:'none',
-              boxSizing:'border-box',
-            }}
-            onFocus={e => e.target.style.borderColor = '#6366f1'}
-            onBlur={e => e.target.style.borderColor = '#e2e8f0'}
-          />
-          <div style={{ fontSize:11, color:'#94a3b8', marginTop:5 }}>
-            Get a free-trial key from{' '}
-            <a href="https://console.x.ai" target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>
-              console.x.ai
-            </a>{' '}
-            (xAI gives new accounts free trial credits) — stored in this browser only, never sent to our server.
-          </div>
-        </div>
-
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-          <button
-            onClick={handleSaveGrok}
-            disabled={!grokKeyInput.trim()}
-            style={{
-              padding:'9px 18px', background: grokKeyInput.trim() ? '#4f46e5' : '#a5b4fc',
-              color:'#fff', border:'none', borderRadius:7, fontWeight:600, fontSize:13,
-              cursor: grokKeyInput.trim() ? 'pointer' : 'not-allowed',
-            }}
-          >
-            Save Key
-          </button>
-
-          <button
-            onClick={handleTestGrok}
-            disabled={!grokKeyInput.trim() || grokTestStatus === 'testing'}
-            style={{
-              padding:'9px 18px', background:'none',
-              border:`1.5px solid ${grokTestStatus === 'ok' ? '#bbf7d0' : grokTestStatus === 'rate_limited' ? '#fde68a' : grokTestStatus === 'fail' ? '#fecaca' : '#e2e8f0'}`,
-              borderRadius:7, fontSize:13,
-              cursor: grokKeyInput.trim() ? 'pointer' : 'not-allowed',
-              color: grokTestStatus === 'ok' ? '#16a34a' : grokTestStatus === 'rate_limited' ? '#d97706' : grokTestStatus === 'fail' ? '#dc2626' : '#718096',
-              display:'flex', alignItems:'center', gap:6,
-            }}
-          >
-            {grokTestStatus === 'testing'      && <Loader size={13} style={{ animation:'spin 1s linear infinite' }} />}
-            {grokTestStatus === 'ok'           && <CheckCircle size={13} color='#16a34a' />}
-            {grokTestStatus === 'rate_limited' && <AlertTriangle size={13} color='#d97706' />}
-            {grokTestStatus === 'fail'         && <XCircle size={13} color='#dc2626' />}
-            {grokTestStatus === 'testing'      ? 'Testing...'
-              : grokTestStatus === 'ok'        ? 'Connected'
-              : grokTestStatus === 'rate_limited' ? 'Rate limited — key is valid'
-              : grokTestStatus === 'fail'      ? 'Failed — check key'
-              : 'Test Connection'}
-          </button>
-
-          {grokSaved && (
-            <button
-              onClick={handleClearGrok}
-              style={{
-                padding:'9px 14px', background:'none',
-                border:'1.5px solid #fee2e2', borderRadius:7, fontSize:13,
-                cursor:'pointer', color:'#dc2626',
-              }}
-            >
-              Clear Key
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Groq API Key */}
-      <div style={card}>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
-          <div style={{ width:36, height:36, borderRadius:8, background: groqSaved ? '#dcfce7' : '#fef3c7', display:'flex', alignItems:'center', justifyContent:'center' }}>
-            {groqSaved ? <Zap size={18} color='#16a34a' /> : <Key size={18} color='#d97706' />}
-          </div>
-          <div>
-            <div style={{ fontWeight:600, fontSize:15, color:'#1a202c' }}>Groq API Key (groqcloud)</div>
-            <div style={{ fontSize:12, color:'#718096' }}>
-              {groqSaved ? 'Key saved' : 'No key set'} — used only when AI Provider above is set to Groq
-            </div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom:12 }}>
-          <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
-            API Key
-          </label>
-          <input
-            type="password"
-            value={groqKeyInput}
-            onChange={e => { setGroqKeyInput(e.target.value); setGroqSaved(false); setGroqTestStatus('') }}
-            placeholder="gsk_..."
-            style={{
-              width:'100%', padding:'10px 14px',
-              border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:14, outline:'none',
-              boxSizing:'border-box',
-            }}
-            onFocus={e => e.target.style.borderColor = '#6366f1'}
-            onBlur={e => e.target.style.borderColor = '#e2e8f0'}
-          />
-          <div style={{ fontSize:11, color:'#94a3b8', marginTop:5 }}>
-            Get a free key from{' '}
-            <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" style={{ color:'#6366f1' }}>
-              console.groq.com/keys
-            </a>{' '}
-            — stored in this browser only, never sent to our server.
-          </div>
-        </div>
-
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-          <button
-            onClick={handleSaveGroq}
-            disabled={!groqKeyInput.trim()}
-            style={{
-              padding:'9px 18px', background: groqKeyInput.trim() ? '#4f46e5' : '#a5b4fc',
-              color:'#fff', border:'none', borderRadius:7, fontWeight:600, fontSize:13,
-              cursor: groqKeyInput.trim() ? 'pointer' : 'not-allowed',
-            }}
-          >
-            Save Key
-          </button>
-
-          <button
-            onClick={handleTestGroq}
-            disabled={!groqKeyInput.trim() || groqTestStatus === 'testing'}
-            style={{
-              padding:'9px 18px', background:'none',
-              border:`1.5px solid ${groqTestStatus === 'ok' ? '#bbf7d0' : groqTestStatus === 'rate_limited' ? '#fde68a' : groqTestStatus === 'fail' ? '#fecaca' : '#e2e8f0'}`,
-              borderRadius:7, fontSize:13,
-              cursor: groqKeyInput.trim() ? 'pointer' : 'not-allowed',
-              color: groqTestStatus === 'ok' ? '#16a34a' : groqTestStatus === 'rate_limited' ? '#d97706' : groqTestStatus === 'fail' ? '#dc2626' : '#718096',
-              display:'flex', alignItems:'center', gap:6,
-            }}
-          >
-            {groqTestStatus === 'testing'      && <Loader size={13} style={{ animation:'spin 1s linear infinite' }} />}
-            {groqTestStatus === 'ok'           && <CheckCircle size={13} color='#16a34a' />}
-            {groqTestStatus === 'rate_limited' && <AlertTriangle size={13} color='#d97706' />}
-            {groqTestStatus === 'fail'         && <XCircle size={13} color='#dc2626' />}
-            {groqTestStatus === 'testing'      ? 'Testing...'
-              : groqTestStatus === 'ok'        ? 'Connected'
-              : groqTestStatus === 'rate_limited' ? 'Rate limited — key is valid'
-              : groqTestStatus === 'fail'      ? 'Failed — check key'
-              : 'Test Connection'}
-          </button>
-
-          {groqSaved && (
-            <button
-              onClick={handleClearGroq}
-              style={{
-                padding:'9px 14px', background:'none',
-                border:'1.5px solid #fee2e2', borderRadius:7, fontSize:13,
-                cursor:'pointer', color:'#dc2626',
-              }}
-            >
-              Clear Key
-            </button>
-          )}
-        </div>
-      </div>
+      {/* API keys & models (several per provider, used in turn) */}
+      <AiKeys provider={provider} onChange={setKeys} />
 
       {/* Word Replacements */}
       <div style={card}>

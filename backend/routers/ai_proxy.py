@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from typing import Optional
 import httpx
 from utils.supabase_client import get_supabase
 
@@ -35,6 +36,7 @@ class ProxyRequest(BaseModel):
     provider: str
     api_key: str
     prompt: str
+    model: Optional[str] = None   # chosen in Profile; the provider's default when omitted
 
 @router.post("/proxy")
 async def ai_proxy(req: ProxyRequest, current_user=Depends(get_current_user)):
@@ -53,7 +55,7 @@ async def ai_proxy(req: ProxyRequest, current_user=Depends(get_current_user)):
                     "Authorization": f"Bearer {req.api_key}",
                 },
                 json={
-                    "model": cfg["model"],
+                    "model": req.model or cfg["model"],
                     "temperature": 0.1,
                     "messages": [{"role": "user", "content": req.prompt}],
                 },
@@ -64,7 +66,12 @@ async def ai_proxy(req: ProxyRequest, current_user=Depends(get_current_user)):
     if resp.status_code == 429:
         raise HTTPException(status_code=429, detail="Rate limit — please wait and retry")
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"{req.provider} error: {resp.status_code} {resp.text[:200]}")
+        # The upstream status tells the frontend's key pool what to do next:
+        # 401/403 → bad key (try the next), 404 → no such model (try the next), 5xx → busy.
+        raise HTTPException(status_code=502, detail={
+            "upstream_status": resp.status_code,
+            "message": f"{req.provider} error: {resp.status_code} {resp.text[:200]}",
+        })
 
     data = resp.json()
     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
