@@ -61,6 +61,7 @@ export default function ShopDuplicate() {
   const [skuMode, setSkuMode] = useState('replace')
   const [rules, setRules]     = useState([EMPTY_RULE])
   const [prefix, setPrefix]   = useState('')
+  const [reportTab, setReportTab] = useState(true)
   const [status, setStatus]   = useState('')
   const [progress, setProgress] = useState('')
   const [error, setError]     = useState('')
@@ -116,8 +117,11 @@ export default function ShopDuplicate() {
         exportData: await exportFile.arrayBuffer(),
         templateData: await templateFile.arrayBuffer(),
         sku,
+        reportTab,
+        meta: { exportName: exportFile.name, templateName: templateFile.name },
         onProgress: setProgress,
       })
+      res.reportTab = reportTab
       if (res.files.length > 1) {
         setProgress('Zipping files...')
         res.zip = await zipFiles(res.files, fileBase)
@@ -285,6 +289,11 @@ export default function ShopDuplicate() {
           · Hidden ID sheet is computed for you — no need to open in Excel first
         </div>
 
+        <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:14, fontSize:13, color:'#334155', cursor:'pointer', width:'fit-content' }}>
+          <input type="checkbox" checked={reportTab} onChange={e => { setReportTab(e.target.checked); reset() }} style={{ width:15, height:15, accentColor:'#4f46e5' }} />
+          Add a <b>Report</b> tab to the file — summary, removed duplicates and warnings
+        </label>
+
         {status === 'processing' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 16px', background:'#eff6ff', borderRadius:8, color:'#2563eb', fontSize:13, marginTop:16 }}>
             <Loader size={14} style={{ animation:'spin 1s linear infinite' }} />{progress}
@@ -317,11 +326,12 @@ export default function ShopDuplicate() {
 
       {status === 'success' && report && (
         <div style={{ ...card, marginTop:16 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:8, color:'#16a34a', fontSize:14, fontWeight:600, marginBottom:16 }}>
+          <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:8, color:'#16a34a', fontSize:14, fontWeight:600, marginBottom:16 }}>
             <CheckCircle size={16} />
             {result.files.length > 1
               ? `Done — ${result.files.length} files downloaded as a .zip (each template holds ${report.capacity.toLocaleString()} rows; a product's variants are never split)`
               : 'Done — file downloaded'}
+            {result.reportTab && <span style={{ color:'#64748b', fontWeight:500 }}>· details in its Report tab</span>}
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:10 }}>
             {[
@@ -336,6 +346,41 @@ export default function ShopDuplicate() {
               </div>
             ))}
           </div>
+
+          {report.notes.length > 0 && (
+            <div style={{ marginTop:14, padding:'10px 12px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, fontSize:12, color:'#92400e', lineHeight:1.6 }}>
+              {report.notes.map(n => <div key={n} style={{ display:'flex', gap:6 }}><Info size={13} style={{ flexShrink:0, marginTop:2 }} />{n}</div>)}
+            </div>
+          )}
+
+          {report.duplicates.length > 0 && (
+            <div style={{ marginTop:16 }}>
+              <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
+                {report.duplicates.length.toLocaleString()} duplicate rows removed — the first row of each Seller SKU was kept
+              </div>
+              <div style={{ maxHeight:220, overflow:'auto', border:'1px solid #e2e8f0', borderRadius:8 }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                  <thead>
+                    <tr style={{ background:'#f8fafc', position:'sticky', top:0 }}>
+                      {['Row', 'Seller SKU', 'Kept row', 'Difference from kept row'].map(h => (
+                        <th key={h} style={{ textAlign:'left', padding:'7px 10px', color:'#64748b', fontWeight:600, borderBottom:'1px solid #e2e8f0' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.duplicates.slice(0, 300).map(d => (
+                      <tr key={d.row} style={{ borderBottom:'1px solid #f1f5f9' }}>
+                        <td style={{ padding:'6px 10px', color:'#94a3b8' }}>{d.row}</td>
+                        <td style={{ padding:'6px 10px', fontFamily:'monospace' }}>{d.sku}</td>
+                        <td style={{ padding:'6px 10px', color:'#94a3b8' }}>{d.keptRow}</td>
+                        <td style={{ padding:'6px 10px', color: d.difference === 'Same as kept row' ? '#94a3b8' : '#b45309' }}>{d.difference}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {report.warnings.length === 0 ? (
             <div style={{ marginTop:14, fontSize:12.5, color:'#15803d' }}>No problems found — every Brand, Unit, Color and Size matched the template's lists.</div>
