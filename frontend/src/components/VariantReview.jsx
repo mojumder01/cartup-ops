@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { reviewGroups, decisionKey, headerKey, colLabel, splitCombo } from '../utils/variantReview'
-import { X, Search, Check, Plus, RotateCcw, ChevronRight, ChevronLeft, AlertTriangle, ImageOff, Download } from 'lucide-react'
+import { reviewGroups, decisionKey, headerKey, colLabel, splitCombo, cellState } from '../utils/variantReview'
+import { X, Search, Check, Plus, RotateCcw, ChevronRight, ChevronLeft, AlertTriangle, ImageOff, Download, Tag, ShieldOff } from 'lucide-react'
 
 // Review window for Daraz Upload: values not on CartUp's lists, one product
 // (Parent SKU) at a time, with each Seller SKU's image. A pick can cover one
@@ -38,6 +38,31 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
   const [scope, setScope] = useState('all')
   const [search, setSearch] = useState('')
   const [zoom, setZoom] = useState(null)
+  const [view, setView] = useState('products')   // 'products' | 'brands'
+  const [big, setBig] = useState(false)          // larger variant images
+  const [brandEdit, setBrandEdit] = useState(null)
+  const [brandSearch, setBrandSearch] = useState('')
+
+  // Brands from the attribute file that aren't on CartUp's list as written —
+  // one row per brand, decided once for every product that has it.
+  const brands = useMemo(() => {
+    const m = new Map()
+    for (const it of result.items) for (const c of it.cells) {
+      if (c.col !== '**Brand' || c.source !== 'daraz' || !c.listed || (c.auto !== null && c.how === 'exact')) continue
+      const k = c.raw.toLowerCase()
+      if (!m.has(k)) m.set(k, { raw: c.raw, cell: c, item: it, products: new Set(), skus: 0 })
+      const b = m.get(k)
+      b.products.add(it.parent); b.skus++
+    }
+    return [...m.values()].sort((a, b) => b.skus - a.skus)
+  }, [result])
+  const brandList = result.lists?.[headerKey('**Brand')]
+  const brandState = b => cellState(b.item, b.cell, decisions, memory, result.lists)
+  const brandsOpen = brands.filter(b => brandState(b).state === 'open').length
+  const decideBrand = (b, d) => setDecisions(prev => ({ ...prev, [decisionKey.all(b.cell)]: d }))
+  const editedBrand = brands.find(b => b.raw === brandEdit)
+  const brandSuggestions = useMemo(() => (editedBrand && brandList ? brandList.suggest(editedBrand.raw, 8) : []), [editedBrand, brandList])
+  const brandResults = useMemo(() => (brandList && brandSearch.trim() ? brandList.search(brandSearch, 30) : []), [brandList, brandSearch])
 
   // How many SKUs share a value — in the product and everywhere.
   const counts = useMemo(() => {
@@ -135,9 +160,77 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                 : <span style={{ color:'#15803d' }}>Every value is matched or decided.</span>}
             </div>
           </div>
+          {brands.length > 0 && (
+            <div style={{ display:'flex', gap:3, background:'#f1f5f9', borderRadius:8, padding:3 }}>
+              {[['products', 'Products'], ['brands', `Brands (${brands.length}${brandsOpen ? ` · ${brandsOpen} open` : ''})`]].map(([k, label]) => (
+                <button key={k} onClick={() => setView(k)} style={{ padding:'5px 12px', border:'none', borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer',
+                  background: view === k ? '#fff' : 'transparent', color: view === k ? '#4f46e5' : '#64748b' }}>{label}</button>
+              ))}
+            </div>
+          )}
           <button onClick={onClose} title="Close" style={{ ...btn, padding:7 }}><X size={15} /></button>
         </div>
 
+        {view === 'brands' ? (
+          <div style={{ flex:1, overflow:'auto', padding:18 }}>
+            <div style={{ fontSize:12.5, color:'#475569', marginBottom:10 }}>
+              Brands from the attribute file that aren't on CartUp's Brand list. For each: use <b>No Brand</b>, keep it as a <b>new brand</b> for CartUp to add, or pick the right one from the list. Applies to every product with that brand, and is remembered.
+            </div>
+            <div style={{ border:'1px solid #e2e8f0', borderRadius:10, overflow:'hidden' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12.5 }}>
+                <thead>
+                  <tr style={{ background:'#f8fafc' }}>
+                    {['Seller\'s brand', 'Products', 'SKUs', 'Now', ''].map((h, i) => <th key={i} style={{ textAlign:'left', padding:'8px 10px', color:'#64748b', fontWeight:600, borderBottom:'1px solid #e2e8f0' }}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {brands.map(b => {
+                    const st = brandState(b)
+                    return (
+                      <tr key={b.raw} style={{ borderBottom:'1px solid #f1f5f9', background: brandEdit === b.raw ? '#fafaff' : '#fff' }}>
+                        <td style={{ padding:'8px 10px', fontWeight:600 }}>{b.raw}</td>
+                        <td style={{ padding:'8px 10px' }}>{b.products.size}</td>
+                        <td style={{ padding:'8px 10px' }}>{b.skus}</td>
+                        <td style={{ padding:'6px 10px' }}>
+                          <span style={{ ...STATE_STYLE[st.state] || STATE_STYLE.ok, borderRadius:7, padding:'3px 8px', display:'inline-block' }}>
+                            {st.value || '—'} <span style={{ fontSize:10.5, opacity:0.8 }}>{STATE_NOTE[st.state] || ''}</span>
+                          </span>
+                        </td>
+                        <td style={{ padding:'6px 10px' }}>
+                          <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                            <button onClick={() => decideBrand(b, { value: brandList?.match('No Brand')?.value || 'No Brand' })} style={{ ...btn, padding:'4px 9px', fontSize:11.5 }}><ShieldOff size={12} /> No Brand</button>
+                            <button onClick={() => decideBrand(b, { keep: true })} style={{ ...btn, padding:'4px 9px', fontSize:11.5, borderColor:'#fde68a', color:'#92400e' }}><Plus size={12} /> Keep as new brand</button>
+                            <button onClick={() => { setBrandEdit(brandEdit === b.raw ? null : b.raw); setBrandSearch('') }} style={{ ...btn, padding:'4px 9px', fontSize:11.5 }}><Tag size={12} /> Pick…</button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {editedBrand && (
+              <div style={{ marginTop:14, border:'1.5px solid #c7d2fe', borderRadius:10, padding:14, background:'#fafaff' }}>
+                <div style={{ fontSize:13, marginBottom:8 }}>Pick CartUp's brand for <b>"{editedBrand.raw}"</b></div>
+                {brandSuggestions.length > 0 && (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:10 }}>
+                    {brandSuggestions.map(sg => <button key={sg} onClick={() => { decideBrand(editedBrand, { value: sg }); setBrandEdit(null) }} style={chip}>{sg}</button>)}
+                  </div>
+                )}
+                <div style={{ position:'relative', maxWidth:360 }}>
+                  <Search size={13} color='#94a3b8' style={{ position:'absolute', left:9, top:9 }} />
+                  <input value={brandSearch} onChange={e => setBrandSearch(e.target.value)} placeholder={`Search the ${brandList?.size?.toLocaleString() || ''} brands…`} autoFocus
+                    style={{ width:'100%', padding:'7px 10px 7px 28px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:12.5, boxSizing:'border-box' }} />
+                </div>
+                {brandResults.length > 0 && (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:8, maxHeight:110, overflow:'auto' }}>
+                    {brandResults.map(r => <button key={r} onClick={() => { decideBrand(editedBrand, { value: r }); setBrandEdit(null) }} style={{ ...chip, background:'#fff' }}>{r}</button>)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
         <div style={{ flex:1, display:'flex', minHeight:0 }}>
           {/* Products */}
           <div style={{ width:300, borderRight:'1px solid #e2e8f0', display:'flex', flexDirection:'column', minHeight:0 }}>
@@ -183,11 +276,20 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                   <div style={{ fontWeight:700, fontSize:14.5 }}>{group.name}</div>
                   <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>Parent SKU <span style={{ fontFamily:'monospace' }}>{group.parent}</span>{group.category ? ` · ${group.category}` : ''}</div>
                 </div>
-                <div style={{ display:'flex', gap:6 }}>
+                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:'#475569', cursor:'pointer', marginRight:6 }}>
+                    <input type="checkbox" checked={big} onChange={e => setBig(e.target.checked)} style={{ accentColor:'#4f46e5' }} /> Large images
+                  </label>
                   <button onClick={() => stepParent(-1)} style={{ ...btn, padding:7 }} title="Previous product"><ChevronLeft size={15} /></button>
                   <button onClick={() => stepParent(1)} style={{ ...btn, padding:7 }} title="Next product"><ChevronRight size={15} /></button>
                 </div>
               </div>
+
+              {group.skus[0]?.item.images?.length > 1 && (
+                <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
+                  {group.skus[0].item.images.map((src, i) => <Thumb key={i} src={src} size={big ? 72 : 40} onOpen={setZoom} />)}
+                </div>
+              )}
 
               {group.dupes.map(d => (
                 <div key={d.join()} style={{ display:'flex', gap:6, alignItems:'center', fontSize:12, color:'#92400e', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, padding:'7px 10px', marginBottom:8 }}>
@@ -207,7 +309,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                   <tbody>
                     {group.skus.map(s => (
                       <tr key={s.sku} style={{ borderBottom:'1px solid #f1f5f9' }}>
-                        <td style={{ padding:'6px 10px', width:44 }}><Thumb src={s.item.image} size={44} onOpen={setZoom} /></td>
+                        <td style={{ padding:'6px 10px', width: big ? 110 : 44 }}><Thumb src={s.item.image} size={big ? 110 : 44} onOpen={setZoom} /></td>
                         <td style={{ padding:'6px 10px', fontFamily:'monospace', fontSize:12 }}>{s.sku}</td>
                         <td style={{ padding:'6px 10px', color:'#64748b' }}>{splitCombo(s.combo).join(' · ') || '—'}</td>
                         {group.cols.map(c => {
@@ -287,6 +389,9 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                     <button onClick={() => decide({ keep: true })} style={{ ...btn, borderColor:'#fde68a', color:'#92400e' }}>
                       <Plus size={13} /> Keep "{target.cell.raw}" as a new value for CartUp's list
                     </button>
+                    {editing.col === 'Warranty Period' && (
+                      <button onClick={() => decide({ noWarranty: true })} style={btn}><ShieldOff size={13} /> Set No Warranty (clears the period)</button>
+                    )}
                     <button onClick={reset} style={btn}><RotateCcw size={13} /> Back to automatic</button>
                     <button onClick={goNext} style={btn}>Skip <ChevronRight size={13} /></button>
                   </div>
@@ -298,6 +403,8 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
             </>}
           </div>
         </div>
+
+        )}
 
         {/* Footer */}
         <div style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 18px', borderTop:'1px solid #e2e8f0', background:'#f8fafc', flexWrap:'wrap' }}>

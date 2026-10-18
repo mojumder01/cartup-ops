@@ -209,13 +209,16 @@ export function cellState(item, cell, decisions, memory, lists) {
 }
 function fromDecision(d, cell, scope) {
   if (d.keep) return { value: cell.raw, state: 'kept', scope }
+  if (d.noWarranty) return { value: '', state: 'picked', scope, noWarranty: true }
   return { value: d.value, state: d.value === cell.raw ? 'ok' : 'picked', scope }
 }
 
 const SCOPE_LABEL = { sku: 'this SKU', parent: 'this product', all: 'every SKU with this value', memory: 'remembered from an earlier run' }
 function changeLabel(st) {
   if (st.state === 'auto' && st.how === 'numbered') return 'Numbered to keep the product\'s variants apart'
+  if (st.state === 'auto' && st.how === 'rule') return st.note
   if (st.state === 'auto') return st.how === 'exact' ? 'Matched to the list\'s spelling' : MATCH_LABEL[st.how]
+  if (st.state === 'picked' && st.noWarranty) return `Set to No Warranty by hand (${SCOPE_LABEL[st.scope]})`
   if (st.state === 'picked') return `Picked by hand (${SCOPE_LABEL[st.scope]})`
   if (st.state === 'remembered') return 'Remembered pick from an earlier run'
   if (st.state === 'kept') return `Kept as a new value for CartUp's list (${SCOPE_LABEL[st.scope]})`
@@ -272,6 +275,7 @@ export function reviewGroups(result, decisions, memory) {
 export function applyDecisions(result, decisions = {}, memory = {}) {
   const rows = [], changes = [], newValues = new Map()
   const stats = { checked: 0, auto: 0, remembered: 0, picked: 0, kept: 0, open: 0, openValues: 0, openParents: 0, dupes: 0 }
+  const attention = new Set()   // row indexes that still need a person
   const openValues = new Set(), openParents = new Set()
   const byParent = new Map()
   for (const item of result.items) {
@@ -286,21 +290,23 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
     }
   }
 
-  for (const item of result.items) {
+  result.items.forEach((item, rowIndex) => {
     const out = { ...item.out }
     const changed = [], fresh = []
+    let noWarranty = false
     for (const cell of item.cells) {
       const st = cellState(item, cell, decisions, memory, result.lists)
       out[cell.col] = st.value
+      if (st.noWarranty) noWarranty = true
       if (!cell.listed) continue
       stats.checked++
       if (st.state in stats) stats[st.state]++
-      if (st.state === 'open') { openValues.add(`${cell.col}|${cell.raw.toLowerCase()}`); openParents.add(item.parent) }
+      if (st.state === 'open') { openValues.add(`${cell.col}|${cell.raw.toLowerCase()}`); openParents.add(item.parent); attention.add(rowIndex) }
       if (cell.source === 'daraz' && (st.value !== cell.raw || st.state === 'kept')) {
         changes.push({
           sku: item.sku, parent: item.parent, name: item.name, column: colLabel(cell.col), from: cell.raw, to: st.value,
           change: changeLabel(st),
-          detail: [COMBO_TARGETS.includes(cell.col) ? `From Variations Combo "${item.combo}"` : '', st.note || ''].filter(Boolean).join(' · '),
+          detail: [COMBO_TARGETS.includes(cell.col) ? `From Variations Combo "${item.combo}"` : '', st.how === 'rule' ? '' : st.note || ''].filter(Boolean).join(' · '),
         })
         if (st.value !== cell.raw) changed.push(`${colLabel(cell.col)} ${cell.raw} → ${st.value}`)
       }
@@ -313,21 +319,27 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
         fresh.push(`${colLabel(cell.col)} "${cell.raw}"`)
       }
     }
-    if (item.darazName && out['**Name (English)'] !== item.darazName) {
-      changes.push({ sku: item.sku, parent: item.parent, name: item.name, column: 'Name (English)', from: item.darazName, to: out['**Name (English)'], change: item.nameHow, detail: '' })
+    // "No Warranty" picked for a warranty period that isn't on the list.
+    if (noWarranty) {
+      const no = result.lists?.[headerKey('Warranty Type')]?.match('No Warranty')?.value || 'No Warranty'
+      if (out['Warranty Type'] !== no) {
+        changes.push({ sku: item.sku, parent: item.parent, name: item.name, column: 'Warranty Type', from: out['Warranty Type'], to: no, change: 'Set to No Warranty by hand', detail: '' })
+        out['Warranty Type'] = no
+      }
+      out['Warranty Period'] = ''
     }
     const notes = [item.reportNote]
     if (fresh.length) notes.push(`Not on CartUp list (#N/A until added or matched): ${fresh.join(', ')}`)
     if (changed.length) notes.push(`Changed: ${changed.join(', ')}`)
-    if (dupeNote.has(item.sku)) notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`)
+    if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex) }
     if (item.unused.length) notes.push(`Not used from Variations Combo: ${item.unused.join(', ')}`)
     out['Report'] = notes.join(' | ')
     rows.push(out)
-  }
+  })
   for (const d of result.duplicateSkus) {
     changes.push({ sku: d.sku, parent: d.parent, name: d.name, column: 'Seller SKU', from: 'repeated row', to: 'row removed', change: 'Duplicate Seller SKU — the first row was kept', detail: '' })
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention }
 }

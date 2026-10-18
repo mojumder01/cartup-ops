@@ -635,8 +635,12 @@ function parseAttrList(text, names) {
   return { out, unknown }
 }
 
-export function buildRows(exportRows, tpl, sku) {
+// rules.specialPrice: { include, start, end } — without it the export's own
+// special price dates are kept.
+export function buildRows(exportRows, tpl, sku, rules = {}) {
   const warnings = [], fixes = []
+  const spRule = rules.specialPrice
+  const wtCol = tpl.columns.find(c => c.key === 'warrantytype'), wpCol = tpl.columns.find(c => c.key === 'warrantyperiod')
   const warn = (src, field, message) => warnings.push({ row: src.__row, sku: src.sellersku ?? '', field, message })
 
   const { unique, duplicates, missing } = dedupe(exportRows)
@@ -662,7 +666,14 @@ export function buildRows(exportRows, tpl, sku) {
     if (variants.unknown.length) warn(src, 'Variant', `Unknown variant attribute: ${variants.unknown.join('; ')}`)
     const attrs = parseAttrList(src.productattributes, attrNames)
     if (attrs.unknown.length) warn(src, 'Product attributes', `Could not map: ${attrs.unknown.join('; ')}`)
-    const hasSpecial = !blank(src.specialprice) && Number(toNumber(src.specialprice)) !== 0
+    const change = (field, from, to, how) => fixes.push({ row: src.__row, sku: src.sellersku ?? '', field, from: String(from), to: String(to), how })
+    // Special price: only when wanted, and never at a discount of 75% or more.
+    const sp = Number(toNumber(src.specialprice)), mrp = Number(toNumber(src.pricemrp))
+    let hasSpecial = !blank(src.specialprice) && sp !== 0 && (spRule?.include ?? true)
+    if (hasSpecial && mrp > 0 && 1 - sp / mrp >= 0.75) {
+      change('Special Price', src.specialprice, '(removed)', `${Math.round((1 - sp / mrp) * 100)}% discount — 75% or more`)
+      hasSpecial = false
+    }
 
     for (const col of tpl.columns) {
       const key = col.key
@@ -678,9 +689,20 @@ export function buildRows(exportRows, tpl, sku) {
       else if (key === 'parentsku') v = skus[i].parent
       else if (TEXT_FIELDS.has(key) && v !== '') v = applyReplacements(String(v))
       else if (key === 'specialprice') v = hasSpecial ? toNumber(v) : ''
-      else if (key === 'specialstartdate' || key === 'specialenddate') v = hasSpecial ? toDateText(v) : ''
+      else if (key === 'specialstartdate' || key === 'specialenddate') {
+        v = !hasSpecial ? '' : spRule ? (key === 'specialstartdate' ? spRule.start : spRule.end || '') : toDateText(v)
+      }
       else if (NUMBER_FIELDS.has(key) && v !== '') v = toNumber(v)
       else if (typeof v === 'string') v = v.trim()
+
+      if ((key === 'nameenglish' || key === 'namebengali') && /#/.test(v)) {
+        if (key === 'nameenglish') change(col.header.replace(/^\*+/, ''), v, v.replace(/#/g, '-'), '"#" replaced with "-"')
+        v = v.replace(/#/g, '-')
+      }
+      if (key === 'currentstockqty' && Number(v) > 99999) { change('Current Stock Qty', v, 99999, 'Stock capped at 99,999'); v = 99999 }
+      if (key === 'packageweightkg' && v !== '' && !(Number(v) >= 0.01)) {
+        warn(src, 'Package Weight (kg)', `${v} kg is below 0.01 — CartUp would show a delivery charge of 0`)
+      }
 
       // Dropdown columns must hold the exact name from the template's list,
       // or the hidden VLOOKUP fails (#N/A) and the platform rejects the row.
@@ -703,6 +725,16 @@ export function buildRows(exportRows, tpl, sku) {
 
       if (col.required && v === '') warn(src, col.header.replace(/^\*+/, ''), 'Required field is empty')
       values[col.col] = v
+    }
+    // Warranty: "No Warranty" with a period → the period goes; Seller / Brand Warranty without one → No Warranty.
+    if (wtCol && wpCol) {
+      const wt = String(values[wtCol.col] ?? ''), wp = String(values[wpCol.col] ?? '')
+      if (/no warranty/i.test(wt) && wp) { change('Warranty Period', wp, '(removed)', 'No Warranty — period removed'); values[wpCol.col] = '' }
+      else if (/seller|brand/i.test(wt) && !wp) {
+        const no = (wtCol.lookup && matcherFor(wtCol).match('No Warranty')?.value) || 'No Warranty'
+        change('Warranty Type', wt, no, 'No warranty period given')
+        values[wtCol.col] = no
+      }
     }
     if (hasSpecial && Number(values[tpl.columns.find(c => c.key === 'specialprice')?.col]) >= Number(values[tpl.columns.find(c => c.key === 'pricemrp')?.col])) {
       warn(src, 'Special Price', 'Special price is not lower than MRP')
@@ -955,7 +987,7 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
     [B('Products'), new Set(built.rows.map(r => r.parent)).size],
     parts > 1 && [B('This file'), `Part ${part} of ${parts} — ${partRows.toLocaleString()} rows`],
     [B('Hidden sheet errors'), parts > 1 ? `${hiddenErrors.length} in this file` : hiddenErrors.length],
-    [B('Auto-matched values'), fixes.length],
+    [B('Changed values'), fixes.length],
     [B('Warnings'), warnings.length],
     ...notes.map(n => [B('Note'), n]),
     [],
@@ -966,9 +998,9 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
       ? hiddenErrors.map(e => [e.fileRow, e.sku, e.column, e.value, e.row, errorText(e)])
       : [['None — every hidden cell has a value']]),
     [],
-    [T(`Auto-matched values (${fixes.length})`)],
-    ['Values not written exactly as in the template\'s list, replaced with the closest entry. Check any that look wrong.'],
-    [H('Export Row'), H('Seller SKU (export)'), H('Column'), H('Export value'), H('Written as'), H('How matched')],
+    [T(`Changed values (${fixes.length})`)],
+    ['Values matched to the template\'s lists (spelling, known equivalents) and house rules (75%+ special price discounts, stock over 99,999, "#" in names, warranty). Check any that look wrong.'],
+    [H('Export Row'), H('Seller SKU (export)'), H('Column'), H('Export value'), H('Written as'), H('Why')],
     ...(fixes.length ? fixes.map(f => [f.row, f.sku, f.field, f.from, f.to, f.how]) : [['None']]),
     [],
     [T(`Duplicates removed (${duplicates.length})`)],
@@ -985,7 +1017,7 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
 // Full pipeline: returns one or more filled templates plus a report.
 // sku: { mode: 'replace', rules: [{ from, to }] } or { mode: 'prefix', prefix }.
 // reportTab adds a "Report" sheet to each file; meta: { exportName, templateName } for it.
-export async function duplicateShop({ exportData, templateData, sku, reportTab = true, meta = {}, onProgress: report = () => {} }) {
+export async function duplicateShop({ exportData, templateData, sku, specialPrice, reportTab = true, meta = {}, onProgress: report = () => {} }) {
   const skuError = skuOptionsError(sku)
   if (skuError) throw new Error(skuError)
   // Yield after each message so the browser can paint it before the next heavy step.
@@ -995,7 +1027,7 @@ export async function duplicateShop({ exportData, templateData, sku, reportTab =
   await onProgress('Reading upload template…')
   const tpl = await loadTemplate(templateData)
   await onProgress('Mapping products…')
-  const built = buildRows(exportRows, tpl, sku)
+  const built = buildRows(exportRows, tpl, sku, { specialPrice })
   if (!built.rows.length) throw new Error('No products to copy')
   const chunks = chunkRows(built.rows, tpl.capacity)
   const files = [], hiddenErrors = []

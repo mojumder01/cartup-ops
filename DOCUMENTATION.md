@@ -59,8 +59,15 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 | Basic | ✅ | Product ID, name, images, highlights, description |
 | Weight | ✅ | Package weight/dimensions |
 | SKU Image | ✅ | Variant images, seller SKU, variations |
-| Attribute | optional | Extra attributes |
+| Attribute | optional | Brands — without it every product is **No Brand** |
 | CartUp upload template | recommended | Its dropdown lists (Color, Size, Brand, Warranty…) — remembered in the browser after the first pick, shared with Shop Duplicate |
+| Image key file | optional | A sheet pairing Daraz image links with CartUp image keys — add it before or after processing (the keys often come later); pick its sheet, link column and key column (guessed automatically) |
+
+**Options** (on the page):
+- **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
+- **Special price:** include or leave out. When included it runs **from the day the file is made to the end date you pick** (remembered while it is still ahead); a special price that is a **discount of 75% or more** is removed and logged. Nothing else is removed.
+- **Image keys:** every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key — links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`); links without a key are listed in **to check**
+- Special price and image keys apply when the file is built, so they can be changed after processing without running again
 
 **Step 2 — Click "Process & Download".** The system:
 1. Joins all files on Product ID
@@ -69,6 +76,15 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 4. Applies word replacements (default: `daraz` → `cartup`)
 5. Fills variant columns (Color, Size…) only if valid for the matched category — see below
 6. With the template: checks every dropdown value (variant columns, Brand, Unit, Warranty Type/Period…) against CartUp's lists — the lists `payload_hidden` looks values up in — and writes the list's own spelling
+7. House rules, each logged in **changes** (or **to check**):
+   - Name: `#` → `-`
+   - Stock: never above **99,999**
+   - Warranty: *No Warranty* with a period → the period is removed; *Seller / Brand Warranty* without a period → *No Warranty*; a period that isn't on the list goes to review (pick one, keep it, or **Set No Warranty**)
+   - Weight below **0.01 kg** (shows as 0.00 — CartUp would charge 0 for delivery) → flagged in **to check**, not changed
+
+The work runs in three stages (`processor.js`): read + AI (once, the slow part) → match values against the template (`matchItems`, repeatable) → build the file (`buildOutput`: decisions, house rules, image keys, hand edits). So:
+- **Newer template, no re-run:** after values are added to CartUp's lists, "Check again with a newer template" re-matches the same run — your picks and edits stay.
+- **How much is automatic:** the result shows the share of rows that need nothing from you and of dropdown values settled automatically.
 
 **Variant attributes from "Variations Combo"** (e.g. `Black, EU:40`) — decided **per product (Parent SKU)**, not row by row (`frontend/src/utils/variantReview.js`):
 - **Product pattern** — which column each position of the combo goes to is scored over all the product's SKUs (match on each column's CartUp list, whether values look like sizes or colours, colour usually first). An odd value ("Type A", "Zorvex Pattern 1") follows its siblings; a value that clearly belongs elsewhere (siblings written in another order: `38, Navy Blue` next to `Black, 40`) still goes where it fits. A size-only combo (`XL`) goes to the size column. Colour-only products no longer get `Size = Yes` (on no list → #N/A).
@@ -78,12 +94,15 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 
 **Smart matching** (`frontend/src/utils/listMatch.js`, also used by Shop Duplicate), in order of confidence: exact (case ignored, as VLOOKUP does) → same text apart from spacing/punctuation (`Type-B` = `Type B`; decimal points and ranges kept, so `2.5mm` ≠ `25mm`, `3-4 Years` ≠ `34 Years`) → known equivalents (`EU:40`/`38` → `40 (EU)`/`38 (EU)`, `UK:7` → `7 (UK)`, `Int:XXL`/`XXL` → `2XL`, `Free Size`/`FS` → `One Size`, `King` → `King Size`, `6 Months` → `6 month`, `12 Months` → `1 year`, `Local seller warranty` → `Seller Warranty`, `International Manufacturer Warranty` → `Brand Warranty`, `pcs` → `PCS`, `Mixed Color` → `Multicolor`, `As Picture` → `Same as picture`) → a close spelling (same words in another order, or one or two typos — only when one entry is clearly closest and every number is the same). Brands, units and warranty fields never use close spellings.
 
-**Review window — product by product** (opens by itself when values are left; or "Review product by product"): products needing attention on the left; on the right the product's SKUs with their **variant images** (click to enlarge) and every dropdown value, coloured by state (red = not on CartUp's list, blue = matched automatically / remembered, green = picked, amber = kept as a new value). Click a value to: pick one of the **closest list values**, **search** the whole list (type-ahead), **keep the seller's value as a new value** for CartUp's list, or go back to automatic. Each pick applies to **this SKU**, **this product**, or **every SKU with that value** (the default) — and "every SKU" picks are **remembered in this browser**, so the same value is automatic in later runs (the footer shows how many are remembered, with a "forget them" link). After a pick the window jumps to the next open value. SKUs of a product left with identical variant values are flagged.
+**Review window — product by product** (opens by itself when values are left; or "Review product by product"): products needing attention on the left; on the right the product's SKUs with their **variant images** (click to enlarge) and every dropdown value, coloured by state (red = not on CartUp's list, blue = matched automatically / remembered, green = picked, amber = kept as a new value). Click a value to: pick one of the **closest list values**, **search** the whole list (type-ahead), **keep the seller's value as a new value** for CartUp's list, or go back to automatic. Each pick applies to **this SKU**, **this product**, or **every SKU with that value** (the default) — and "every SKU" picks are **remembered in this browser**, so the same value is automatic in later runs (the footer shows how many are remembered, with a "forget them" link). After a pick the window jumps to the next open value. SKUs of a product left with identical variant values are flagged. **Large images** shows bigger variant images and the product's images 1–8 above the table. **Brands** (top right, when the attribute file has brands that aren't on CartUp's list): one row per brand with how many products/SKUs use it — **No Brand**, **Keep as new brand** (for CartUp to add), or **Pick…** the right one from the list; applies to every product with that brand and is remembered.
+
+**View & edit sheet** — the whole output, Excel-style (`components/SheetEditor.jsx`): every row and column, rows virtualised so thousands stay smooth, the Seller SKU column and header fixed. Red = required and empty, or a dropdown value not on CartUp's list (#N/A); amber = flagged (weight, image key); blue = edited. Column headers count their problem cells. Filter to rows with problems, search by SKU or name, click a cell and edit it in the bar below (dropdown columns suggest list values; the row's image is shown). Edits are the last word on a value, logged as "Edited by hand", and survive a newer-template re-check.
 
 **Step 3 — Output:** `cartup_daraz_output.xlsx` — downloads at once when nothing needs a decision, otherwise from the review window ("Download file", also on the page). Sheets:
 - **product** — with the decisions applied; the Report column notes each row's changes, values not on the list, and identical variants
 - **invalid** — rows missing required fields (as before)
-- **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, duplicate Seller SKU removed)
+- **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
+- **to check** — flagged but not changed: weight below 0.01 kg, image links without a key
 - **new values** (with the template) — every value not on CartUp's lists, once each: column, value, status (*Add to the CartUp list — decided*, or *Not reviewed — shows #N/A until matched or added*), how many SKUs and products use it, the Seller SKUs, and the closest CartUp values
 
 ---
@@ -125,6 +144,8 @@ Old seller's product export + blank upload template + new seller SKU (replace co
 - Warranty Type/Period IDs → their names (3 → No Warranty)
 - Brand, Unit, Color, Size, Warranty… are matched to the template's own list with the same smart matching as Daraz Upload (exact first — the lists contain near-duplicates such as `Grey` and `Grey ` with different IDs — then spelling/format differences and known equivalents); every value that was changed is listed under **Auto-matched values**
 - Special Price 0 → blank (and its dates); duplicate Seller SKUs → first one kept, original order kept
+- **Special price** (checkbox on the page): include or leave out; when included it runs from today to the end date you pick, and a **discount of 75% or more** is removed
+- House rules as in Daraz Upload: `#` in names → `-`, stock never above 99,999, *No Warranty* with a period → period removed, *Seller/Brand Warranty* without one → *No Warranty*, weight below 0.01 kg flagged as a warning — all listed under **Changed values**
 - Word Replacements from Profile (default `daraz → cartup`) applied to names, highlights, descriptions, what's-in-the-box and warranty text
 
 **The hidden `payload_hidden` sheet** (the one the platform reads — IDs via VLOOKUP formulas) is filled with the values Excel would compute, so the file uploads correctly without opening it in Excel first. A small built-in formula engine (`frontend/src/utils/xlsxFormula.js`) reads each column's formula, fills it down every row the way Excel's fill handle does, and calculates it — IF, IFERROR/IFNA, VLOOKUP, INDEX/MATCH, XLOOKUP, TRIM/LEN/LEFT…, AND/OR, ISBLANK… over Excel Tables, plain ranges or defined names. So template variations still work: Excel "shared" formulas, other formula styles, extra blank cells, and templates whose rows were deleted in Excel (`#REF!` rows, or formulas shifted out of line with the product rows — the seller-center template itself has these) are rebuilt so hidden row N always reads product row N+1. A formula using a function the engine doesn't know is written without a cached value and the page says to open the file in Excel and press Save before uploading. Everything else in the template — dropdowns, lookup tables, hidden sheets — is kept byte-for-byte.

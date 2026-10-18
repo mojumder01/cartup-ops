@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { duplicateShop, readSellerExport, skuCodes, parseSkuRules, planSkus, skuOptionsError, zipFiles } from '../utils/shopDuplicate'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
+import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import { Copy, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Info, Plus, X } from 'lucide-react'
 
 // current: text shown while nothing has been picked here (e.g. a remembered file).
@@ -90,6 +91,8 @@ export default function ShopDuplicate() {
   const [rules, setRules]     = useState([EMPTY_RULE])
   const [prefix, setPrefix]   = useState('')
   const [reportTab, setReportTab] = useState(true)
+  const [spInclude, setSpInclude] = useState(true)
+  const [spEnd, setSpEnd]     = useState(loadSpecialEnd)
   const [status, setStatus]   = useState('')
   const [progress, setProgress] = useState('')
   const [error, setError]     = useState('')
@@ -98,6 +101,7 @@ export default function ShopDuplicate() {
   const [saved, setSaved]     = useState(null)
 
   const reset = () => { setStatus(''); setError(''); setResult(null) }
+  useEffect(() => { saveSpecialEnd(spEnd) }, [spEnd])
 
   // The CartUp template picked last time (on this page or Daraz Upload).
   useEffect(() => {
@@ -156,6 +160,7 @@ export default function ShopDuplicate() {
         exportData: await exportFile.arrayBuffer(),
         templateData: await templateFile.arrayBuffer(),
         sku,
+        specialPrice: { include: spInclude, start: todayISO(), end: spEnd },
         reportTab,
         meta: { exportName: exportFile.name, templateName: templateFile.name },
         onProgress: setProgress,
@@ -325,12 +330,25 @@ export default function ShopDuplicate() {
           · VariantName <code>Size-One Size, Color-Black</code> → Size and Color columns<br/>
           · Warranty Type ID → its name (e.g. 3 → No Warranty)<br/>
           · Brand, Color, Size, Warranty… matched to the template's lists — spelling / format differences fixed (EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size); anything still unmatched (#N/A) is listed<br/>
-          · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank<br/>
+          · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank · a 75%+ discount is removed<br/>
+          · Stock over 99,999 → 99,999 · "#" in names → "-" · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight under 0.01 kg flagged<br/>
           · Word Replacements from Profile applied to names, highlights &amp; descriptions (e.g. daraz → cartup)<br/>
           · Hidden ID sheet is computed for you — no need to open in Excel first
         </div>
 
-        <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:14, fontSize:13, color:'#334155', cursor:'pointer', width:'fit-content' }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:14, fontSize:13, color:'#334155', flexWrap:'wrap' }}>
+          <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer' }}>
+            <input type="checkbox" checked={spInclude} onChange={e => { setSpInclude(e.target.checked); reset() }} style={{ width:15, height:15, accentColor:'#4f46e5' }} />
+            Include <b>special price</b>
+          </label>
+          {spInclude && <>
+            <span style={{ fontSize:12.5, color:'#475569' }}>from <b>{todayISO()}</b> (today) to</span>
+            <input type="date" value={spEnd} min={todayISO()} onChange={e => { setSpEnd(e.target.value); reset() }}
+              style={{ padding:'5px 8px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12.5 }} />
+          </>}
+        </div>
+
+        <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:10, fontSize:13, color:'#334155', cursor:'pointer', width:'fit-content' }}>
           <input type="checkbox" checked={reportTab} onChange={e => { setReportTab(e.target.checked); reset() }} style={{ width:15, height:15, accentColor:'#4f46e5' }} />
           Add a <b>Report</b> tab to the file — summary, #N/A cells, auto-matched values, removed duplicates and warnings
         </label>
@@ -413,14 +431,14 @@ export default function ShopDuplicate() {
           {report.fixes.length > 0 && (
             <div style={{ marginTop:16 }}>
               <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
-                {report.fixes.length.toLocaleString()} values auto-matched to the template's lists — check any that look wrong
+                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, 75%+ discounts, stock cap, "#" in names, warranty) — check any that look wrong
               </div>
               <MiniTable rows={report.fixes} columns={[
                 { label:'Row', get: f => f.row, style: () => ({ color:'#94a3b8' }) },
                 { label:'Seller SKU', get: f => f.sku, style: () => ({ fontFamily:'monospace' }) },
                 { label:'Column', get: f => f.field },
                 { label:'Export value → written as', get: f => <>{f.from} → <b style={{ color:'#4f46e5' }}>{f.to}</b></> },
-                { label:'How', get: f => f.how, style: () => ({ color:'#64748b' }) },
+                { label:'Why', get: f => f.how, style: () => ({ color:'#64748b' }) },
               ]} />
             </div>
           )}
