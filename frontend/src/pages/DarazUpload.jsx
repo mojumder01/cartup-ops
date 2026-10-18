@@ -157,7 +157,7 @@ export default function DarazUpload() {
     output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (75%+ discount)`,
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at 99,999`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
-    output.rules.lowWeight && `${output.rules.lowWeight} weights below 0.01 kg flagged`,
+    output.rules.lowWeight && `${output.rules.lowWeight} weights with .00 after the point flagged`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)

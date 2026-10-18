@@ -459,6 +459,14 @@ const SOURCE_ALIASES = {
 }
 
 const blank = v => v === '' || v === null || v === undefined
+// A package weight to check: empty / 0, or two zeros right after the decimal
+// point (0.004, 1.003) — CartUp can show a delivery charge of 0 for these.
+export function weightNeedsCheck(v) {
+  const n = Number(String(v ?? '').trim())
+  if (!(n > 0)) return true
+  const decimals = n.toFixed(10).replace(/0+$/, '').split('.')[1] || ''
+  return decimals.startsWith('00')
+}
 function toNumber(v) {
   if (typeof v === 'number') return v
   const s = String(v).trim().replace(/,/g, '')
@@ -700,8 +708,8 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
         v = v.replace(/#/g, '-')
       }
       if (key === 'currentstockqty' && Number(v) > 99999) { change('Current Stock Qty', v, 99999, 'Stock capped at 99,999'); v = 99999 }
-      if (key === 'packageweightkg' && v !== '' && !(Number(v) >= 0.01)) {
-        warn(src, 'Package Weight (kg)', `${v} kg is below 0.01 — CartUp would show a delivery charge of 0`)
+      if (key === 'packageweightkg' && v !== '' && weightNeedsCheck(v)) {
+        warn(src, 'Package Weight (kg)', `${v} kg — two zeros after the decimal point; CartUp may show a delivery charge of 0`)
       }
 
       // Dropdown columns must hold the exact name from the template's list,

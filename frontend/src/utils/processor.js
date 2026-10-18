@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
-import { loadTemplate } from './shopDuplicate'
+import { loadTemplate, weightNeedsCheck } from './shopDuplicate'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, applyDecisions } from './variantReview'
@@ -572,10 +572,10 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
         if (/^https?:\/\//i.test(String(out[c] ?? '').trim())) { flag(c, 'No image key for this link yet'); rules.imageMissing++ }
       }
     }
-    // Weight that rounds to 0.00 kg: CartUp would show a delivery charge of 0.
-    if (!(Number(out['**Package Weight (kg)']) >= 0.01)) {
-      flag('**Package Weight (kg)', 'Below 0.01 kg — CartUp would show a delivery charge of 0')
-      notes.push('Weight below 0.01 kg')
+    // Weight with two zeros after the point (0.004, 1.003) or none at all: CartUp may show a delivery charge of 0.
+    if (weightNeedsCheck(out['**Package Weight (kg)'])) {
+      flag('**Package Weight (kg)', 'Two zeros after the decimal point (or no weight) — CartUp may show a delivery charge of 0')
+      notes.push('Weight to check (.00)')
       rules.lowWeight++
     }
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')

@@ -6,7 +6,7 @@ import { X, Search, Download, RotateCcw, Check, AlertTriangle, ImageOff } from '
 // The whole output sheet, Excel-style: every row and column, problem cells
 // marked, any cell editable. Rows are virtualised so thousands stay smooth.
 //   red    — required and empty, or a dropdown value not on CartUp's list (#N/A)
-//   amber  — flagged: weight under 0.01 kg, image link without a key…
+//   amber  — flagged: weight with .00 after the point, image link without a key…
 //   blue   — edited here
 // Edits are kept per Seller SKU and applied (and logged) when the file is built.
 
