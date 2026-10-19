@@ -235,6 +235,49 @@ Return ONLY: [{${keys.map(k => `"${k}":"..."`).join(',')}},...]`
   }
 }
 
+// ── Variations Combo: a label for each part — never a value ──────────────────
+// products: [{ pid, name, category, columns, combos, parts }]
+// → { pid: { part: label } } for the products in the answer (the caller
+// checks every label — see checkLabels in variantReview.js).
+// onError(message, pids): the call failed or left products out.
+export async function readVariantCombos(products, onError) {
+  if (!products.length) return {}
+  const block = products.map((p, i) => [
+    `${i + 1}. id "${p.pid}" — ${p.name}`,
+    `   Category: ${p.category} · its variant columns: ${p.columns.join(', ') || 'unknown'}`,
+    `   Combos: ${p.combos.slice(0, 8).map(c => JSON.stringify(c)).join(' · ')}${p.combos.length > 8 ? ` … (${p.combos.length} in all)` : ''}`,
+    `   Parts: ${JSON.stringify(p.parts)}`,
+  ].join('\n')).join('\n')
+  const prompt = `You label the parts of e-commerce product variants. A product's "Variations Combo" lists one SKU's variant values separated by commas — e.g. "Black, XL" is the colour Black and the size XL.
+For EVERY product below, give EVERY part listed under "Parts" exactly one label:
+- colour: a colour or colour mix (Black, Navy Blue, Rose Gold, Multicolor, Black & White)
+- size: a size — S/M/L/XL, a number size (40, EU:42), Free Size, a size range (37-39), a measurement (6x7 ft, 32 inch)
+- age: an age or age group (3-4 Years, 6 Months, Kids, Adult)
+- type: any other kind of variant — model, style, design, pattern, flavour, scent, material, body part (Leg, Back), side (Left/Right)
+- quantity: a pack, count, weight or volume (2 pcs, Pack of 3, 500 ml, 1 kg)
+- none: no information (Not Specified, Default, As picture, N/A)
+STRICT RULES:
+- Labels only. Never correct, translate, merge, split or invent parts: use each part exactly as written as the key.
+- Use the product name: "Orange" is a colour for a T-shirt but a type (flavour) for a juice; "Black" is a type for tea.
+- If unsure, answer "type".
+${block}
+Return ONLY a JSON array, no markdown: [{"id":"<id>","labels":{"<part>":"<label>",...}},...]`
+  try {
+    const parsed = jsonArray(await callAI(prompt, { maxOutputTokens: 8192, temperature: 0 }))
+    const ids = new Set(products.map(p => p.pid)), out = {}
+    for (const x of parsed) {
+      const pid = String(x?.id ?? x?.pid ?? '')
+      if (ids.has(pid) && x.labels && typeof x.labels === 'object' && !Array.isArray(x.labels)) out[pid] = x.labels
+    }
+    const missing = products.filter(p => !out[p.pid])
+    if (missing.length) onError?.('The AI answer left some products out', missing.map(p => p.pid))
+    return out
+  } catch (e) {
+    onError?.(e.message || 'Unknown error', products.map(p => p.pid))
+    return {}
+  }
+}
+
 // ── Single product (used by manualProcessor) ──────────────────────────────────
 export async function processProductAI(name, highlights, description, apiKey) {
   const localName = localFixName(name || '')

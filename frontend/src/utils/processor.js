@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
 import MAPPINGS from './mappings.json'
-import { processProductsBatch, localFixName, runConcurrent } from './gemini'
+import { processProductsBatch, readVariantCombos, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
 import { loadTemplate, writeTemplate, chunkRows, zipFiles } from './shopDuplicate'
 import { colToNum, numToCol } from './xlsxFormula'
@@ -9,7 +9,7 @@ import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { darazRows, cell } from './darazFiles'
-import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, applyDecisions } from './variantReview'
+import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, applyDecisions } from './variantReview'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -139,7 +139,9 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   // the spelling rules only; highlights / description are taken from the Basic
   // file as they are (a plain lookup, no clean-up). All off: no AI requests.
   // Categories never use the AI: the mapping table, or a note in Report.
-  const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false }
+  // options.aiFields.combo: the AI labels each Variations Combo part (colour,
+  // size…) — never a value; see readCombos.
+  const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false, combo: options.aiFields?.combo !== false }
   const aiName = aiFields.name, aiContent = aiFields.name || aiFields.highlights || aiFields.description
   onProgress('Reading files...')
 
@@ -424,8 +426,43 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   }
 
   const variantMode = options.variantMode === 'yes' ? 'yes' : 'match'
+  // ── Step 5: AI reads each product's Variations Combo — labels only ─────────
+  const combo = apiKey && aiFields.combo && variantMode === 'match' ? await readCombos(items, onProgress) : null
   matchItems(items, lists, variantMode)
-  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields } : null }
+  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo } : null }
+}
+
+// The AI labels the parts of each product's Variations Combo (colour, size…);
+// checkLabels drops any reading that contradicts what a part plainly is, and
+// matchItems uses the rest. Products whose parts are all plain (Not
+// Specified, L, EU:42, 3-4 Years) need no AI.
+// → { asked, read, slips, missed, message } — products asked / read / reading
+// dropped (a slip) / not answered.
+const COMBO_BATCH = 25
+async function readCombos(items, onProgress) {
+  const products = []
+  for (const [pid, g] of groupBy(items, it => it.parent)) {
+    const parts = [...new Set(g.flatMap(it => splitCombo(it.combo)))]
+    if (!parts.length || parts.every(p => ['none', 'size', 'age'].includes(plainKind(p)))) continue
+    products.push({ pid, items: g, parts, name: g[0].name, category: g[0].category || `Daraz category ${g[0].darazCat}`,
+      columns: COMBO_TARGETS.filter(c => g[0].applicable.includes(c)), combos: [...new Set(g.map(it => it.combo))] })
+  }
+  const stats = { asked: products.length, read: 0, slips: 0, missed: 0, message: '' }
+  const batches = []
+  for (let i = 0; i < products.length; i += COMBO_BATCH) batches.push(products.slice(i, i + COMBO_BATCH))
+  const answers = {}
+  await runConcurrent(batches.map((batch, bi) => async () => {
+    onProgress(`AI reading Variations Combo — products ${bi * COMBO_BATCH + 1}–${Math.min((bi + 1) * COMBO_BATCH, products.length)} of ${products.length}...`)
+    Object.assign(answers, await readVariantCombos(batch, message => { stats.message = message }))
+  }))
+  for (const p of products) {
+    const { roles, slips } = checkLabels(p.parts, answers[p.pid])
+    for (const it of p.items) { it.partRoles = roles; it.aiRead = roles ? '' : slips.length ? 'slip' : 'missed'; it.aiSlips = slips }
+    if (roles) stats.read++
+    else if (slips.length) stats.slips++
+    else stats.missed++
+  }
+  return stats
 }
 
 const groupBy = (arr, key) => {
@@ -467,15 +504,17 @@ const FILL_DEFAULTS = { Color: 'Not Specified', Model: 'Same as picture', Size: 
 // own column of the file).
 export function matchItems(items, lists, variantMode = 'match') {
   for (const group of groupBy(items, it => it.parent).values()) {
-    // Variations Combo → variant columns, guided by the pattern of the product's other SKUs.
-    const plan = variantMode === 'yes' ? [] : planParent(group.map(it => it.combo), group[0].applicable, lists)
+    // Variations Combo → variant columns, guided by the pattern of the product's
+    // other SKUs and, when read, the AI's labels (colour, size…) for its parts.
+    const roles = group[0].partRoles || null
+    const plan = variantMode === 'yes' ? [] : planParent(group.map(it => it.combo), group[0].applicable, lists, roles)
     for (const it of group) {
       it.cells = []; it.unused = []; it.fixed = {}; it.ruleChanges = []
       if (variantMode === 'yes') {
         for (const col of COMBO_TARGETS) if (it.applicable.includes(col)) it.cells.push(makeCell(col, 'Yes', null, 'mark'))
       } else {
         const parts = splitCombo(it.combo)
-        const placed = placeParts(parts, plan, it.applicable, lists)
+        const placed = placeParts(parts, plan, it.applicable, lists, roles)
         parts.forEach((part, p) => placed[p] ? it.cells.push(makeCell(placed[p], part, lists)) : it.unused.push(part))
       }
       // A variant column the category needs but the seller didn't fill (no
@@ -503,6 +542,7 @@ export function matchItems(items, lists, variantMode = 'match') {
       sizesIntoColor(group, lists)
       harmonizeSizes(group, lists)
       separateCollisions(group, lists)
+      compareWithAI(group)
     }
   }
   return items
@@ -517,6 +557,10 @@ export function rematch(result, lists, variantMode = result.variantMode) {
   return { ...result, items, lists, template: !!lists, variantMode }
 }
 
+// Flags about variant values (the rest of a row's variant trouble — open
+// values, alike variants, unsure values set by rule — comes from applyDecisions).
+const VARIANT_FLAGS = new Set(['numbered', 'sizecolor', 'variantai'])
+
 // Key of a row for hand edits (Seller SKUs are unique after stage 1).
 export const rowKey = (item, i) => item.sku || `row ${i + 1}`
 
@@ -529,7 +573,8 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null } = options
   const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, imagesMoved: 0, edited: 0, specialPrices: 0 }
+    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
+    variantRows: new Set() }   // rows with variant values (applied.variantLook: those that need a person)
   const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
   for (const sc of applied.sizeColor || []) sizeColorBy.set(sc.row, sc)
@@ -540,7 +585,11 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     // A row deleted in the sheet view is left out and not flagged.
     const isDeleted = !!deleted?.has(rowKey(item, i))
     // type (optional): the sheet's problem type for this flag (see checks.js ISSUE_TYPES)
-    const flag = (column, problem, type) => { if (isDeleted) return; problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem, type }); applied.attention.add(i) }
+    const flag = (column, problem, type) => {
+      if (isDeleted) return
+      problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem, type }); applied.attention.add(i)
+      if (VARIANT_FLAGS.has(type)) applied.variantLook.add(i)
+    }
     const notes = []
 
     for (const [c, v] of Object.entries(item.fixed || {})) out[c] = v
@@ -677,19 +726,30 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       notes.push(`Check: ${colLabel(nb.col)} = ${nb.value} only to keep variants apart (${lost})`)
       rules.numbered++
     }
-    // A size put in the Color column (the category has no size column): worth a look.
+    // A size put in the Color column (the category has no size column): worth a
+    // look unless sure — plainly a size (L, EU:42) or the AI's reading agrees.
     const sc = sizeColorBy.get(i)
     if (sc && !isDeleted && out[sc.col] === sc.value) {
       const why = sc.note || 'the category has only a Color column'
-      flag(sc.col, `In the Color column: ${sc.value} (Daraz: "${item.combo}") — ${why}`, 'sizecolor')
+      if (sc.sure) rules.sizeColorSure++
+      else flag(sc.col, `In the Color column: ${sc.value} (Daraz: "${item.combo}") — ${why}`, 'sizecolor')
       notes.push(`In Color: ${sc.value} — ${why} (Daraz "${item.combo}")`)
       rules.sizeColor++
+    }
+    // The AI read the combo differently from where the rules put it: a look.
+    for (const d of item.aiDisagree || []) {
+      const cell = item.cells.find(c => c.col === d.col)
+      if (isDeleted || (cell && out[d.col] !== (cell.auto ?? cell.raw))) continue   // changed by hand since
+      flag(d.col, `AI reads the Variations Combo differently: ${d.text} (Daraz "${item.combo}") — check it`, 'variantai')
+      notes.push(`Check: ${d.text} (AI reading)`)
+      rules.aiDisagree++
     }
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
     // Check = YES: the row needs a person's look (a flag, a value set by rule,
     // no category, left out) — the reason is in Report.
-    if (isDeleted) applied.attention.delete(i)
+    if (isDeleted) { applied.attention.delete(i); applied.variantLook.delete(i) }
     out['Check'] = isDeleted ? '' : applied.attention.has(i) || applied.filledRows?.has(i) || !String(out['**Category Id'] ?? '').trim() || excluded.has(i) ? 'YES' : ''
+    if (item.cells.some(c => COMBO_TARGETS.includes(c.col) && c.source !== 'mark')) rules.variantRows.add(i)
   })
   // excluded: row indexes left out of the upload (leftOut: their "invalid" rows)
   return { ...applied, problems, rules, excluded, leftOut, deletedRows }
@@ -752,6 +812,14 @@ export function aiSummary(ai) {
   return `AI (${on.join(', ')}): ${(ai.products - ai.missed).toLocaleString()} of ${ai.products.toLocaleString()} products cleaned`
     + (ai.missed ? ` (${ai.missed.toLocaleString()} local clean-up only)` : '') + (off.length ? ` · AI check off — ${offText}` : '')
 }
+// The AI's reading of Variations Combo, in a line.
+export function comboSummary(c) {
+  if (!c) return ''
+  if (!c.asked) return 'AI (Variations Combo): nothing to ask — every part is plain (Not Specified, L, EU:42…)'
+  return `AI (Variations Combo): ${c.read.toLocaleString()} of ${c.asked.toLocaleString()} products read (labels only — values always from CartUp's lists)`
+    + (c.slips ? ` · ${c.slips.toLocaleString()} reading${c.slips === 1 ? '' : 's'} dropped (contradicted the parts — rules used)` : '')
+    + (c.missed ? ` · ${c.missed.toLocaleString()} not answered (rules used${c.message ? `: ${c.message.slice(0, 60)}` : ''})` : '')
+}
 
 // The run in a few lines (one cell of the "summary" sheet, or copied from the
 // page): how many rows went in, and how many were left out or changed for
@@ -786,9 +854,17 @@ export function darazSummary(result, output, options = {}) {
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
     variantKinds(result.items),
     result.variantMode === 'yes' ? 'Variants: Variations Combo not matched — the variant columns each category needs are marked "Yes"' : '',
-    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color = Not Specified, Model = Same as picture, size = One Size)${r.sizeColor ? ` · ${n(r.sizeColor)} with the size in the Color column (L, Grey-L… — the category has no size column)` : ''}${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
+    result.variantMode !== 'yes' && (() => {
+      const rows = [...r.variantRows].filter(i => !output.excluded.has(i)), look = rows.filter(i => output.variantLook?.has(i)).length
+      return rows.length ? `Variants: ${n(rows.length - look)} of ${s(rows.length, 'row')} set automatically (${Math.floor(100 * (rows.length - look) / rows.length)}%) · ${n(look)} to check` : ''
+    })(),
+    `Variants set: ${join([`${n(output.ruleRows?.size || 0)} by rule (Color = Not Specified when the combo is empty or has no colour, Model = Same as picture, size = One Size)${output.filledRows?.size ? ` — ${n(output.filledRows.size)} to check (part of the combo unused)` : ''}`,
+      r.sizeColor && `${n(r.sizeColor)} with the size in the Color column (L, Grey-L… — the category has no size column; ${n(r.sizeColorSure)} sure, ${n(r.sizeColor - r.sizeColorSure)} to check)`,
+      r.numbered && `${n(r.numbered)} told apart only by a number (Multicolor-1…) — check`,
+      r.aiDisagree && `${n(r.aiDisagree)} read differently by the AI — check`])}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,
     aiSummary(result.ai),
+    comboSummary(result.ai?.combo),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
   ]
   return lines.filter(Boolean).join('\n')

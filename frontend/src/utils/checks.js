@@ -18,7 +18,8 @@ export const ISSUE_TYPES = {
   spremoved:{ label: 'Special price removed (75–99% discount)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
   defaults: { label: 'Set by rule (Not Specified / One Size)', level: 'warn' },
-  sizecolor:{ label: 'Size / variant in the Color column (Grey-L…)', level: 'warn' },
+  sizecolor:{ label: 'Size / variant in the Color column (Grey-L…) — not sure', level: 'warn' },
+  variantai:{ label: 'Variant read differently by the AI', level: 'warn' },
   marked:   { label: 'Marked "Yes" (combo not matched)', level: 'warn' },
   flag:     { label: 'Other flags', level: 'warn' },
 }
@@ -26,8 +27,9 @@ export const ISSUE_TYPES = {
 // Map "row|column" → { level, type, text } for every problem cell.
 export function sheetIssues(output, columns, lists, items = null) {
   const m = new Map()
-  // Variant values set by rule (Same as picture, One Size), per cell.
-  const filled = items && new Set(items.flatMap((it, i) => (it.cells || []).filter(c => c.source === 'fill' && String(output.rows[i]?.[c.col] ?? '') === (c.auto ?? c.raw)).map(c => `${i}|${c.col}`)))
+  // Variant values set by rule (Not Specified, One Size) that are worth a look
+  // (part of the combo went unused), per cell.
+  const filled = items && new Set(items.flatMap((it, i) => output.filledRows?.has(i) ? (it.cells || []).filter(c => c.source === 'fill' && String(output.rows[i]?.[c.col] ?? '') === (c.auto ?? c.raw)).map(c => `${i}|${c.col}`) : []))
   const marked = items && new Set(items.flatMap((it, i) => (it.cells || []).filter(c => c.source === 'mark' && String(output.rows[i]?.[c.col] ?? '') === 'Yes').map(c => `${i}|${c.col}`)))
   const flagged = new Map(output.problems.map(p => [`${p.row}|${p.column}`, p]))
   const set = (k, type, text) => m.set(k, { level: ISSUE_TYPES[type].level, type, text })
@@ -104,14 +106,17 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Close-spelling matches', why: 'Matched by similar spelling — a quick glance confirms them',
       open: { review: { view: 'values', state: 'changed', col: 'all' } } })
   }
+  if (byType.variantai) add({ id: 'variantai', level: 'check', count: byType.variantai, unit: 'SKU',
+    title: 'Variants the AI reads differently', why: 'The AI says a part of the Variations Combo is something else than where the rules put it (a colour in a size column, a size left unused…) — check those products; the quick fixes offer the other readings',
+    open: { review: { view: 'products', state: 'variants', col: 'g:variant' } } })
   if (byType.sizecolor) add({ id: 'sizecolor', level: 'check', count: byType.sizecolor, unit: 'SKU',
-    title: 'Size put in the Color column', why: 'The category has Color but no size column — variants that differ by size (S, M, L…) or side (Left / Right) get Grey-L, L, M (Left)… in Color instead of Grey-1, Grey-2; a quick look confirms them (quick fixes switch a product between "L" and "Grey-L")',
+    title: 'Size put in the Color column — not sure', why: 'The category has Color but no size column, so the part that tells the variants apart went into Color (M (Left), Universal, Kids…) — not plainly a size and not confirmed by the AI; a quick look confirms them. Plain sizes (L, XL, EU:42) and AI-confirmed ones need no look',
     open: { review: { view: 'products', state: 'variants', col: 'g:variant' } } })
   if (byType.marked) add({ id: 'marked', level: 'check', count: byType.marked, unit: 'value',
     title: 'Variant columns marked "Yes"', why: 'Variations Combo option "Mark Yes": the columns the category needs say Yes — "Yes" isn\'t on CartUp\'s lists, so the hidden sheet shows #N/A for them',
     open: { sheet: 'marked' } })
   if (byType.defaults) add({ id: 'defaults', level: 'check', count: byType.defaults, unit: 'value',
-    title: 'Variant values set by rule', why: 'The category needs Color / Model / Size but the seller gave none — set to Not Specified (Color), Same as picture (Model), One Size (sizes); Check = YES and Report say so',
+    title: 'Variant values set by rule — part of the combo unused', why: 'The category needs Color / Model / Size and the seller gave none, so it was set to Not Specified / Same as picture / One Size — but part of the Variations Combo went unused (it may have been the value) and the AI didn\'t confirm it. An empty combo → Not Specified needs no look',
     open: { sheet: 'defaults' } })
   if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
     title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',

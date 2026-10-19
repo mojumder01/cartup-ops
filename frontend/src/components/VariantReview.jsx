@@ -28,6 +28,9 @@ const STATE_STYLE = {
   ok:         { background:'#fff', color:'#334155', border:'1px solid #e2e8f0' },
 }
 const STATE_NOTE = { open: 'not on list', auto: 'auto', remembered: 'remembered', picked: 'picked', kept: 'new value' }
+// A variant value worth a look: not on the list, numbered, or a size put in
+// Color that isn't sure (not plainly a size, not confirmed by the AI).
+const cellTrouble = v => v.state === 'open' || (v.state === 'auto' && (v.how === 'numbered' || (v.how === 'sizecolor' && !v.cell.sure)))
 const HOW_NOTE = { ...MATCH_LABEL, numbered: 'Numbered (variants apart)', sizecolor: 'Size in Color (no size column)', rule: 'Warranty rule', exact: 'List spelling' }
 
 // Column filter: 'all', a group ('g:variant' | 'g:brand' | 'g:warranty' | 'g:other') or one column ('c:Color').
@@ -84,9 +87,9 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
   }, [result])
 
   // ── By product ──
-  // Variants worth a look: not on the list, the same as a sibling, numbered or size put in Color.
-  const variantTrouble = g => g.dupes.length > 0 || g.skus.some(s => Object.entries(s.cells).some(([c, v]) =>
-    COMBO_TARGETS.includes(c) && (v.state === 'open' || (v.state === 'auto' && (v.how === 'numbered' || v.how === 'sizecolor')))))
+  // Variants worth a look: not on the list, the same as a sibling, numbered, a
+  // size put in Color that isn't sure, or read differently by the AI.
+  const variantTrouble = g => g.dupes.length > 0 || g.skus.some(s => s.item.aiDisagree?.length || Object.entries(s.cells).some(([c, v]) => COMBO_TARGETS.includes(c) && cellTrouble(v)))
   const q = query.trim().toLowerCase()
   const cellsIn = g => g.skus.flatMap(s => Object.entries(s.cells).filter(([c]) => colMatches(colFilter, c)).map(([, v]) => v))
   const pTest = {
@@ -215,7 +218,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
     if (!group || (!variantTrouble(group) && group.parent !== stay)) return []
     // Only the columns with the trouble (not on the list, numbered, size put in Color);
     // variants that are merely alike: every variant column.
-    const troubled = c => group.skus.some(s => { const v = s.cells[c]; return v && (v.state === 'open' || (v.state === 'auto' && (v.how === 'numbered' || v.how === 'sizecolor'))) })
+    const troubled = c => group.skus.some(s => { const v = s.cells[c]; return (v && cellTrouble(v)) || s.item.aiDisagree?.some(d => d.col === c) })
     const variantCols = group.cols.filter(c => COMBO_TARGETS.includes(c))
     const cols = variantCols.some(troubled) ? variantCols.filter(troubled) : variantCols
     return cols.map(col => ({ col, plans: productFixes(group.skus.map(s => s.item), col, result.lists) })).filter(f => f.plans.length)

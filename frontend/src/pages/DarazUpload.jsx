@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { poolSummary, onAiChange, sessionStats, resetText, maskKey } from '../utils/aiPool'
 import {
-  processDarazFiles, buildOutput, buildDarazWorkbook, darazSummary, aiSummary, templateLists, rematch, rowKey,
+  processDarazFiles, buildOutput, buildDarazWorkbook, darazSummary, aiSummary, comboSummary, templateLists, rematch, rowKey,
   readTableFile, guessImageKeys, makeImageKeyMap, makeImageKeyColumns, OUTPUT_COLS,
 } from '../utils/processor'
 import { loadMemory, rememberDecisions, forgetMemory, valueGroups } from '../utils/variantReview'
@@ -96,7 +96,7 @@ export default function DarazUpload() {
   const [variantMode, setVariantMode] = useState(() => { try { return localStorage.getItem('daraz_variant_mode') === 'yes' ? 'yes' : 'match' } catch { return 'match' } })
   // Which content the AI cleans (each off → local clean-up only, fewer tokens; all off → no content requests)
   const [aiFields, setAiFields]   = useState(() => {
-    const all = { name: true, highlights: true, description: true }
+    const all = { name: true, highlights: true, description: true, combo: true }
     try { return { ...all, ...JSON.parse(localStorage.getItem('daraz_ai_fields') || '{}') } } catch { return all }
   })
   const [spInclude, setSpInclude] = useState(true)
@@ -253,6 +253,10 @@ export default function DarazUpload() {
   const rows = output?.rows.length || 0
   const needs = output?.attention.size || 0
   const autoPct = rows ? Math.round(((rows - needs) / rows) * 100) : 0
+  // Rows with variant values (uploaded), and those whose variants need a person.
+  const variantIdx = output ? [...output.rules.variantRows].filter(i => !output.excluded.has(i)) : []
+  const variantRows = variantIdx.length, variantLook = variantIdx.filter(i => output.variantLook.has(i)).length
+  const variantPct = variantRows ? Math.floor(((variantRows - variantLook) / variantRows) * 100) : 100
   const valuePct = stats?.checked ? Math.round(((stats.checked - stats.open) / stats.checked) * 100) : 100
   const summary = output ? darazSummary(result, output, { ...options, activeOnly }) : ''
   const ruleLine = output && [
@@ -262,7 +266,7 @@ export default function DarazUpload() {
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
     output.excluded.size && `${output.excluded.size} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
-    output.filledRows?.size && `${output.filledRows.size} rows with Color / Model / Size set by rule`,
+    output.ruleRows?.size && `${output.ruleRows.size} rows with Color / Model / Size set by rule${output.filledRows?.size ? ` (${output.filledRows.size} to check)` : ''}`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
 
@@ -324,8 +328,8 @@ export default function DarazUpload() {
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
             <span style={lbl}>AI check</span>
-            {[['name', 'Name'], ['highlights', 'Highlights'], ['description', 'Description']].map(([k, label]) => (
-              <label key={k} style={{ display:'flex', alignItems:'center', gap:6, fontSize:12.5, cursor:'pointer' }}>
+            {[['name', 'Name'], ['highlights', 'Highlights'], ['description', 'Description'], ['combo', 'Variations Combo']].map(([k, label]) => (
+              <label key={k} data-ai-field={k} style={{ display:'flex', alignItems:'center', gap:6, fontSize:12.5, cursor:'pointer' }}>
                 <input type="checkbox" checked={aiFields[k]} onChange={e => setAiFields(f => ({ ...f, [k]: e.target.checked }))} style={{ accentColor:'#4f46e5' }} /> {label}
               </label>
             ))}
@@ -333,7 +337,8 @@ export default function DarazUpload() {
               {aiFields.name && aiFields.highlights && aiFields.description ? 'Gemini fixes spelling and grammar in all three'
                 : !aiFields.name && !aiFields.highlights && !aiFields.description ? 'all off — no AI requests: names get the spelling rules, highlights and description come from the Basic file as they are'
                 : `unticked — ${['name', 'highlights', 'description'].filter(k => !aiFields[k]).map(k => k === 'name' ? 'name: spelling rules only' : `${k}: from the Basic file as it is`).join(' · ')}`}
-              {result?.ai && ['name', 'highlights', 'description'].some(k => (result.ai.fields?.[k] ?? true) !== aiFields[k]) ? ' · applies when you process again' : ''}
+              {' · '}{aiFields.combo ? 'Variations Combo: Gemini says which part is the colour and which the size (labels only — values always from CartUp\'s lists; a label that contradicts a part, like "XL" as a colour, is dropped)' : 'Variations Combo: rules only'}
+              {result?.ai && ['name', 'highlights', 'description', 'combo'].some(k => (result.ai.fields?.[k] ?? true) !== aiFields[k]) ? ' · applies when you process again' : ''}
             </span>
           </div>
           <div data-variant-mode style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
@@ -438,7 +443,7 @@ export default function DarazUpload() {
         {apiKey ? (
           <div style={{ background: pool.left ? '#eef2ff' : '#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color: pool.left ? '#4338ca' : '#92400e', marginTop:12, lineHeight:1.6 }}>
             <Zap size={13} style={{ verticalAlign:'middle', marginRight:6 }} />
-            AI on — {[aiFields.name && 'names', aiFields.highlights && 'highlights', aiFields.description && 'description'].filter(Boolean).join(', ') || 'nothing ticked'} with Gemini ({pool.models[0]?.label || 'no model'}) · categories by the mapping table (no AI) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
+            AI on — {[aiFields.name && 'names', aiFields.highlights && 'highlights', aiFields.description && 'description', aiFields.combo && 'Variations Combo (colour / size)'].filter(Boolean).join(', ') || 'nothing ticked'} with Gemini ({pool.models[0]?.label || 'no model'}) · categories by the mapping table (no AI) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
             {' · '}<b>{pool.left.toLocaleString()}</b> requests left today (≈ {(pool.left * BATCH).toLocaleString()} products) · ≈ {pool.perMinute}/min · resets {resetText()}
             {!pool.left && <> — today's limit is used: names get the spelling fix only. Add or tick keys/models in Profile, or wait for the reset.</>}
           </div>
@@ -479,6 +484,9 @@ export default function DarazUpload() {
                   <div style={{ height:7, background:'#fee2e2', borderRadius:4, overflow:'hidden', marginTop:4 }}>
                     <div style={{ width:`${autoPct}%`, height:'100%', background:'#22c55e' }} />
                   </div>
+                  {variantRows > 0 && <div data-variant-auto style={{ fontSize:11.5, color:'#64748b', marginTop:4 }}>
+                    Variants (Color / Size…): <b style={{ color: variantPct >= 90 ? '#15803d' : '#b45309' }}>{variantPct}%</b> of {variantRows.toLocaleString()} rows set automatically · {variantLook.toLocaleString()} to check{result.ai?.combo ? ' · AI read the Variations Combo' : ''}
+                  </div>}
                 </div>
                 <div style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:20, fontWeight:700, fontSize:12.5,
                   background: toFix ? '#fee2e2' : toCheck ? '#fef3c7' : '#dcfce7', color: toFix ? '#b91c1c' : toCheck ? '#92400e' : '#15803d' }}>
@@ -569,6 +577,7 @@ export default function DarazUpload() {
                     {stats.open > 0 && <div style={{ color:'#b91c1c' }}>· {stats.open.toLocaleString()} values ({stats.openValues.toLocaleString()} different) in {stats.openParents.toLocaleString()} products not on the lists yet — they'd show #N/A in payload_hidden</div>}
                   </> : <div>· Values were not checked against CartUp's lists (no template)</div>}
                   {result.ai && <div>· {aiSummary(result.ai)}{aiUse ? ` · ${aiUse.calls.toLocaleString()} request${aiUse.calls === 1 ? '' : 's'}, ${aiUse.tokens.toLocaleString()} tokens` : ''}</div>}
+                  {result.ai?.combo && <div data-combo-ai>· {comboSummary(result.ai.combo)}</div>}
                   {ruleLine.length > 0 && <div>· {ruleLine.join(' · ')}</div>}
                 </div>
               </details>

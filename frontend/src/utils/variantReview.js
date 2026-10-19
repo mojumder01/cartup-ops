@@ -25,15 +25,61 @@ const targetsFor = applicable => {
   const t = COMBO_TARGETS.filter(t => applicable.includes(t))
   return t.length ? t : ['Color', 'Size']   // category unknown: colour + size
 }
+// ── What a combo part is ──────────────────────────────────────────────────────
+// The AI (when on) labels each part of a product's Variations Combo: colour,
+// size, age, type (model, style, flavour, body part, side…), quantity or none.
+// It never writes a value — values are always the seller's own text matched to
+// CartUp's lists by the rules here. A label is taken only when it fits what
+// the part plainly is: "XL" is never a colour, "Black" never a size. One such
+// slip and the AI's reading of that product is dropped; the rules alone decide.
+export const PART_LABELS = ['colour', 'size', 'age', 'type', 'quantity', 'none']
+const PLACEHOLDER = /^(not ?specified|n\/?a|none|default|no colou?r|same as (the )?(picture|pic|image|photo)s?|as (per )?(picture|image|photo|shown)|as shown)$/i
+const PLAIN_COLOUR = /^((light|dark|deep|pale|bright|sky|navy|off)[\s-]*)?(black|white|red|blue|green|yellow|pink|purple|grey|gray|brown|navy|maroon|beige|silver|golden|multi ?colou?r|multicolou?r)$/i
+// What a part is beyond doubt, by its form alone: 'none' · 'size' · 'age' · 'colour' · null.
+export function plainKind(part) {
+  const p = String(part ?? '').trim(), v = p.toLowerCase().replace(/^(int|international|intl)\s*[:\-.]\s*/, '')
+  if (PLACEHOLDER.test(p)) return 'none'
+  if (/^(x{0,6}[sml]|[2-6] ?x[sl]|xs|xl|free ?size|one ?size)$/.test(v) || /^(eu|uk|us)\s*[:\-]?\s*\d+(\.\d+)?$/.test(v) || /^\d+(\.\d+)?\s*\(?\s*(eu|uk|us)\s*\)?$/.test(v)) return 'size'
+  if (AGE.test(p)) return 'age'
+  if (PLAIN_COLOUR.test(p)) return 'colour'
+  return null
+}
+// The AI labels a part of each plain kind may have — any other is a slip.
+const FITS = { size: ['size', 'age', 'none'], age: ['age', 'size', 'none'], colour: ['colour', 'type', 'none'], none: PART_LABELS }
+// The AI's labels for one product's parts → { roles: { part: label } | null,
+// missing: parts it gave no label, slips: labels that contradict a part's plain
+// form }. roles only when every part has a fitting label.
+export function checkLabels(parts, labels) {
+  const given = new Map(Object.entries(labels && typeof labels === 'object' ? labels : {}).map(([k, v]) => [String(k).trim().toLowerCase(), String(v ?? '').trim().toLowerCase()]))
+  const roles = {}, missing = [], slips = []
+  for (const p of parts) {
+    const l = given.get(p.trim().toLowerCase()), plain = plainKind(p)
+    if (!PART_LABELS.includes(l)) missing.push(p)
+    else if (plain && !FITS[plain].includes(l)) slips.push(`"${p}" read as ${l}, but it is plainly a ${plain}`)
+    else roles[p] = plain === 'none' ? 'none' : l
+  }
+  return { roles: missing.length || slips.length ? null : roles, missing, slips }
+}
+
+// How well a column suits a part the AI labelled; a column not named is a
+// contradiction (a colour in a size column, a flavour in Shoe Size).
+const ROLE_FIT = {
+  colour:   { Color: 60, Model: -20 },
+  size:     { 'Shoe Size': 60, 'Clothing Size': 60, 'Bedding Size': 60, Size: 60, 'Age Group': 20, Color: -30, Model: -40 },
+  age:      { 'Age Group': 60, Size: 40, 'Clothing Size': 30, Color: -30, Model: -40 },
+  type:     { Model: 60, Color: 0 },
+  quantity: { Size: 30, Color: -10, Model: -10 },
+}
 // How well a combo part fits a column: its match on that column's CartUp list,
-// and whether it looks like a size or a colour.
-function fit(part, t, lists) {
+// whether it looks like a size or a colour, and the AI's label (role) if any.
+function fit(part, t, lists, role) {
   const sizeLike = t !== 'Color' && t !== 'Model'
   const hit = lists?.[headerKey(t)]?.match(part)
   const kind = valueKind(part)
   let s = hit ? MATCH_SCORE[hit.how] : 0
   if ((kind === 'size' && sizeLike) || (kind === 'color' && t === 'Color')) s += 20
   if ((kind === 'size' && t === 'Color') || (kind === 'color' && sizeLike)) s -= 20
+  if (ROLE_FIT[role]) s += ROLE_FIT[role][t] ?? -80
   return s
 }
 const positionBonus = (i, t) => (i === 0) === (t === 'Color') ? 3 : 0   // Daraz lists the colour first
@@ -45,9 +91,10 @@ function assign(width, targets, score) {
   pairs.sort((a, b) => b.s - a.s)   // stable: ties keep the target order
   const plan = new Array(width).fill(null), taken = new Set()
   for (const p of pairs) if (p.s > 0 && !plan[p.i] && !taken.has(p.t)) { plan[p.i] = p.t; taken.add(p.t) }
-  // A position nothing fits still gets a free column — a variant needs its value.
+  // A position nothing fits still gets a free column — a variant needs its
+  // value — but never one its label rules out (a colour in a size column).
   for (let i = 0; i < width; i++) {
-    const t = !plan[i] && targets.find(t => !taken.has(t))
+    const t = !plan[i] && targets.find(t => !taken.has(t) && score(i, t) > -50)
     if (t) { plan[i] = t; taken.add(t) }
   }
   return plan
@@ -57,20 +104,21 @@ function assign(width, targets, score) {
 // usually goes to, scored over all its SKUs. Daraz writes every variant of a
 // product the same way ("Black, 40", "Red, 41"…), so an odd value ("Type A",
 // "Zorvex Pattern 1") follows its siblings instead of being guessed alone.
-export function planParent(combos, applicable, lists) {
+// roles: the AI's labels for the product's parts ({ part: label }), if read.
+export function planParent(combos, applicable, lists, roles = null) {
   const rows = combos.map(splitCombo)
   const width = Math.max(0, ...rows.map(r => r.length))
   return assign(width, targetsFor(applicable), (i, t) => {
     const parts = rows.map(r => r[i]).filter(Boolean)
-    return (parts.length ? parts.reduce((n, p) => n + fit(p, t, lists), 0) / parts.length : 0) + positionBonus(i, t)
+    return (parts.length ? parts.reduce((n, p) => n + fit(p, t, lists, roles?.[p]), 0) / parts.length : 0) + positionBonus(i, t)
   })
 }
 
 // Columns for one SKU's parts: the product's pattern is a strong hint, but a
 // value that clearly belongs elsewhere (its siblings written in another
 // order: "38, Navy Blue" next to "Black, 40") still goes where it fits.
-export function placeParts(parts, plan, applicable, lists) {
-  return assign(parts.length, targetsFor(applicable), (i, t) => fit(parts[i], t, lists) + positionBonus(i, t) + (plan[i] === t ? 15 : 0))
+export function placeParts(parts, plan, applicable, lists, roles = null) {
+  return assign(parts.length, targetsFor(applicable), (i, t) => fit(parts[i], t, lists, roles?.[parts[i]]) + positionBonus(i, t) + (plan[i] === t ? 15 : 0))
 }
 
 // source: 'daraz' (from the seller's files), 'default' (filled in by us,
@@ -222,8 +270,12 @@ function sayKey(v, base) {
 // ("M(30-40)" → M) — only when it is different for every SKU, so a dropped
 // word never hides a difference: "M(20-30)" / "M(30-40)" are two variants
 // (compression 20-30 / 30-40 mmHg), and "M" for one and "Medium" for the
-// other would pass them off as two sizes.
+// other would pass them off as two sizes. Never for a size that spans two
+// ("L/XL" is not L).
+// A size that spans two ("L/XL", "S-M") is one value, like 37-39 — never cut to L or S.
+const spansSizes = p => { const b = String(p).split(/\s*[\/\-&]\s*/).filter(Boolean); return b.length > 1 && b.every(x => plainKind(x) === 'size') }
 function shortForms(parts, bases = []) {
+  if (parts.some(p => p && spansSizes(p))) return { bit: () => false, head: false }
   const ks = parts.map((p, k) => p ? k : -1).filter(k => k >= 0)
   const distinct = piece => {
     const keys = ks.map(k => { const x = piece(parts[k]); return x ? `${sameKey(bases[k] || '')}|${meaning(x)}` : null })
@@ -268,7 +320,7 @@ const listHit = list => name => { const h = list.match(name); return h && ['exac
 function putInColor(it, value, part, note, lists) {
   let c = it.cells.find(x => x.col === 'Color')
   if (!c) { c = makeCell('Color', value, lists); it.cells.push(c) }
-  c.auto = value; c.how = 'sizecolor'; c.note = note
+  c.auto = value; c.how = 'sizecolor'; c.note = note; c.part = part
   it.unused = it.unused.filter(x => x !== part)
 }
 
@@ -418,6 +470,44 @@ export function productFixes(items, col, lists) {
   const RANK = { range: 0.3, insole: 0.4, 'range-wider': 0.6 }
   const rank = p => p.id in RANK ? RANK[p.id] + p.newValues / 1000 : p.newValues ? 2 + p.newValues / 1000 : p.id === 'numbered' ? 1 : 0
   return plans.sort((a, b) => rank(a) - rank(b))
+}
+
+// After the rules have placed a product's parts: does each SKU agree with the
+// AI's labels (it.partRoles)? Disagreeing: a colour in a size column, a size in
+// Color while the category has a size column, a type in a size column, or a
+// colour / size left unused while its column got a value set by rule.
+// → it.aiRead 'confirmed' | 'disagree' (it.aiDisagree: [{ col, text }]).
+// Sizes put in Color are then sure (no look needed) when the AI agrees or the
+// part is plainly a size (L, XL, EU:42, M/Left).
+export function compareWithAI(items) {
+  const sizeCol = SIZE_COLS.find(c => items[0]?.applicable?.includes(c))
+  for (const it of items) {
+    const roles = it.partRoles
+    if (roles) {
+      const said = [], cellOf = col => it.cells.find(c => c.col === col)
+      for (const c of it.cells) {
+        if (!COMBO_TARGETS.includes(c.col) || c.source !== 'daraz') continue
+        const part = c.how === 'sizecolor' ? c.part : c.raw, r = roles[part]
+        if (c.col === 'Color' && c.how !== 'sizecolor' && (r === 'size' || r === 'age') && sizeCol) said.push({ col: 'Color', text: `"${part}" is a size — it went to Color, not ${sizeCol}` })
+        else if ((SIZE_COLS.includes(c.col) || c.col === 'Age Group') && (r === 'colour' || r === 'type')) said.push({ col: c.col, text: `"${part}" is ${r === 'colour' ? 'a colour' : 'not a size'} — it went to ${c.col}` })
+      }
+      for (const p of it.unused) {
+        const r = roles[p], color = cellOf('Color'), size = sizeCol && cellOf(sizeCol)
+        if (r === 'colour' && color?.source === 'fill') said.push({ col: 'Color', text: `colour "${p}" not used — Color is ${color.auto ?? color.raw}` })
+        if ((r === 'size' || r === 'age') && size?.source === 'fill') said.push({ col: sizeCol, text: `size "${p}" not used — ${sizeCol} is ${size.auto ?? size.raw}` })
+      }
+      it.aiDisagree = said
+      it.aiRead = said.length ? 'disagree' : 'confirmed'
+    }
+    for (const c of it.cells) if (c.how === 'sizecolor') c.sure = it.aiRead === 'confirmed' || plainSize(c.part)
+  }
+}
+// "L", "EU:42", "3-4 Years", "M/Left" — a size by its form alone.
+function plainSize(part) {
+  if (!part) return false
+  if (['size', 'age'].includes(plainKind(part))) return true
+  const bits = bitsOf(part)
+  return bits.length > 1 && plainKind(bits[0]) === 'size' && bits.slice(1).every(b => /^(left|right|long|short|regular)$/i.test(b))
 }
 
 // What a product's variants differ by, from its Variations Combo values:
@@ -593,7 +683,9 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   const rows = [], changes = [], newValues = new Map()
   const stats = { checked: 0, auto: 0, remembered: 0, picked: 0, kept: 0, open: 0, openValues: 0, openParents: 0, dupes: 0 }
   const attention = new Set()   // row indexes that still need a person
-  const filledRows = new Set()  // rows with a variant value set by rule (Same as picture, One Size)
+  const filledRows = new Set()  // rows with a variant value set by rule (Not Specified, One Size) worth a look
+  const ruleRows = new Set()    // every row with a variant value set by rule
+  const variantLook = new Set() // rows whose variant values need a person (buildOutput adds its flags)
   const numbered = []           // variant values numbered apart (Multicolor-1…): { row, col, value, raw }
   const sizeColor = []          // sizes put in the Color column (Grey-L…): { row, col, value, raw }
   const openValues = new Set(), openParents = new Set()
@@ -619,12 +711,12 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
       out[cell.col] = st.value
       if (st.noWarranty) noWarranty = true
       if (st.state === 'auto' && st.how === 'numbered') numbered.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
-      if (st.state === 'auto' && st.how === 'sizecolor') sizeColor.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw, note: st.note || '' })
+      if (st.state === 'auto' && st.how === 'sizecolor') sizeColor.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw, note: st.note || '', sure: !!cell.sure })
       if (cell.source === 'mark') { marked.push(colLabel(cell.col)); continue }
       if (!cell.listed) continue
       stats.checked++
       if (st.state in stats) stats[st.state]++
-      if (st.state === 'open') { openValues.add(`${cell.col}|${cell.raw.toLowerCase()}`); openParents.add(item.parent); attention.add(rowIndex) }
+      if (st.state === 'open') { openValues.add(`${cell.col}|${cell.raw.toLowerCase()}`); openParents.add(item.parent); attention.add(rowIndex); if (COMBO_TARGETS.includes(cell.col)) variantLook.add(rowIndex) }
       if (cell.source === 'fill') {
         changes.push({ sku: item.sku, parent: item.parent, name: item.name, column: colLabel(cell.col), from: '', to: st.value,
           change: st.value === cell.auto ? 'Not given — the category needs it, set by rule' : changeLabel(st), detail: item.combo ? `Variations Combo "${item.combo}"` : 'No variants' })
@@ -661,10 +753,15 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
     if (marked.length) notes.push(`Marked Yes — the category needs: ${marked.join(', ')} (Variations Combo not matched: "${item.combo}")`)
     if (fresh.length) notes.push(`Not on CartUp list (#N/A until added or matched): ${fresh.join(', ')}`)
     if (changed.length) notes.push(`Changed: ${changed.join(', ')}`)
-    if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex) }
+    if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex); variantLook.add(rowIndex) }
     if (item.unused.length) notes.push(`Not used from Variations Combo: ${item.unused.join(', ')}`)
+    if (item.aiRead === 'slip') notes.push(`AI reading of Variations Combo dropped (${item.aiSlips.join('; ')}) — the rules decided`)
     out['Report'] = notes.filter(Boolean).join(' | ')
-    if (filled.length) filledRows.add(rowIndex)
+    // A value set by rule needs a look only when something in the combo went
+    // unused (it might have been the value) and the AI didn't confirm the reading;
+    // an empty combo → Not Specified / One Size is the rule, nothing to check.
+    if (filled.length) ruleRows.add(rowIndex)
+    if (filled.length && item.aiRead !== 'confirmed' && item.unused.some(p => plainKind(p) !== 'none')) { filledRows.add(rowIndex); variantLook.add(rowIndex) }
     rows.push(out)
   })
   for (const d of result.duplicateSkus) {
@@ -672,5 +769,5 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, numbered, sizeColor }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, ruleRows, variantLook, numbered, sizeColor }
 }
