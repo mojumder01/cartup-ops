@@ -66,7 +66,7 @@ function FileInput({ label, required, onChange, file, current, hint, check, chec
   )
 }
 
-const SHEET_COLS = OUTPUT_COLS.filter(c => c !== 'Report')
+const SHEET_COLS = OUTPUT_COLS.filter(c => c !== 'Report' && c !== 'Check')
 const BATCH = 5   // products per AI request (processor.js)
 
 export default function DarazUpload() {
@@ -102,6 +102,7 @@ export default function DarazUpload() {
   const [stockValue, setStockValue] = useState('0')
   const [aiRun, setAiRun]         = useState(null)     // AI calls of the latest run: { start, end }
   const [copied, setCopied]       = useState(false)
+  const [lastFile, setLastFile]   = useState(null)   // the last download: { name, parts, hiddenErrors, template }
   const [keyFile, setKeyFile]     = useState(null)
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   // mode 'link': a Daraz link column + a key column · 'columns': keys per Seller SKU, one column per image
@@ -121,7 +122,7 @@ export default function DarazUpload() {
   const stats = output?.stats
   // What still needs a look, for the check list (same counts as the review window and sheet view).
   const values = useMemo(() => result && result.template ? valueGroups(result, decisions, memory) : [], [result, decisions, memory])
-  const issues = useMemo(() => output ? sheetIssues(output, SHEET_COLS, result.lists) : new Map(), [output])
+  const issues = useMemo(() => output ? sheetIssues(output, SHEET_COLS, result.lists, result.items) : new Map(), [output])
   const checks = useMemo(() => output ? buildChecklist({ result, output, issues, values, imageKeys }) : [], [output, issues, values])
   const toFix = checks.filter(c => c.level === 'fix' && c.count).length
   const toCheck = checks.filter(c => c.level === 'check' && c.count).length
@@ -217,14 +218,16 @@ export default function DarazUpload() {
   }
 
   async function download(res = result, dec = decisions, ed = edits) {
-    let bytes
-    try { ({ bytes } = await buildDarazWorkbook(res, dec, memory, { ...options, activeOnly, edits: ed })) }
+    let file
+    // With the CartUp template the template itself is filled (its columns and formulas kept).
+    try { file = await buildDarazWorkbook(res, dec, memory, { ...options, activeOnly, edits: ed, template: res.template ? files.template : null }) }
     catch (e) { setError(`Could not build the file: ${e.message}`); return }
-    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const blob = new Blob([file.bytes], { type: file.name.endsWith('.zip') ? 'application/zip' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
-    a.href = url; a.download = 'cartup_daraz_output.xlsx'; a.click()
+    a.href = url; a.download = file.name; a.click()
     URL.revokeObjectURL(url)
+    setLastFile({ name: file.name, parts: file.parts, hiddenErrors: file.hiddenErrors, template: !!(res.template && files.template) })
     setMemory(rememberDecisions(dec))
   }
 
@@ -251,9 +254,9 @@ export default function DarazUpload() {
     output.rules.stockSet && `${output.rules.stockSet} stocks set to ${stockSet}`,
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at 99,999`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
-    output.rules.lowWeight && `${output.rules.lowWeight} weights starting with 0.00 flagged`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
-    output.excluded.size && `${output.excluded.size} rows without Image 1 or a variant image left out`,
+    output.excluded.size && `${output.excluded.size} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
+    output.filledRows?.size && `${output.filledRows.size} rows with Color / Model / Size set by rule`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
 
@@ -322,8 +325,8 @@ export default function DarazUpload() {
             ))}
             <span style={{ fontSize:11.5, color:'#94a3b8' }}>
               {aiFields.name && aiFields.highlights && aiFields.description ? 'Gemini fixes spelling and grammar in all three'
-                : !aiFields.name && !aiFields.highlights && !aiFields.description ? 'all off — no AI requests for the content (local clean-up only; categories still use AI)'
-                : `unticked: local clean-up only (${['name', 'highlights', 'description'].filter(k => !aiFields[k]).join(', ')})`}
+                : !aiFields.name && !aiFields.highlights && !aiFields.description ? 'all off — no AI requests: names get the spelling rules, highlights and description come from the Basic file as they are'
+                : `unticked — ${['name', 'highlights', 'description'].filter(k => !aiFields[k]).map(k => k === 'name' ? 'name: spelling rules only' : `${k}: from the Basic file as it is`).join(' · ')}`}
               {result?.ai && ['name', 'highlights', 'description'].some(k => (result.ai.fields?.[k] ?? true) !== aiFields[k]) ? ' · applies when you process again' : ''}
             </span>
           </div>
@@ -416,7 +419,7 @@ export default function DarazUpload() {
         {apiKey ? (
           <div style={{ background: pool.left ? '#eef2ff' : '#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color: pool.left ? '#4338ca' : '#92400e', marginTop:12, lineHeight:1.6 }}>
             <Zap size={13} style={{ verticalAlign:'middle', marginRight:6 }} />
-            AI on — {[aiFields.name && 'names', aiFields.highlights && 'highlights', aiFields.description && 'description'].filter(Boolean).join(', ')}{aiFields.name || aiFields.highlights || aiFields.description ? ' & ' : ''}categories with Gemini ({pool.models[0]?.label || 'no model'}) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
+            AI on — {[aiFields.name && 'names', aiFields.highlights && 'highlights', aiFields.description && 'description'].filter(Boolean).join(', ') || 'nothing ticked'} with Gemini ({pool.models[0]?.label || 'no model'}) · categories by the mapping table (no AI) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
             {' · '}<b>{pool.left.toLocaleString()}</b> requests left today (≈ {(pool.left * BATCH).toLocaleString()} products) · ≈ {pool.perMinute}/min · resets {resetText()}
             {!pool.left && <> — today's limit is used: names get the spelling fix only. Add or tick keys/models in Profile, or wait for the reset.</>}
           </div>
@@ -442,7 +445,7 @@ export default function DarazUpload() {
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 16px', background:'#dcfce7', color:'#166534', fontSize:13, fontWeight:600 }}>
               <CheckCircle size={14} /> Processed — {(rows - output.excluded.size).toLocaleString()} rows
               <span style={{ fontWeight:500 }}>
-                {result.invalidRows.length + output.excluded.size ? ` · ${(result.invalidRows.length + output.excluded.size).toLocaleString()} in "invalid" (missing Product ID, Seller SKU, name, price or image)` : ''}
+                {result.invalidRows.length + output.excluded.size ? ` · ${(result.invalidRows.length + output.excluded.size).toLocaleString()} in "invalid" (no name, price, weight${imageKeys ? ' or image key' : ''})` : ''}
                 {result.duplicateSkus.length ? ` · ${result.duplicateSkus.length} repeated Seller SKU rows removed` : ''}
                 {result.skipped ? ` · ${result.skipped.toLocaleString()} inactive rows left out` : ''}
               </span>
@@ -515,6 +518,13 @@ export default function DarazUpload() {
                   <Table2 size={14} /> View &amp; edit sheet{needs ? ` (${needs} rows to check)` : ''}
                 </button>
                 <button onClick={() => download()} style={btn(false)}><Download size={14} /> Download file</button>
+              </div>
+              <div data-file-kind style={{ fontSize:11.5, color:'#64748b', marginTop:6 }}>
+                {result.template && files.template
+                  ? 'The file is your CartUp upload template, filled in — every column, dropdown and hidden formula kept; Report and Check after its last column; the report tabs after its sheets.'
+                  : 'No CartUp template: the file has the template\'s columns in its order — add the template to get the real upload file with its formulas.'}
+                {lastFile && <> · Last download: <b>{lastFile.name}</b>{lastFile.parts > 1 ? ` (${lastFile.parts} files — the template holds fewer rows)` : ''}
+                  {lastFile.hiddenErrors ? <span style={{ color:'#b91c1c' }}> · {lastFile.hiddenErrors} hidden-sheet errors (#N/A) — listed in "to check"</span> : ''}</>}
               </div>
 
               {/* The run in a few lines — the same text as the "summary" sheet's one cell */}

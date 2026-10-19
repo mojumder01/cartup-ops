@@ -2,15 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { headerKey, colLabel } from '../utils/variantReview'
 import { ISSUE_TYPES } from '../utils/checks'
-import { X, Search, Download, RotateCcw, Check, AlertTriangle, ImageOff, Filter, ChevronRight } from 'lucide-react'
+import { X, Search, Download, RotateCcw, Check, AlertTriangle, ImageOff, Filter, ChevronRight, Replace } from 'lucide-react'
 
 // The whole output sheet, Excel-style: every row and column, problem cells
 // marked, any cell editable. Rows are virtualised so thousands stay smooth.
 //   red    — would be rejected: not on CartUp's list (#N/A), no category, required and empty
-//   amber  — flagged: weight starting with 0.00, image link without a key…
+//   amber  — flagged: image without a key, special price removed, value set by rule…
 //   blue   — edited here
 // Filter by problem type or by column (click a column's count), jump from
-// problem to problem, and give one value to every SKU of a Parent SKU at once.
+// problem to problem, give one value to every SKU of a Parent SKU at once, or
+// find & replace a value in hundreds of cells in one go.
 // Edits are kept per Seller SKU and applied (and logged) when the file is built.
 
 const ROW_H = 30, HEAD_H = 34, FIRST_W = 210
@@ -34,6 +35,9 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
   const [height, setHeight] = useState(600)
   const scroller = useRef(null)
   const input = useRef(null)
+  // Find & replace: { find, to, col ('' = every column), whole, matchCase, inView }
+  const [fr, setFr] = useState(null)
+  const [frDone, setFrDone] = useState('')
 
   useEffect(() => {
     const el = scroller.current
@@ -175,6 +179,34 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
     }
   }
 
+  // Find & replace — every matching cell becomes a hand edit (logged, undoable per cell).
+  const escapeRe = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const frMatches = useMemo(() => {
+    if (!fr || !fr.find) return []
+    const cols = fr.col ? [fr.col] : columns
+    const re = new RegExp(fr.whole ? `^\\s*${escapeRe(fr.find.trim())}\\s*$` : escapeRe(fr.find), fr.matchCase ? 'g' : 'gi')
+    const pool = fr.inView ? shown : rows.map((_, i) => i)
+    const out = []
+    for (const i of pool) for (const c of cols) {
+      const v = String(rows[i][c] ?? '')
+      re.lastIndex = 0
+      if (v && re.test(v)) { re.lastIndex = 0; out.push({ i, c, from: v, to: fr.whole ? fr.to : v.replace(re, () => fr.to) }) }
+    }
+    return out
+  }, [fr, rows, columns, shown])
+  const frRows = useMemo(() => new Set(frMatches.map(m => m.i)).size, [frMatches])
+  const frList = fr?.col && lists?.[headerKey(fr.col)]
+  const frOnList = !frList || !fr.to.trim() || frList.match(fr.to.trim())?.how === 'exact'
+  const replaceAll = () => {
+    if (!frMatches.length) return
+    setEdits(prev => {
+      const next = { ...prev }
+      for (const m of frMatches) next[keyOf(m.i)] = { ...(next[keyOf(m.i)] || {}), [m.c]: m.to }
+      return next
+    })
+    setFrDone(`Replaced in ${frMatches.length.toLocaleString()} cell${frMatches.length === 1 ? '' : 's'} (${frRows.toLocaleString()} row${frRows === 1 ? '' : 's'}) — they are hand edits now (Edited by hand shows them)`)
+  }
+
   const tbtn = { display:'flex', alignItems:'center', gap:6, padding:'7px 12px', borderRadius:8, fontSize:12.5, fontWeight:600, cursor:'pointer', border:'1.5px solid #e2e8f0', background:'#fff', color:'#334155' }
   const cellBg = (lvl, edited) => lvl === 'error' ? '#fee2e2' : lvl === 'warn' ? '#fef3c7' : edited ? '#eff6ff' : '#fff'
 
@@ -211,6 +243,8 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
               style={{ padding:'7px 10px 7px 28px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:12.5, width:200 }} />
           </div>
           <button onClick={nextProblem} disabled={!shown.length} style={tbtn} title="Next problem cell (F8)">Next problem <ChevronRight size={13} /></button>
+          <button onClick={() => { setFr(f => f ? null : { find: sel ? String(rows[sel.i][sel.col] ?? '') : '', to: '', col: sel?.col || colOnly || '', whole: !!sel, matchCase: false, inView: false }); setFrDone('') }}
+            style={{ ...tbtn, ...(fr ? { background:'#eef2ff', borderColor:'#c7d2fe', color:'#3730a3' } : {}) }} title="Replace a value in many cells at once"><Replace size={13} /> Find &amp; replace</button>
           <div style={{ display:'flex', gap:10, fontSize:11, color:'#64748b', marginLeft:'auto', alignItems:'center' }}>
             <span><span style={{ display:'inline-block', width:10, height:10, background:'#fee2e2', border:'1px solid #fecaca', marginRight:4 }} />fix</span>
             <span><span style={{ display:'inline-block', width:10, height:10, background:'#fef3c7', border:'1px solid #fde68a', marginRight:4 }} />check</span>
@@ -219,6 +253,31 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
           <button onClick={onDownload} style={{ ...tbtn, background:'#4f46e5', borderColor:'#4f46e5', color:'#fff' }}><Download size={14} /> Download file</button>
           <button onClick={onClose} style={{ ...tbtn, padding:7 }} title="Close"><X size={15} /></button>
         </div>
+
+        {/* Find & replace */}
+        {fr && (
+          <div data-find-replace style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', flexWrap:'wrap', fontSize:12 }}>
+            <input aria-label="Find" value={fr.find} onChange={e => { setFr({ ...fr, find: e.target.value }); setFrDone('') }} placeholder="Find (e.g. Multi Color)"
+              style={{ padding:'6px 9px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12.5, width:190 }} />
+            <span style={{ color:'#64748b' }}>→</span>
+            <input aria-label="Replace with" value={fr.to} onChange={e => { setFr({ ...fr, to: e.target.value }); setFrDone('') }} placeholder="Replace with (empty = clear)"
+              style={{ padding:'6px 9px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12.5, width:190 }} />
+            <select aria-label="In column" value={fr.col} onChange={e => { setFr({ ...fr, col: e.target.value }); setFrDone('') }}
+              style={{ padding:'6px 8px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12, background:'#fff', maxWidth:190 }}>
+              <option value="">Every column</option>
+              {columns.map(c => <option key={c} value={c}>{colLabel(c)}</option>)}
+            </select>
+            <label style={{ display:'flex', alignItems:'center', gap:4, cursor:'pointer' }}><input type="checkbox" checked={fr.whole} onChange={e => setFr({ ...fr, whole: e.target.checked })} style={{ accentColor:'#4f46e5' }} /> Whole cell</label>
+            <label style={{ display:'flex', alignItems:'center', gap:4, cursor:'pointer' }}><input type="checkbox" checked={fr.matchCase} onChange={e => setFr({ ...fr, matchCase: e.target.checked })} style={{ accentColor:'#4f46e5' }} /> Match case</label>
+            <label style={{ display:'flex', alignItems:'center', gap:4, cursor:'pointer' }}><input type="checkbox" checked={fr.inView} onChange={e => setFr({ ...fr, inView: e.target.checked })} style={{ accentColor:'#4f46e5' }} /> Only rows shown</label>
+            <span data-fr-count style={{ color: frMatches.length ? '#334155' : '#94a3b8' }}>
+              {fr.find ? `${frMatches.length.toLocaleString()} cell${frMatches.length === 1 ? '' : 's'} in ${frRows.toLocaleString()} row${frRows === 1 ? '' : 's'}` : 'type what to find'}
+            </span>
+            {!frOnList && <span style={{ color:'#b45309' }}>"{fr.to}" isn't on CartUp's {colLabel(fr.col)} list (#N/A)</span>}
+            <button onClick={replaceAll} disabled={!frMatches.length} style={{ ...tbtn, padding:'5px 12px', background: frMatches.length ? '#4f46e5' : '#e2e8f0', borderColor: frMatches.length ? '#4f46e5' : '#e2e8f0', color:'#fff' }}>Replace all</button>
+            {frDone && <span data-fr-done style={{ color:'#15803d' }}>{frDone}</span>}
+          </div>
+        )}
 
         {/* Grid */}
         <div ref={scroller} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ flex:1, overflow:'auto', position:'relative', fontSize:12 }}>

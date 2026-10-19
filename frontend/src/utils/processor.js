@@ -1,9 +1,10 @@
 import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
 import MAPPINGS from './mappings.json'
-import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
+import { processProductsBatch, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
-import { loadTemplate, weightNeedsCheck } from './shopDuplicate'
+import { loadTemplate, writeTemplate, chunkRows, zipFiles } from './shopDuplicate'
+import { colToNum, numToCol } from './xlsxFormula'
 import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
@@ -12,15 +13,23 @@ import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts,
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
-const SECTIONS = [
-  { name: 'Basic Information',   color: 'FFD9E1F2', cols: 15 },
-  { name: 'Product Attribute',   color: 'FFE2EFDA', cols: 8  },
-  { name: 'Product Description', color: 'FFFCE4D6', cols: 5  },
-  { name: 'Service',             color: 'FFFFF2CC', cols: 4  },
-  { name: 'Delivery',            color: 'FFDDEBF7', cols: 4  },
-  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 15 },
-  { name: 'Extra',               color: 'FFEDEDED', cols: 4  },
+// The CartUp upload template's columns, in its order — for a file made without
+// the template (with it, the template itself is filled). [section, headers];
+// a header that isn't one of ours (Storage, Free Items) stays empty, never dropped.
+const TEMPLATE_LAYOUT = [
+  ['Basic Information', ['**Category Id', '**Name (English)', 'Name (Bengali)', '**Product Image 1', 'Product Image 2', 'Product Image 3', 'Product Image 4',
+    'Product Image 5', 'Product Image 6', 'Product Image 7', 'Product Image 8', 'VideoUrl', '**Brand', '**Unit', 'Tags']],
+  ['Product Attribute', ['Clothing Materials', 'Shoe Material', 'Bag Material', 'Dial Materials', 'Strap Materials', 'Recommended Age', 'Watch Type',
+    'Main Materials', 'ISBN/ISSN', 'Storage', 'Storage']],
+  ['Product Description', ['Highlights(English)', 'Highlights(Bengali)', 'Description (Bengali)', 'Description (English)', "What's in the box"]],
+  ['Service', ['Warranty Policy(English)', 'Warranty Policy(Bangla)', 'Warranty Type', 'Warranty Period']],
+  ['Delivery', ['**Package Weight (kg)', '**Package Length(cm)', '*Package Width (cm)', '*Package Height(cm)']],
+  ['Variant Attribute', ['Clothing Size', 'Color', 'Model', 'Age Group', 'Size', 'Shoe Size', 'Bedding Size', '**Seller SKU', '**Parent Sku', '*Variant Image',
+    '**Current Stock Qty', '**Price(MRP)', 'Special Price', 'Special Start Date', 'Special End Date', 'Free Items']],
+  ['Extra', ['Report', 'Check', 'Cartup Category Path', 'Variations Combo', 'status']],
 ]
+// Template headers named differently from our columns (by headerKey).
+const TEMPLATE_KEY = { specialpricestartdate: 'specialstartdate', specialpriceenddate: 'specialenddate' }
 
 export const OUTPUT_COLS = [
   '**Category Id','**Name (English)','Name (Bengali)',
@@ -28,15 +37,17 @@ export const OUTPUT_COLS = [
   'Product Image 5','Product Image 6','Product Image 7','Product Image 8',
   'VideoUrl','**Brand','**Unit','Tags',
   'Clothing Materials','Shoe Material','Bag Material','Dial Materials',
-  'Strap Materials','Recommended Age','Watch Type','Main Materials',
+  'Strap Materials','Recommended Age','Watch Type','Main Materials','ISBN/ISSN',
   'Highlights(English)','Highlights(Bengali)','Description (Bengali)','Description (English)',"What's in the box",
   'Warranty Policy(English)','Warranty Policy(Bangla)','Warranty Type','Warranty Period',
   '**Package Weight (kg)','**Package Length(cm)','*Package Width (cm)','*Package Height(cm)',
   'Clothing Size','Color','Model','Age Group','Size','Shoe Size','Bedding Size',
   '**Seller SKU','**Parent Sku','*Variant Image','**Current Stock Qty',
   '**Price(MRP)','Special Price','Special Price Start Date','Special Price End Date',
-  'status','Cartup Category Path','Variations Combo','Report'
+  'status','Cartup Category Path','Variations Combo','Report','Check'
 ]
+// Template header key → our column.
+const OUR_COL = Object.fromEntries(OUTPUT_COLS.map(c => [TEMPLATE_KEY[headerKey(c)] ?? headerKey(c), c]))
 
 // Daraz HTML → only the allowed tags, without their attributes (Daraz writes
 // <li style="…">, <ul class="…">); every other tag goes, its text stays.
@@ -96,10 +107,6 @@ function localContent({ name, highlights, description }) {
   return { name, highlights, description }
 }
 
-function getCartupCategories() {
-  return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
-}
-
 // The CartUp upload template's dropdown lists (Color, Size, Brand, Warranty…)
 // — what the hidden payload sheet looks values up in; a value not on its list
 // shows #N/A there and the upload rejects the row. header key → listMatcher.
@@ -123,9 +130,10 @@ export function templateLists(file) {
 // template; stage 3 (buildOutput) applies decisions, rules and hand edits.
 // options.activeOnly: only rows whose status is "active".
 export async function processDarazFiles(files, apiKey, onProgress, options = {}) {
-  // options.aiFields: { name, highlights, description } — false: that field gets
-  // the local clean-up only (spelling rules for names). All off: no AI requests
-  // for the content (unmapped categories still ask the AI).
+  // options.aiFields: { name, highlights, description } — false: the name gets
+  // the spelling rules only; highlights / description are taken from the Basic
+  // file as they are (a plain lookup, no clean-up). All off: no AI requests.
+  // Categories never use the AI: the mapping table, or a note in Report.
   const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false }
   const aiName = aiFields.name, aiContent = aiFields.name || aiFields.highlights || aiFields.description
   onProgress('Reading files...')
@@ -147,10 +155,11 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     lists = await templateLists(files.template)
   }
 
-  const brandDict = {}
+  const brandDict = {}, isbnDict = {}
   if (files.attr) {
-    for (const { pid, brand } of await darazRows(files.attr, 'attr')) {
+    for (const { pid, brand, isbn } of await darazRows(files.attr, 'attr')) {
       if (pid && !brandDict[pid]) brandDict[pid] = brand || 'No Brand'
+      if (pid && isbn && !isbnDict[pid]) isbnDict[pid] = isbn
     }
   }
 
@@ -173,7 +182,6 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     if (sku && !skuDict[sku]) skuDict[sku] = r
   }
 
-  const cartupCategories = getCartupCategories()
   const BATCH_SIZE = 5
 
   // ── Step 1: Collect unique PIDs and their content ──────────────────────────
@@ -183,11 +191,13 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     const name = String(row['*Product Name(English)'] || '').trim()
     if (pid && !uniquePids[pid]) {
       const b = basicDict[pid] || {}
+      const rawHighlights = String(b['*Highlights'] || b['Highlights'] || ''), rawDescription = String(b['Main Description'] || '')
       uniquePids[pid] = {
         pid,
         name,
-        highlights:  cleanHighlights(String(b['*Highlights'] || b['Highlights'] || '')),
-        description: cleanDescription(String(b['Main Description'] || '')),
+        highlights:  cleanHighlights(rawHighlights),
+        description: cleanDescription(rawDescription),
+        rawHighlights, rawDescription,
       }
     }
   }
@@ -228,42 +238,15 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     }
   }
 
-  // Apply word replacements to name, highlights, description
-  for (const pid of Object.keys(aiCache)) {
-    const c = aiCache[pid]
-    aiCache[pid] = {
+  // Apply word replacements to name, highlights, description — an unticked
+  // highlights / description is the Basic file's text as it is.
+  for (const p of pidList) {
+    const c = aiCache[p.pid]
+    aiCache[p.pid] = {
       name:        applyReplacements(c.name),
-      highlights:  applyReplacements(c.highlights),
-      description: applyReplacements(c.description),
+      highlights:  aiFields.highlights ? applyReplacements(c.highlights) : p.rawHighlights.trim(),
+      description: aiFields.description ? applyReplacements(c.description) : p.rawDescription.trim(),
     }
-  }
-
-  // ── Step 3: Collect unique unmapped catIds for AI category match ────────────
-  const catMatchCache = {}  // catId → {cartupId, cartupPath, tags, reportNote}
-  const unmappedCats = [...new Set(
-    priceRows
-      .map(r => String(r['catId'] || '').trim())
-      .filter(cat => cat && !mystery_cats.includes(cat) && !daraz_to_cartup[cat])
-  )]
-
-  if (apiKey && unmappedCats.length) {
-    onProgress(`AI matching ${unmappedCats.length} unmapped categories...`)
-    const catTasks = unmappedCats.map(cat => async () => {
-      const sampleRow = priceRows.find(r => String(r['catId'] || '').trim() === cat)
-      const sampleName = String(sampleRow?.['*Product Name(English)'] || '').trim()
-      if (!sampleName) { catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat}` }; return }
-      let matched = null, failed = ''
-      try { matched = await matchCategory(sampleName, cartupCategories, apiKey) } catch (e) { failed = e.message }
-      if (failed) {
-        catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat} (AI unavailable: ${failed.slice(0, 80)})` }
-      } else if (matched) {
-        const cid = matched.id || ''
-        catMatchCache[cat] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: `[AI] ${matched.reason || 'AI matched'}` }
-      } else {
-        catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat}` }
-      }
-    })
-    await runConcurrent(catTasks)
   }
 
   // ── Step 4: Build output rows — separate valid vs invalid ──────────────────
@@ -303,7 +286,8 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     const img1   = String(b['*Product Images1'] || '').trim()
     const skuImg = String(s['Images1'] || '').trim()
 
-    // ── Resolve cartupId early (needed for variant type check) ────────────────
+    // ── CartUp category: the mapping table only (a lookup — no AI) ────────────
+    // No match: the row stays, Report says so and the Category Id is filled by hand.
     const isMystery = mystery_cats.includes(cat)
     let cartupId = '', cartupPath = '', tags = '', reportNote = ''
     if (!isMystery) {
@@ -311,14 +295,12 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       if (cartupId) {
         cartupPath = cartup_map[cartupId]?.path || ''
         tags       = cartup_map[cartupId]?.tags || ''
-        reportNote = manual_cats.includes(cat) ? `Manually mapped (Daraz catId=${cat})` : 'OK'
-      } else if (catMatchCache[cat]) {
-        ;({ cartupId, cartupPath, tags, reportNote } = catMatchCache[cat])
+        if (manual_cats.includes(cat)) reportNote = `Category mapped by hand (Daraz category ${cat})`
       } else {
-        reportNote = `No category match for Daraz catId=${cat}`
+        reportNote = `No CartUp category for Daraz category ${cat} — fill in the Category Id`
       }
     } else {
-      reportNote = 'Mystery/Surprise Box — no category. Manual review needed.'
+      reportNote = `Mystery/surprise box (Daraz category ${cat}) — no CartUp category; fill in the Category Id`
     }
 
     const applicable = cat_variant_map[cartupId] || []
@@ -332,13 +314,15 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     const variantImage = skuImg || (hasColorVariant ? '' : img1)
 
     // ── Validity check ────────────────────────────────────────────────────────
+    // Left out only for: no name, no price (MRP) — and no Product ID / Seller
+    // SKU, without which a row can't be uploaded at all. No weight and (with an
+    // image key file) no image key are decided when the file is built, as hand
+    // edits can still fill them. Anything else stays, with a note in Report.
     const missing = []
     if (!pid)          missing.push('Product ID missing')
     if (!sku)          missing.push('Seller SKU missing')
     if (!name)         missing.push('Name missing')
-    if (!price)        missing.push('Price missing')
-    if (!img1)         missing.push('Image 1 missing')
-    if (!variantImage && missing.length) missing.push('Variant Image missing')
+    if (!price)        missing.push('Price (MRP) missing')
 
     if (missing.length > 0) {
       invalidRows.push({
@@ -393,6 +377,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       'Recommended Age':          '',
       'Watch Type':               '',
       'Main Materials':           '',
+      'ISBN/ISSN':                isbnDict[pid] || '',
       'Highlights(English)':      highlights,
       'Highlights(Bengali)':      highlights,
       'Description (Bengali)':    description,
@@ -465,6 +450,8 @@ function warrantyRules(it, lists) {
   }
 }
 
+const FILL_DEFAULTS = { Color: 'Same as picture', Model: 'Same as picture', Size: 'One Size', 'Clothing Size': 'One Size', 'Shoe Size': 'One Size', 'Bedding Size': 'One Size' }
+
 // Stage 2 — every dropdown value against the template's lists (or none, when
 // no template is given). Repeatable: a newer template only re-runs this.
 export function matchItems(items, lists) {
@@ -476,6 +463,12 @@ export function matchItems(items, lists) {
       const placed = placeParts(parts, plan, it.applicable, lists)
       it.cells = []; it.unused = []; it.fixed = {}; it.ruleChanges = []
       parts.forEach((part, p) => placed[p] ? it.cells.push(makeCell(placed[p], part, lists)) : it.unused.push(part))
+      // A variant column the category needs but the seller didn't fill (no
+      // variant, or a variant of another kind): Color / Model → "Same as
+      // picture", a size → "One Size" — in the list's own spelling.
+      for (const [col, value] of Object.entries(FILL_DEFAULTS)) {
+        if (it.applicable.includes(col) && !it.cells.some(c => c.col === col)) it.cells.push(makeCell(col, value, lists, 'fill'))
+      }
       // Every other dropdown column (Brand, Unit, Warranty…).
       if (lists) {
         for (const col of OUTPUT_COLS) {
@@ -512,13 +505,14 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const applied = applyDecisions(result, decisions, memory)
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {} } = options
   const problems = [], excluded = new Set(), leftOut = []
-  const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0,
-    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, edited: 0, specialPrices: 0 }
+  const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
+    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, edited: 0, specialPrices: 0 }
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
     const log = (column, from, to, change) => applied.changes.push({ sku: item.sku, parent: item.parent, name: item.name, column, from: String(from ?? ''), to: String(to ?? ''), change, detail: '' })
-    const flag = (column, problem) => { problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem }); applied.attention.add(i) }
+    // type (optional): the sheet's problem type for this flag (see checks.js ISSUE_TYPES)
+    const flag = (column, problem, type) => { problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem, type }); applied.attention.add(i) }
     const notes = []
 
     for (const [c, v] of Object.entries(item.fixed || {})) out[c] = v
@@ -545,15 +539,20 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       rules.stockCapped++
     }
 
-    // Special price: only when wanted; a 75%+ discount is removed; dates = today → the chosen end.
-    const sp = Number(out['Special Price']), mrp = Number(out['**Price(MRP)'])
+    // Special price: only when wanted; a discount of 75% or more (up to 100% —
+    // a special price of 0) removes the special price, never the SKU; dates =
+    // today → the chosen end.
+    const spText = String(out['Special Price'] ?? '').trim()
+    const sp = Number(spText), mrp = Number(out['**Price(MRP)'])
     const clearSpecial = () => { out['Special Price'] = ''; out['Special Price Start Date'] = ''; out['Special Price End Date'] = '' }
-    if (!specialPrice.include || !(sp > 0)) clearSpecial()
+    if (!specialPrice.include || spText === '' || Number.isNaN(sp)) clearSpecial()
     else if (mrp > 0 && 1 - sp / mrp >= 0.75) {
-      const pct = Math.round((1 - sp / mrp) * 100)
-      log('Special Price', out['Special Price'], '', `Removed — ${pct}% discount (75% or more)`)
+      const pct = Math.min(100, Math.round((1 - sp / mrp) * 100))
+      const why = `Special price ${spText} removed — ${pct}% discount (75% or more); the SKU stays`
+      log('Special Price', spText, '', why)
       notes.push(`Special price removed: ${pct}% discount`)
       clearSpecial()
+      flag('Special Price', why, 'spremoved')
       rules.discountRemoved++
     } else {
       out['Special Price Start Date'] = specialPrice.start
@@ -600,43 +599,64 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       const colour = item.combo && item.applicable?.includes('Color')
       if (!String(out['*Variant Image']).trim() && out['**Product Image 1'] && !colour) out['*Variant Image'] = out['**Product Image 1']
     }
-    // No Image 1 or no variant image (a colour variant without one in the SKU
-    // Image file, or no key for it): left out of the upload, listed in "invalid".
+    // Left out of the upload only for: no package weight, or (with an image
+    // key file) no CartUp key for Image 1 / the Variant Image. Without a key
+    // file a missing image is flagged and the row stays. Decided after the
+    // hand edits, so a weight or key typed in the sheet keeps the row.
+    const reasons = []
     const noImg1 = !String(out['**Product Image 1'] ?? '').trim(), noVariant = !String(out['*Variant Image'] ?? '').trim()
-    if (noImg1 || noVariant) {
-      const keyed = imageKeys ? ' (no CartUp image key)' : ''
-      if (noImg1) { flag('**Product Image 1', `No Image 1${keyed} — row left out ("invalid")`); rules.leftNoImage++ }
-      if (noVariant) { flag('*Variant Image', `No variant image${keyed} — add it with an image key file or in the sheet, or the row goes to "invalid"`); rules.leftNoVariant++ }
+    if (imageKeys) {
+      if (noImg1) { flag('**Product Image 1', 'No CartUp image key for Image 1 — row left out ("invalid")', 'leftout'); reasons.push('Image 1: no CartUp image key'); rules.leftNoImage++ }
+      if (noVariant) { flag('*Variant Image', 'No CartUp image key for the Variant Image — row left out ("invalid")', 'leftout'); reasons.push('Variant Image: no CartUp image key'); rules.leftNoVariant++ }
+    } else {
+      if (noImg1) { flag('**Product Image 1', 'Image 1 missing (product not in the Basic file) — add it', 'noimage'); notes.push('Image 1 missing — add it') }
+      if (noVariant) { flag('*Variant Image', 'Variant Image missing (colour variant not in the SKU Image file) — add it', 'noimage'); notes.push('Variant Image missing — add it') }
+    }
+    if (!String(out['**Package Weight (kg)'] ?? '').trim()) {
+      flag('**Package Weight (kg)', 'No package weight — row left out ("invalid"); type the weight to keep it', 'leftout')
+      reasons.push('Package weight empty')
+      rules.leftNoWeight++
+    }
+    if (reasons.length) {
       excluded.add(i)
+      notes.push(`Left out: ${reasons.join(', ')}`)
       leftOut.push({ 'Product ID': out['**Parent Sku'], 'SellerSKU': out['**Seller SKU'], 'Product Name': out['**Name (English)'], 'catId': item.darazCat ?? '',
         'Price': out['**Price(MRP)'], 'Image 1': out['**Product Image 1'], 'Variant Image': out['*Variant Image'], 'Quantity': out['**Current Stock Qty'], 'Status': out['status'],
-        'Report': [noImg1 && `Image 1 missing${keyed}`, noVariant && (item.pendingVariant && !imageKeys ? 'Variant Image missing (colour variant — not in the SKU Image file)' : `Variant Image missing${keyed}`)].filter(Boolean).join(' | ') })
-    }
-    // Weight starting with 0.00 (0.001–0.009) or none at all: CartUp may show a delivery charge of 0.
-    if (weightNeedsCheck(out['**Package Weight (kg)'])) {
-      flag('**Package Weight (kg)', 'Starts with 0.00 (or no weight) — CartUp may show a delivery charge of 0')
-      notes.push('Weight to check (0.00x)')
-      rules.lowWeight++
+        'Report': reasons.join(' | ') })
     }
     // A special price must be below the price (checked after edits, so a fixed one isn't flagged).
     const spNow = Number(out['Special Price']), mrpNow = Number(out['**Price(MRP)'])
     if (spNow > 0 && mrpNow > 0 && spNow >= mrpNow) {
-      flag('Special Price', `Not below the price (${out['**Price(MRP)']}) — CartUp may reject it`)
+      flag('Special Price', `Not below the price (${out['**Price(MRP)']}) — CartUp may reject it`, 'price')
       rules.spNotBelow++
     }
     const stockText = String(out['**Current Stock Qty'] ?? '').trim()
     if (stockText !== '' && Number(stockText) === 0) rules.stockZero++
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
+    // Check = YES: the row needs a person's look (a flag, a value set by rule,
+    // no category, left out) — the reason is in Report.
+    out['Check'] = applied.attention.has(i) || applied.filledRows?.has(i) || !String(out['**Category Id'] ?? '').trim() || excluded.has(i) ? 'YES' : ''
   })
   // excluded: row indexes left out of the upload (leftOut: their "invalid" rows)
   return { ...applied, problems, rules, excluded, leftOut }
 }
 
-// The output workbook for a processed run: decisions, rules and edits applied.
+// The output for a processed run: decisions, rules and edits applied. With the
+// CartUp template (options.template, a File) the template itself is filled —
+// its columns and formulas kept; more rows than it holds → a .zip of parts.
+// → { bytes, name, output, parts, hiddenErrors }
 export async function buildDarazWorkbook(result, decisions = {}, memory = {}, options = {}) {
   const output = buildOutput(result, decisions, memory, options)
-  const bytes = buildExcel(output, [...result.invalidRows, ...output.leftOut], result.lists, darazSummary(result, output, options))
-  return { bytes: await wrapCell(bytes, 'summary', 'A1'), output }
+  const invalid = [...result.invalidRows, ...output.leftOut]
+  const summary = darazSummary(result, output, options)
+  if (options.template) {
+    const { files } = await buildTemplateFiles(options.template, output, invalid, result.lists, summary)
+    const hiddenErrors = files.reduce((n, f) => n + f.errors, 0)
+    if (files.length === 1) return { bytes: files[0].bytes, name: 'cartup_daraz_output.xlsx', output, parts: 1, hiddenErrors }
+    return { bytes: await zipFiles(files, 'cartup_daraz_output'), name: 'cartup_daraz_output.zip', output, parts: files.length, hiddenErrors }
+  }
+  const bytes = buildExcel(output, invalid, result.lists, summary)
+  return { bytes: await wrapCell(bytes, 'summary', 'A1'), name: 'cartup_daraz_output.xlsx', output, parts: 1, hiddenErrors: 0 }
 }
 
 // SheetJS (community) writes no cell styles: "wrap text" is added in the XML
@@ -663,9 +683,10 @@ export function aiSummary(ai) {
   if (!ai) return 'AI: off (spelling fix only)'
   const f = ai.fields || { name: ai.name !== false, highlights: true, description: true }
   const on = ['name', 'highlights', 'description'].filter(k => f[k]), off = ['name', 'highlights', 'description'].filter(k => !f[k])
-  if (!on.length) return 'AI: name, highlights and description checks off (local clean-up only)'
+  const offText = off.map(k => k === 'name' ? 'name: spelling rules only' : `${k}: as in the Basic file`).join(' · ')
+  if (!on.length) return `AI: off for name, highlights and description — ${offText}`
   return `AI (${on.join(', ')}): ${(ai.products - ai.missed).toLocaleString()} of ${ai.products.toLocaleString()} products cleaned`
-    + (ai.missed ? ` (${ai.missed.toLocaleString()} local clean-up only)` : '') + (off.length ? ` · ${off.join(', ')}: AI check off (local clean-up only)` : '')
+    + (ai.missed ? ` (${ai.missed.toLocaleString()} local clean-up only)` : '') + (off.length ? ` · AI check off — ${offText}` : '')
 }
 
 // The run in a few lines (one cell of the "summary" sheet, or copied from the
@@ -687,17 +708,20 @@ export function darazSummary(result, output, options = {}) {
     `CartUp upload summary — ${todayISO()}`,
     `Rows: ${n(total)} in the Price file → ${s(uploaded.length, 'row')} uploaded (${s(products, 'product')}) · ${n(left)} left out`,
     `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
-    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price)`, r.discountRemoved && `${s(r.discountRemoved, 'special price')} removed (75%+ discount)`,
+    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–100% discount — SKU kept)`,
       r.spNotBelow && `${s(r.spNotBelow, 'special price')} not below the price (flagged)`])}`,
-    `Image: ${join([`${n(leftFor(/Image/))} left out (${n(leftFor(/^Image 1/))} no Image 1, ${n(leftFor(/^Variant Image/))} no variant image)`,
+    `Image: ${join([options.imageKeys ? `${n(leftFor(/Image/))} left out — no CartUp image key (${n(leftFor(/^Image 1/))} Image 1, ${n(leftFor(/^Variant Image/))} variant image)` : '0 left out',
       options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`,
       options.imageKeys?.forItem && r.keyRowsMissing && `${s(r.keyRowsMissing, 'Seller SKU')} not in the key file`,
-      !options.imageKeys && 'no image key file (Daraz links)'])}`,
-    `Weight: 0 left out · ${n(r.lowWeight)} flagged (0.00x or empty — CartUp may charge 0 delivery)`,
+      !options.imageKeys && 'no image key file (Daraz links)',
+      !options.imageKeys && output.problems.filter(p => p.type === 'noimage').length && `${n(output.problems.filter(p => p.type === 'noimage').length)} images missing (rows kept — flagged)`])}`,
+    `Weight: ${n(leftFor(/weight/i))} left out (no package weight)`,
     `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at 99,999`, `${n(r.stockZero)} with 0 stock`])}`,
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`])}`,
-    `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category`,
+    `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
+    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color / Model = Same as picture, size = One Size)`,
+    `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,
     aiSummary(result.ai),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
   ]
@@ -780,89 +804,116 @@ export function guessImageKeys(sheet) {
   return { mode, link, key, match, slots }
 }
 
-// applied: buildOutput(...) — final rows, change log, flagged values, values not on the lists.
+// The tabs after the product sheet, as rows — the same in either kind of file.
+// applied: buildOutput(...) — change log, flagged values, values not on the lists.
+// errors: hidden-sheet errors (#N/A…) found while filling the template.
+// → [{ name, rows, widths, head (first row is a header), wrap (one wrapped cell) }]
+function reportTabs(applied, invalidRows, lists, summary, errors = []) {
+  const tabs = []
+  if (invalidRows.length) {
+    const invCols = ['Product ID', 'SellerSKU', 'Product Name', 'catId', 'Price', 'Image 1', 'Variant Image', 'Quantity', 'Status', 'Report']
+    tabs.push({ name: 'invalid', head: true, widths: invCols.map(c => c === 'Report' ? 55 : 22), rows: [invCols, ...invalidRows.map(r => invCols.map(c => r[c] ?? ''))] })
+  }
+  // Every change, one row per Seller SKU and column.
+  tabs.push({ name: 'changes', head: true, widths: [24, 16, 36, 16, 30, 30, 40, 34], rows: [
+    ['Seller SKU', 'Parent SKU', 'Product', 'Column', 'Daraz value', 'Output value', 'Change', 'Detail'],
+    ...(applied.changes.length ? applied.changes.map(c => [c.sku, c.parent, c.name, c.column, c.from, c.to, c.change, c.detail]) : [['', '', '', '', '', '', 'No changes']]),
+  ] })
+  // Flagged cells, and cells of the hidden sheet that came out as an error.
+  const checks = [
+    ...applied.problems.map(p => [p.sku, p.parent, p.column.replace(/^\*+/, ''), p.value, p.problem]),
+    ...errors.map(e => [e.sku, '', e.column, e.value, e.error === '#N/A'
+      ? `#N/A in the hidden sheet — "${e.value}" is not on the template's ${e.column} list (file row ${e.fileRow}); pick a list value or the upload rejects the row`
+      : `${e.error} in the hidden sheet's ${e.column} formula (file row ${e.fileRow})`]),
+  ]
+  tabs.push({ name: 'to check', head: true, widths: [24, 16, 22, 40, 70], rows: [['Seller SKU', 'Parent SKU', 'Column', 'Value', 'Problem'], ...(checks.length ? checks : [['', '', '', '', 'Nothing to check']])] })
+  // Values not on CartUp's lists (to match, or to add to the list).
+  if (lists) {
+    const sorted = [...applied.newValues].sort((a, b) => a.decided - b.decided || b.skus.length - a.skus.length)
+    tabs.push({ name: 'new values', head: true, widths: [16, 30, 44, 7, 11, 40, 50], rows: [
+      ['Column', 'Value', 'Status', 'SKUs', 'Parent SKUs', 'Seller SKUs', 'Closest CartUp values'],
+      ...sorted.map((nv, k) => [
+        nv.column, nv.value,
+        nv.decided ? 'Add to the CartUp list (decided)' : 'Not reviewed — shows #N/A until matched or added',
+        nv.skus.length, nv.parents.length,
+        nv.skus.slice(0, 10).join(', ') + (nv.skus.length > 10 ? ` … +${nv.skus.length - 10}` : ''),
+        k < 300 ? (lists[nv.listKey]?.suggest(nv.value, 3) || []).join(' · ') : '',
+      ]),
+      ...(sorted.length ? [] : [['', '', 'Every value is on the CartUp lists']]),
+    ] })
+  }
+  // The whole report in cell A1 (copy one cell).
+  if (summary) tabs.push({ name: 'summary', wrap: true, widths: [120], rows: [[summary]] })
+  return tabs
+}
+
+// A file without the CartUp template: its columns in its order (none left
+// out), then Report, Check and our extra columns; the tabs after it.
 function buildExcel(applied, invalidRows = [], lists = null, summary = '') {
   const wb = XLSX.utils.book_new()
   const validRows = applied.rows.filter((_, i) => !applied.excluded?.has(i))
-
-  // ── Sheet 1: product (valid rows) ──────────────────────────────────────────
-  const wsData = []
-  const secRow = []
-  for (const sec of SECTIONS) {
-    secRow.push(sec.name)
-    for (let i = 1; i < sec.cols; i++) secRow.push('')
-  }
-  wsData.push(secRow)
-  wsData.push(OUTPUT_COLS)
-  for (const r of validRows) {
-    wsData.push(OUTPUT_COLS.map(col => r[col] ?? ''))
-  }
-
-  const ws = XLSX.utils.aoa_to_sheet(wsData)
-  ws['!cols'] = OUTPUT_COLS.map((col, i) => {
-    if (i === 1) return { wch: 50 }
-    if (col === 'Report' || col === 'Cartup Category Path') return { wch: 45 }
-    return { wch: 20 }
-  })
+  const sections = TEMPLATE_LAYOUT.flatMap(([name, cols]) => cols.map((_, k) => k ? '' : name))
+  const headers = TEMPLATE_LAYOUT.flatMap(([, cols]) => cols)
+  const ours = headers.map(h => OUR_COL[headerKey(h)])
+  const ws = XLSX.utils.aoa_to_sheet([sections, headers, ...validRows.map(r => ours.map(c => c ? r[c] ?? '' : ''))])
+  ws['!cols'] = headers.map((h, i) => ({ wch: i === 1 ? 50 : h === 'Report' || h === 'Cartup Category Path' ? 45 : 20 }))
   ws['!freeze'] = { xSplit: 0, ySplit: 2 }
   XLSX.utils.book_append_sheet(wb, ws, 'product')
-
-  // ── Sheet 2: invalid (rows with missing required fields) ───────────────────
-  if (invalidRows.length > 0) {
-    const invCols = ['Product ID','SellerSKU','Product Name','catId','Price','Image 1','Variant Image','Quantity','Status','Report']
-    const invData = [invCols]
-    for (const r of invalidRows) {
-      invData.push(invCols.map(c => r[c] ?? ''))
-    }
-    const wsInv = XLSX.utils.aoa_to_sheet(invData)
-    wsInv['!cols'] = invCols.map(c => c === 'Report' ? { wch: 55 } : { wch: 22 })
-    wsInv['!freeze'] = { xSplit: 0, ySplit: 1 }
-
-    // Red fill on header
-    wsInv['!rows'] = [{ hpt: 20 }]
-    XLSX.utils.book_append_sheet(wb, wsInv, 'invalid')
+  for (const t of reportTabs(applied, invalidRows, lists, summary)) {
+    const wst = XLSX.utils.aoa_to_sheet(t.rows)
+    wst['!cols'] = t.widths.map(wch => ({ wch }))
+    if (t.head) wst['!freeze'] = { xSplit: 0, ySplit: 1 }
+    if (t.wrap) wst['!rows'] = [{ hpt: 15 * String(t.rows[0][0]).split('\n').length + 6 }]
+    XLSX.utils.book_append_sheet(wb, wst, t.name)
   }
-
-  // ── Sheet 3: changes — every change, one row per Seller SKU and column ─────
-  const chCols = ['Seller SKU', 'Parent SKU', 'Product', 'Column', 'Daraz value', 'Output value', 'Change', 'Detail']
-  const chData = [chCols, ...applied.changes.map(c => [c.sku, c.parent, c.name, c.column, c.from, c.to, c.change, c.detail])]
-  if (!applied.changes.length) chData.push(['', '', '', '', '', '', 'No changes'])
-  const wsCh = XLSX.utils.aoa_to_sheet(chData)
-  wsCh['!cols'] = [{ wch: 24 }, { wch: 16 }, { wch: 36 }, { wch: 16 }, { wch: 30 }, { wch: 30 }, { wch: 40 }, { wch: 34 }]
-  XLSX.utils.book_append_sheet(wb, wsCh, 'changes')
-
-  // ── Sheet 4: to check — flagged, not changed (low weight, missing image key)
-  if (applied.problems?.length) {
-    const pbCols = ['Seller SKU', 'Parent SKU', 'Column', 'Value', 'Problem']
-    const wsPb = XLSX.utils.aoa_to_sheet([pbCols, ...applied.problems.map(p => [p.sku, p.parent, p.column.replace(/^\*+/, ''), p.value, p.problem])])
-    wsPb['!cols'] = [{ wch: 24 }, { wch: 16 }, { wch: 22 }, { wch: 40 }, { wch: 60 }]
-    XLSX.utils.book_append_sheet(wb, wsPb, 'to check')
-  }
-
-  // ── Sheet 5: new values — not on CartUp's lists (to match, or to add to the list)
-  if (lists) {
-    const nvCols = ['Column', 'Value', 'Status', 'SKUs', 'Parent SKUs', 'Seller SKUs', 'Closest CartUp values']
-    const sorted = [...applied.newValues].sort((a, b) => a.decided - b.decided || b.skus.length - a.skus.length)
-    const nvData = [nvCols, ...sorted.map((nv, k) => [
-      nv.column, nv.value,
-      nv.decided ? 'Add to the CartUp list (decided)' : 'Not reviewed — shows #N/A until matched or added',
-      nv.skus.length, nv.parents.length,
-      nv.skus.slice(0, 10).join(', ') + (nv.skus.length > 10 ? ` … +${nv.skus.length - 10}` : ''),
-      k < 300 ? (lists[nv.listKey]?.suggest(nv.value, 3) || []).join(' · ') : '',
-    ])]
-    if (!sorted.length) nvData.push(['', '', 'Every value is on the CartUp lists'])
-    const wsNv = XLSX.utils.aoa_to_sheet(nvData)
-    wsNv['!cols'] = [{ wch: 16 }, { wch: 30 }, { wch: 44 }, { wch: 7 }, { wch: 11 }, { wch: 40 }, { wch: 50 }]
-    XLSX.utils.book_append_sheet(wb, wsNv, 'new values')
-  }
-
-  // ── Sheet 6: summary — the whole report in cell A1 (copy one cell) ─────────
-  if (summary) {
-    const wsSum = XLSX.utils.aoa_to_sheet([[summary]])
-    wsSum['!cols'] = [{ wch: 120 }]
-    wsSum['!rows'] = [{ hpt: 15 * summary.split('\n').length + 6 }]
-    XLSX.utils.book_append_sheet(wb, wsSum, 'summary')
-  }
-
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+}
+
+// Numbers in the template's number columns are written as numbers.
+const NUMBER_COLS = new Set(['**Category Id', '**Package Weight (kg)', '**Package Length(cm)', '*Package Width (cm)', '*Package Height(cm)',
+  '**Current Stock Qty', '**Price(MRP)', 'Special Price'])
+const typed = (c, v) => NUMBER_COLS.has(c) && /^-?\d+(\.\d+)?$/.test(String(v ?? '').trim()) ? Number(v) : v ?? ''
+
+// The CartUp upload template itself, filled: every sheet, column, dropdown and
+// hidden formula of the template stays (its payload_hidden formulas are
+// computed for the new rows); Report and Check go in the first free columns
+// after the template's, and the report tabs after its sheets. More rows than
+// one template holds → several files (variants of a product kept together).
+// → { bytes, parts, notes }
+async function buildTemplateFiles(templateFile, applied, invalidRows, lists, summary) {
+  const tpl = await loadTemplate(await templateFile.arrayBuffer())
+  const colOf = new Map()
+  for (const c of tpl.columns) if (c.key && OUR_COL[c.key] && !colOf.has(OUR_COL[c.key])) colOf.set(OUR_COL[c.key], c.col)
+  const last = Math.max(...tpl.columns.map(c => colToNum(c.col)))
+  const reportCol = numToCol(last + 1), checkCol = numToCol(last + 2)
+  const rows = []
+  applied.rows.forEach((r, i) => {
+    if (applied.excluded?.has(i)) return
+    const values = {}
+    for (const [c, col] of colOf) if (c !== 'Report' && c !== 'Check') values[col] = typed(c, r[c])
+    values[reportCol] = r.Report ?? ''
+    values[checkCol] = r.Check ?? ''
+    rows.push({ values, parent: String(r['**Parent Sku'] ?? ''), source: { __row: i + 3 } })
+  })
+  if (!rows.length) throw new Error('No rows to upload — every row was left out')
+  const chunks = chunkRows(rows, tpl.capacity)
+  const files = []
+  for (let k = 0; k < chunks.length; k++) {
+    const errors = []
+    let tabs = null
+    const part = chunks.length > 1 ? `\nThis file: part ${k + 1} of ${chunks.length} — ${chunks[k].length.toLocaleString()} rows` : ''
+    const tab = name => () => {
+      tabs ||= reportTabs(applied, invalidRows, lists, summary + part + tpl.notes.map(n => `\nTemplate: ${n}`).join(''), errors)
+      const t = tabs.find(x => x.name === name)
+      return t.wrap ? [[{ v: t.rows[0][0], s: 'wrap' }]] : t.rows.map((cells, n) => n === 0 && t.head ? cells.map(v => ({ v, s: 'head' })) : cells)
+    }
+    const names = reportTabs(applied, invalidRows, lists, summary).map(t => ({ name: t.name, widths: t.widths, wrap: t.wrap }))
+    const bytes = await writeTemplate(tpl, chunks[k], {
+      errors,
+      headers: { [reportCol]: 'Report', [checkCol]: 'Check' },
+      sheets: names.map(t => ({ name: t.name, rows: tab(t.name), widths: t.widths, heights: t.wrap ? { 0: 15 * (summary.split('\n').length + 3) + 6 } : {} })),
+    })
+    files.push({ rows: chunks[k].length, bytes, errors: errors.length })
+  }
+  return { files, notes: tpl.notes, capacity: tpl.capacity }
 }

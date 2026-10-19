@@ -807,7 +807,11 @@ function payloadCell(ref, s, formula, v) {
 // report (optional): () => rows for the Report tab, built after the payload
 // so it can include what calculating it found. errors (optional): an array
 // that receives every data row whose hidden cell came out as an error (#N/A…).
-export async function writeTemplate(tpl, rows, { report: makeReport = null, errors = null } = {}) {
+// sheets (optional): more tabs after the template's own — [{ name, rows: () =>
+// rows (as for the Report tab), widths, heights: { rowIndex: points } }].
+// headers (optional): { column letter: text } — header cells for extra
+// columns after the template's (e.g. Report); the template's own stay as they are.
+export async function writeTemplate(tpl, rows, { report: makeReport = null, errors = null, sheets = [], headers = {} } = {}) {
   if (rows.length > tpl.capacity) throw new Error(`Too many rows for one template (${rows.length} > ${tpl.capacity})`)
   const { zip } = tpl
 
@@ -817,8 +821,16 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
   const firstData = pp.rows.find(r => r.r >= start)
   const rowNums = new Set(pp.rows.map(r => r.r))
   for (let i = 0; i < rows.length; i++) rowNums.add(start + i)
+  const headerRow = start - 1
+  const extraHeads = Object.entries(headers).sort((a, b) => colToNum(a[0]) - colToNum(b[0]))
   const productRows = [...rowNums].sort((a, b) => a - b).map(r => {
     const row = byRow.get(r)
+    if (r === headerRow && extraHeads.length) {
+      const own = parseCells(row.body).filter(c => !headers[c.col])
+      const style = own.filter(c => /<v>|<is>/.test(c.body)).pop()?.s
+      const cells = [...own.map(c => [colToNum(c.col), c.xml]), ...extraHeads.map(([c, t]) => [colToNum(c), productCell(`${c}${r}`, style, t)])]
+      return `${rowOpenTag(row.attrs, r)}${cells.sort((a, b) => a[0] - b[0]).map(c => c[1]).join('')}</row>`
+    }
     if (r < start) return row.xml
     const data = rows[r - start]
     const styles = new Map(parseCells((row || firstData).body).map(c => [c.col, c.s]))
@@ -828,7 +840,13 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
       .map(c => productCell(`${c}${r}`, styles.get(c), data ? data.values[c] : ''))
     return `${rowOpenTag((row || firstData).attrs, r)}${cells.join('')}</row>`
   })
-  zip.file(tpl.product.path, pp.head + productRows.join('') + pp.tail, { createFolders: false })
+  // Extra columns: the sheet's recorded size grows to take them in (some readers stop at it).
+  let head = pp.head
+  if (extraHeads.length) {
+    const lastCol = extraHeads[extraHeads.length - 1][0]
+    head = head.replace(/(<dimension\b[^>]*\bref="[A-Z]+\d+:)([A-Z]+)(\d+")/, (m, a, col, b) => colToNum(col) < colToNum(lastCol) ? `${a}${lastCol}${b}` : m)
+  }
+  zip.file(tpl.product.path, head + productRows.join('') + pp.tail, { createFolders: false })
 
   // payload_hidden: every row rebuilt by filling each column's formula down,
   // with the result Excel would compute stored as the cell's cached value.
@@ -869,8 +887,12 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
   zip.file(pl.path, pl.parts.head + payloadRows.join('') + pl.parts.tail, { createFolders: false })
 
   if (makeReport) {
-    const tab = await addReportSheet(tpl)
+    const tab = await addSheet(tpl, REPORT_SHEET)
     zip.file(tab.path, reportSheetXml(makeReport(), tab.styles), { createFolders: false })
+  }
+  for (const sh of sheets) {
+    const tab = await addSheet(tpl, sh.name)
+    zip.file(tab.path, reportSheetXml(sh.rows(), tab.styles, sh.widths, sh.heights), { createFolders: false })
   }
 
   // Ask Excel to recalculate on open, so edits made later stay consistent.
@@ -890,12 +912,15 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
 // order and positions don't change): summary, removed duplicates, warnings.
 const REPORT_SHEET = 'Report'
 
-async function addReportSheet(tpl) {
-  if (tpl.reportTab) return tpl.reportTab
+// A tab of our own after the template's sheets (once per template; a later
+// file of the same template rewrites it).
+async function addSheet(tpl, name) {
+  tpl.addedSheets ||= {}
+  if (tpl.addedSheets[name]) return tpl.addedSheets[name]
   const { zip } = tpl
-  const styles = await addReportStyles(zip)
-  const existing = tpl.sheets.find(s => s.name.toLowerCase() === REPORT_SHEET.toLowerCase())
-  if (existing) return (tpl.reportTab = { path: existing.path, styles })
+  const styles = tpl.reportStyles ||= await addReportStyles(zip)
+  const existing = tpl.sheets.find(s => s.name.toLowerCase() === name.toLowerCase())
+  if (existing) return (tpl.addedSheets[name] = { path: existing.path, styles })
 
   let n = 1
   while (zip.file(`xl/worksheets/sheet${n}.xml`)) n++
@@ -911,7 +936,7 @@ async function addReportSheet(tpl) {
     `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`), { createFolders: false })
   const sheetId = Math.max(0, ...[...tpl.workbookXml.matchAll(/<sheet\b[^>]*\bsheetId="(\d+)"/g)].map(m => +m[1])) + 1
   const ns = /<sheet\b[^>]*\s([\w]+):id="/.exec(tpl.workbookXml)?.[1] || 'r'
-  tpl.workbookXml = tpl.workbookXml.replace('</sheets>', `<sheet name="${REPORT_SHEET}" sheetId="${sheetId}" ${ns}:id="rId${k}"/></sheets>`)
+  tpl.workbookXml = tpl.workbookXml.replace('</sheets>', `<sheet name="${xmlEscape(name)}" sheetId="${sheetId}" ${ns}:id="rId${k}"/></sheets>`)
 
   // docProps/app.xml lists the visible sheet names — keep it in step.
   const app = await zip.file('docProps/app.xml')?.async('string')
@@ -919,14 +944,14 @@ async function addReportSheet(tpl) {
   const count = app && /(<vt:lpstr>Worksheets<\/vt:lpstr><\/vt:variant>\s*<vt:variant>\s*<vt:i4>)(\d+)(<\/vt:i4>)/.exec(app)
   if (titles && count) {
     const next = app
-      .replace(titles[0], () => `${titles[1]}${+titles[2] + 1}${titles[3]}${titles[4]}<vt:lpstr>${REPORT_SHEET}</vt:lpstr>${titles[5]}`)
+      .replace(titles[0], () => `${titles[1]}${+titles[2] + 1}${titles[3]}${titles[4]}<vt:lpstr>${xmlEscape(name)}</vt:lpstr>${titles[5]}`)
       .replace(count[0], () => `${count[1]}${+count[2] + 1}${count[3]}`)
     zip.file('docProps/app.xml', next, { createFolders: false })
   }
-  return (tpl.reportTab = { path, styles })
+  return (tpl.addedSheets[name] = { path, styles })
 }
 
-// Bold title / header / label cell styles, appended to the template's styles.
+// Bold title / header / label and wrapped-text cell styles, appended to the template's styles.
 async function addReportStyles(zip) {
   const path = 'xl/styles.xml'
   let xml = await zip.file(path)?.async('string')
@@ -946,22 +971,24 @@ async function addReportStyles(zip) {
     .replace(xfs[0], () => grow('cellXfs', xfs,
       `<xf numFmtId="0" fontId="${nFont}" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
       `<xf numFmtId="0" fontId="${nFont + 1}" fillId="${nFill}" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
-      `<xf numFmtId="0" fontId="${nFont + 1}" fillId="0" borderId="0" xfId="0" applyFont="1"/>`, nXf + 3))
+      `<xf numFmtId="0" fontId="${nFont + 1}" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
+      '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>', nXf + 4))
   zip.file(path, xml, { createFolders: false })
-  return { title: nXf, head: nXf + 1, bold: nXf + 2 }
+  return { title: nXf, head: nXf + 1, bold: nXf + 2, wrap: nXf + 3 }
 }
 
-// rows: arrays of cells — a value, or { v, s: 'title' | 'head' | 'bold' }.
-function reportSheetXml(rows, styles) {
+// rows: arrays of cells — a value, or { v, s: 'title' | 'head' | 'bold' | 'wrap' }.
+// heights: { row index: points } for rows that need more than one line.
+function reportSheetXml(rows, styles, widths = [14, 34, 22, 45, 30, 60], heights = {}) {
   const body = rows.map((cells, i) => {
     const xml = cells.map((c, j) => {
       const { v, s } = c !== null && typeof c === 'object' ? c : { v: c }
       if (v === '' || v === null || v === undefined) return ''
       return productCell(`${numToCol(j + 1)}${i + 1}`, styles[s], typeof v === 'string' ? v.slice(0, 32000) : v)
     }).join('')
-    return xml ? `<row r="${i + 1}">${xml}</row>` : ''
+    const ht = heights[i] ? ` ht="${heights[i]}" customHeight="1"` : ''
+    return xml ? `<row r="${i + 1}"${ht}>${xml}</row>` : ''
   }).join('')
-  const widths = [14, 34, 22, 45, 30, 60]
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
     '<sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/>' +

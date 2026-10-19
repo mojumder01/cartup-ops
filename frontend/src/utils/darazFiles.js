@@ -103,14 +103,15 @@ async function readOne(file, kind) {
       const { row, heads } = headerRowOf(ws, ['Product ID'])
       if (!heads.includes('Product ID')) continue
       const brand = heads.find(h => h === '*Brand') || heads.find(h => h === 'Brand') || heads.find(h => /brand/i.test(h))
+      const isbn = heads.find(h => /isbn|issn/i.test(h))   // books: CartUp's ISBN/ISSN column
       if (brand) brandCols.add(brand)
-      for (const r of sheetRows(ws, row)) rows.push({ pid: text(r['Product ID']), brand: brand ? text(r[brand]) : '' })
+      for (const r of sheetRows(ws, row)) rows.push({ pid: text(r['Product ID']), brand: brand ? text(r[brand]) : '', isbn: isbn ? text(r[isbn]) : '' })
     }
     const withPid = rows.filter(r => r.pid)
     if (!withPid.length) error('No sheet with a "Product ID" column — is this the Attribute export?')
     else if (!brandCols.size) warn('No Brand column found — every product will be No Brand')
     return { kind, sheet: '', columns: [...brandCols], rows: withPid, issues,
-      stats: { products: new Set(withPid.map(r => r.pid)).size, withBrand: new Set(withPid.filter(r => r.brand).map(r => r.pid)).size } }
+      stats: { products: new Set(withPid.map(r => r.pid)).size, withBrand: new Set(withPid.filter(r => r.brand).map(r => r.pid)).size, withIsbn: new Set(withPid.filter(r => r.isbn).map(r => r.pid)).size } }
   }
 
   // The sheet: "template" (as Daraz exports it), else the one that fits this kind best.
@@ -155,11 +156,11 @@ async function readOne(file, kind) {
   }
   if (kind === 'basic') {
     stats.noImage = rows.filter(r => !text(r['*Product Images1'])).length
-    if (stats.noImage) warn(`${stats.noImage} product${stats.noImage > 1 ? 's' : ''} without Product Image 1 — they go to the "invalid" sheet`)
+    if (stats.noImage) warn(`${stats.noImage} product${stats.noImage > 1 ? 's' : ''} without Product Image 1 — kept and flagged (add the image, or an image key file)`)
   }
   if (kind === 'weight') {
-    stats.noWeight = rows.filter(r => !(Number(r['*Package Weight (kg)']) >= 0.01)).length
-    if (stats.noWeight) warn(`${stats.noWeight} weight${stats.noWeight > 1 ? 's' : ''} empty, 0 or starting with 0.00 — flagged to check`)
+    stats.noWeight = rows.filter(r => !text(r['*Package Weight (kg)'])).length
+    if (stats.noWeight) warn(`${stats.noWeight} row${stats.noWeight > 1 ? 's' : ''} without a package weight — left out of the upload unless the weight is typed in the sheet`)
   }
   return { kind, sheet: pick.name, columns, rows, issues, stats }
 }
@@ -207,18 +208,18 @@ export function crossCheck(files, read) {
     const lost = minus(pricePids, basicPids)
     const shared = pricePids.size - lost.size
     if (pricePids.size && shared / pricePids.size < 0.5) out.push({ level: 'error', text: `Price and Basic files look like different exports — only ${shared} of ${pricePids.size} products are in both. Export them again from the same shop.` })
-    else if (lost.size) out.push({ level: 'warn', text: `${lost.size} product${lost.size > 1 ? 's' : ''} in the Price file but not in the Basic file — no image or description, so they go to the "invalid" sheet`, sample: sample(lost) })
+    else if (lost.size) out.push({ level: 'warn', text: `${lost.size} product${lost.size > 1 ? 's' : ''} in the Price file but not in the Basic file — no image or description (kept and flagged)`, sample: sample(lost) })
     else out.push({ level: 'ok', text: `Basic file covers all ${pricePids.size.toLocaleString()} products` })
   }
   if (ok('weight')) {
     const lost = minus(pricePids, ids(read.weight, 'Product ID'))
-    if (lost.size) out.push({ level: 'warn', text: `${lost.size} product${lost.size > 1 ? 's' : ''} without a row in the Weight file — weight and size empty (flagged)`, sample: sample(lost) })
+    if (lost.size) out.push({ level: 'warn', text: `${lost.size} product${lost.size > 1 ? 's' : ''} without a row in the Weight file — no weight, so they are left out unless the weight is typed in the sheet`, sample: sample(lost) })
     else out.push({ level: 'ok', text: 'Weight file covers all products' })
   }
   if (ok('skuimg')) {
     const lost = minus(priceSkus, ids(read.skuimg, 'SellerSKU'))
     if (priceSkus.size && lost.size === priceSkus.size) out.push({ level: 'error', text: 'None of the Seller SKUs in the Price file are in the SKU Image file — is it from another export?' })
-    else if (lost.size) out.push({ level: 'warn', text: `${lost.size} Seller SKU${lost.size > 1 ? 's' : ''} without a row in the SKU Image file — the variant image falls back to Product Image 1 (a colour variant needs one from the image key file, or it goes to "invalid")`, sample: sample(lost) })
+    else if (lost.size) out.push({ level: 'warn', text: `${lost.size} Seller SKU${lost.size > 1 ? 's' : ''} without a row in the SKU Image file — the variant image falls back to Product Image 1 (a colour variant without one is flagged — add it, or use an image key file)`, sample: sample(lost) })
     else out.push({ level: 'ok', text: 'SKU Image file covers all Seller SKUs' })
   }
   if (read.attr && ok('attr')) {

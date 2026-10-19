@@ -73,8 +73,9 @@ export function placeParts(parts, plan, applicable, lists) {
   return assign(parts.length, targetsFor(applicable), (i, t) => fit(parts[i], t, lists) + positionBonus(i, t) + (plan[i] === t ? 15 : 0))
 }
 
-// source: 'daraz' (from the seller's files) or 'default' (filled in by us,
-// e.g. Unit = pcs) — only Daraz values appear in the change log.
+// source: 'daraz' (from the seller's files), 'default' (filled in by us,
+// e.g. Unit = pcs — not logged) or 'fill' (a variant value the category needs
+// but the seller left out — logged and noted in Report).
 export function makeCell(col, raw, lists, source = 'daraz') {
   const list = lists?.[headerKey(col)] ?? null
   const hit = list?.match(raw) ?? null
@@ -311,6 +312,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   const rows = [], changes = [], newValues = new Map()
   const stats = { checked: 0, auto: 0, remembered: 0, picked: 0, kept: 0, open: 0, openValues: 0, openParents: 0, dupes: 0 }
   const attention = new Set()   // row indexes that still need a person
+  const filledRows = new Set()  // rows with a variant value set by rule (Same as picture, One Size)
   const openValues = new Set(), openParents = new Set()
   const byParent = new Map()
   for (const item of result.items) {
@@ -327,7 +329,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
 
   result.items.forEach((item, rowIndex) => {
     const out = { ...item.out }
-    const changed = [], fresh = []
+    const changed = [], fresh = [], filled = []
     let noWarranty = false
     for (const cell of item.cells) {
       const st = cellState(item, cell, decisions, memory, result.lists)
@@ -337,7 +339,11 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
       stats.checked++
       if (st.state in stats) stats[st.state]++
       if (st.state === 'open') { openValues.add(`${cell.col}|${cell.raw.toLowerCase()}`); openParents.add(item.parent); attention.add(rowIndex) }
-      if (cell.source === 'daraz' && (st.value !== cell.raw || st.state === 'kept')) {
+      if (cell.source === 'fill') {
+        changes.push({ sku: item.sku, parent: item.parent, name: item.name, column: colLabel(cell.col), from: '', to: st.value,
+          change: st.value === cell.auto ? 'Not given — the category needs it, set by rule' : changeLabel(st), detail: item.combo ? `Variations Combo "${item.combo}"` : 'No variants' })
+        filled.push(`${colLabel(cell.col)} = ${st.value}`)
+      } else if (cell.source === 'daraz' && (st.value !== cell.raw || st.state === 'kept')) {
         changes.push({
           sku: item.sku, parent: item.parent, name: item.name, column: colLabel(cell.col), from: cell.raw, to: st.value,
           change: changeLabel(st),
@@ -364,11 +370,13 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
       out['Warranty Period'] = ''
     }
     const notes = [item.reportNote]
+    if (filled.length) notes.push(`Not given, set by rule (category needs it): ${filled.join(', ')}`)
     if (fresh.length) notes.push(`Not on CartUp list (#N/A until added or matched): ${fresh.join(', ')}`)
     if (changed.length) notes.push(`Changed: ${changed.join(', ')}`)
     if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex) }
     if (item.unused.length) notes.push(`Not used from Variations Combo: ${item.unused.join(', ')}`)
-    out['Report'] = notes.join(' | ')
+    out['Report'] = notes.filter(Boolean).join(' | ')
+    if (filled.length) filledRows.add(rowIndex)
     rows.push(out)
   })
   for (const d of result.duplicateSkus) {
@@ -376,5 +384,5 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows }
 }

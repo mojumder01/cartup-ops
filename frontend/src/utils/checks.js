@@ -3,7 +3,6 @@
 // number means the same thing everywhere.
 import { headerKey, colLabel, colGroup } from './variantReview'
 
-export const WEIGHT_COL = '**Package Weight (kg)'
 export const IMAGE_COLS = ['**Product Image 1', 'Product Image 2', 'Product Image 3', 'Product Image 4',
   'Product Image 5', 'Product Image 6', 'Product Image 7', 'Product Image 8', '*Variant Image']
 
@@ -13,28 +12,34 @@ export const ISSUE_TYPES = {
   list:     { label: 'Not on CartUp list (#N/A)', level: 'error' },
   category: { label: 'No category', level: 'error' },
   required: { label: 'Required — empty', level: 'error' },
-  noimage:  { label: 'No Image 1 / variant image (left out)', level: 'error' },
-  weight:   { label: 'Weight to check (0.00x)', level: 'warn' },
+  leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
+  noimage:  { label: 'Image missing (row kept)', level: 'warn' },
   image:    { label: 'Image without a CartUp key (not uploaded)', level: 'warn' },
+  spremoved:{ label: 'Special price removed (75%+ discount)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
+  defaults: { label: 'Set by rule (Same as picture / One Size)', level: 'warn' },
   flag:     { label: 'Other flags', level: 'warn' },
 }
 
 // Map "row|column" → { level, type, text } for every problem cell.
-export function sheetIssues(output, columns, lists) {
+export function sheetIssues(output, columns, lists, items = null) {
   const m = new Map()
-  const flagged = new Map(output.problems.map(p => [`${p.row}|${p.column}`, p.problem]))
+  // Variant values set by rule (Same as picture, One Size), per cell.
+  const filled = items && new Set(items.flatMap((it, i) => (it.cells || []).filter(c => c.source === 'fill' && String(output.rows[i]?.[c.col] ?? '') === (c.auto ?? c.raw)).map(c => `${i}|${c.col}`)))
+  const flagged = new Map(output.problems.map(p => [`${p.row}|${p.column}`, p]))
   const set = (k, type, text) => m.set(k, { level: ISSUE_TYPES[type].level, type, text })
   output.rows.forEach((r, i) => {
     for (const c of columns) {
       const v = String(r[c] ?? '').trim()
       const list = lists?.[headerKey(c)]
       const k = `${i}|${c}`
-      if (c === '**Category Id' && !v) set(k, 'category', 'No CartUp category — add the Category Id')
-      else if ((c === '**Product Image 1' || c === '*Variant Image') && !v) set(k, 'noimage', flagged.get(k) || 'No image — row left out')
+      const f = flagged.get(k)
+      if (f?.type) set(k, f.type, f.problem)
+      else if (c === '**Category Id' && !v) set(k, 'category', 'No CartUp category — add the Category Id')
       else if (c.startsWith('**') && !v) set(k, 'required', 'Required — empty')
       else if (v && list && list.match(v)?.how !== 'exact') set(k, 'list', `Not on CartUp's ${colLabel(c)} list — shows #N/A`)
-      else if (flagged.has(k)) set(k, c === WEIGHT_COL ? 'weight' : IMAGE_COLS.includes(c) ? 'image' : c === 'Special Price' ? 'price' : 'flag', flagged.get(k))
+      else if (f) set(k, IMAGE_COLS.includes(c) ? 'image' : c === 'Special Price' ? 'price' : 'flag', f.problem)
+      else if (filled?.has(`${i}|${c}`)) set(k, 'defaults', 'Not given — set by rule because the category needs it; check it')
     }
   })
   return m
@@ -76,10 +81,13 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   add({ id: 'required', level: 'fix', count: byType.required || 0, unit: 'cell',
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',
     open: { sheet: 'required' } })
-  if (output.excluded?.size || result.items.some(it => it.pendingVariant)) add({ id: 'noimage', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
-    title: 'Rows without Image 1 or a variant image', why: imageKeys
-      ? 'No CartUp image key for Image 1 or the Variant Image — add the key (key file or sheet), or the row goes to the "invalid" sheet'
-      : 'Colour variants not in the SKU Image file — add an image key file with a Variant Image column, or paste a key in the sheet; until then they go to the "invalid" sheet',
+  add({ id: 'leftout', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
+    title: 'Rows left out of the upload', why: imageKeys
+      ? 'No package weight, or no CartUp image key for Image 1 / the Variant Image — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet'
+      : 'No package weight — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet',
+    open: { sheet: 'leftout' } })
+  if (byType.noimage) add({ id: 'noimage', level: 'check', count: byType.noimage, unit: 'image',
+    title: 'Images missing (rows kept)', why: 'No Image 1 (not in the Basic file) or no variant image (colour variant not in the SKU Image file) — add it, or load an image key file',
     open: { sheet: 'noimage' } })
   if (result.template) {
     const fuzzy = values.filter(v => v.status === 'changed' && v.how === 'similar')
@@ -88,9 +96,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Close-spelling matches', why: 'Matched by similar spelling — a quick glance confirms them',
       open: { review: { view: 'values', state: 'changed', col: 'all' } } })
   }
-  add({ id: 'weight', level: 'check', count: byType.weight || 0, unit: 'row',
-    title: 'Weight starts with 0.00', why: '0.001–0.009 kg (or 0) — CartUp may show a delivery charge of 0',
-    open: { sheet: 'weight' } })
+  if (byType.defaults) add({ id: 'defaults', level: 'check', count: byType.defaults, unit: 'value',
+    title: 'Variant values set by rule', why: 'The category needs Color / Model / Size but the seller gave none — set to Same as picture / One Size; Check = YES and Report say so',
+    open: { sheet: 'defaults' } })
   if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
     title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',
     open: { sheet: 'price' } })
@@ -116,7 +124,10 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.stockZero) add({ id: 'stock0', level: 'info', count: output.rules.stockZero, unit: 'row',
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })
+  if (output.rules.discountRemoved) add({ id: 'spremoved', level: 'info', count: output.rules.discountRemoved, unit: 'row',
+    title: 'Special prices removed (75–100% discount)', why: 'The special price was removed, the SKU stays — Report and the change log say so',
+    open: { sheet: 'spremoved' } })
   if (result.invalidRows.length) add({ id: 'invalid', level: 'info', count: result.invalidRows.length, unit: 'row',
-    title: 'Rows left out', why: 'Missing Product ID, Seller SKU, name, price or image — listed in the "invalid" sheet with the reason, not in the upload' })
+    title: 'Rows left out (no name / price)', why: 'No name, no price (MRP), or no Product ID / Seller SKU — listed in the "invalid" sheet with the reason, not in the upload' })
   return items
 }
