@@ -15,8 +15,8 @@ import GovernanceDataViz from './pages/GovernanceDataViz'
 import Layout from './components/Layout'
 
 function PrivateRoute({ children }) {
-  const { user, loading } = useAuth()
-  if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', color:'var(--text-muted)' }}>Loading...</div>
+  const { user, loading, waking } = useAuth()
+  if (loading) return <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', color:'var(--text-muted)' }}>{waking ? 'Waking up the server… (up to a minute)' : 'Loading...'}</div>
   return user ? children : <Navigate to="/login" replace />
 }
 

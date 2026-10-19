@@ -46,7 +46,7 @@ def _wb_to_rows(path_or_bytes, sheet_name=None, skip_rows=0):
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
 
-    if not rows: return []
+    if not rows: return [], []
     header = [str(c).strip() if c is not None else '' for c in rows[skip_rows]]
     result = []
     for row in rows[skip_rows + 1:]:

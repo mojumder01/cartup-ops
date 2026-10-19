@@ -13,7 +13,8 @@ function readSheet(file) {
     reader.onload = e => {
       try {
         const wb = XLSX.read(e.target.result, { type: 'array' })
-        const ws = wb.Sheets[wb.SheetNames[0]]
+        // Daraz exports keep the products on the "template" sheet.
+        const ws = wb.Sheets.template || wb.Sheets[wb.SheetNames[0]]
         resolve(XLSX.utils.sheet_to_json(ws, { defval: '' }))
       } catch (err) { reject(err) }
     }
@@ -77,12 +78,12 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
   onProgress('Building output rows...')
   const outputRows = []
 
-  // Iterate in basic file order
-  for (const row of basicRows) {
-    const pid = col(row, 'product id', 'productid', 'parent sku', 'parentsku', 'parent id')
-    if (!pid) continue
-
-    const basic   = basicDict[pid] || { name: '', images: Array(8).fill('') }
+  // Iterate in basic file order (each product once), then the SKU-image
+  // products the basic file doesn't have — kept, with a note, not dropped.
+  const order = [...new Set(basicRows.map(row => col(row, 'product id', 'productid', 'parent sku', 'parentsku', 'parent id')).filter(Boolean))]
+  const notInBasic = Object.keys(skuGroups).filter(pid => !basicDict[pid])
+  for (const pid of [...order, ...notInBasic]) {
+    const basic   = basicDict[pid] || { name: '(not in the basic file)', images: Array(8).fill('') }
     const entries = skuGroups[pid]
 
     if (!entries || !entries.length) {
@@ -125,6 +126,7 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
   }
 
   onProgress('Building Excel output...')
+  const summary = { rows: outputRows.length, products: order.length + notInBasic.length, notInBasic: notInBasic.length, noVariantImage: outputRows.filter(r => !r['Variant Image']).length }
 
   const wb = XLSX.utils.book_new()
   const wsData = [OUTPUT_COLS, ...outputRows.map(r => OUTPUT_COLS.map(c => r[c] ?? ''))]
@@ -138,5 +140,5 @@ export async function processVisualFiles(skuimgFile, basicFile, onProgress) {
   ws['!freeze'] = { xSplit: 0, ySplit: 1 }
   XLSX.utils.book_append_sheet(wb, ws, 'visual')
 
-  return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+  return { bytes: XLSX.write(wb, { bookType: 'xlsx', type: 'array' }), summary }
 }

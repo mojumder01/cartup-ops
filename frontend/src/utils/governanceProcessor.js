@@ -19,6 +19,15 @@ const CHECKPOINT_KEY = 'gov_checkpoint'
 function callGemini(prompt) {
   return callAI(prompt, { maxOutputTokens: 8192 })
 }
+// The JSON list in an AI answer — or an error saying the answer was unreadable.
+function parseList(raw) {
+  const clean = String(raw || '').replace(/```json|```/g, '').trim()
+  const m = clean.match(/\[[\s\S]*\]/)
+  if (!m) throw new Error(`unreadable AI answer: ${clean.slice(0, 60) || '(empty)'}`)
+  try { return JSON.parse(m[0]) } catch { throw new Error('unreadable AI answer (broken JSON)') }
+}
+// AI errors that stop the run (saved like a pause, Resume continues later).
+const STOP = /limit is used|at their limit|No Gemini API key|Network error/i
 
 function readSheet(file) {
   return new Promise((resolve, reject) => {
@@ -130,22 +139,16 @@ ${inputBlock}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","name":"..."}]`
 
-  try {
-    const raw = await callGemini(prompt, apiKey)
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
-    const map = {}
-    for (let i = 0; i < arr.length; i++) {
-      const item = arr[i]
-      const sku = String(item.sku || products[i]?.sku || '')
-      if (!sku) continue
-      map[sku] = applyReplacements(item.name || products[i]?.name || '')
-    }
-    for (const p of products) { if (!map[p.sku]) map[p.sku] = p.name }
-    return map
-  } catch {
-    return Object.fromEntries(products.map(p => [p.sku, p.name]))
+  const arr = parseList(await callGemini(prompt, apiKey))
+  const map = {}
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i]
+    const sku = String(item.sku || products[i]?.sku || '')
+    if (!sku) continue
+    map[sku] = applyReplacements(item.name || products[i]?.name || '')
   }
+  for (const p of products) { if (!map[p.sku]) map[p.sku] = p.name }
+  return map
 }
 
 async function batchWeight(products, apiKey) {
@@ -163,22 +166,16 @@ ${inputBlock}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","weight_kg":0.0,"weight_confidence":0}]`
 
-  try {
-    const raw = await callGemini(prompt, apiKey)
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
-    const map = {}
-    for (let i = 0; i < arr.length; i++) {
-      const item = arr[i]
-      const sku = String(item.sku || products[i]?.sku || '')
-      if (!sku) continue
-      map[sku] = { weight_kg: item.weight_kg ?? '', weight_confidence: item.weight_confidence ?? '' }
-    }
-    for (const p of products) { if (!map[p.sku]) map[p.sku] = { weight_kg: '', weight_confidence: '' } }
-    return map
-  } catch {
-    return Object.fromEntries(products.map(p => [p.sku, { weight_kg: '', weight_confidence: '' }]))
+  const arr = parseList(await callGemini(prompt, apiKey))
+  const map = {}
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i]
+    const sku = String(item.sku || products[i]?.sku || '')
+    if (!sku) continue
+    map[sku] = { weight_kg: item.weight_kg ?? '', weight_confidence: item.weight_confidence ?? '' }
   }
+  for (const p of products) { if (!map[p.sku]) map[p.sku] = { weight_kg: '', weight_confidence: '' } }
+  return map
 }
 
 function descExcerpt(html) {
@@ -195,7 +192,7 @@ async function batchCategory(products, apiKey) {
     return `Product ${i + 1} (sku:"${p.sku}"): ${p.name || '(empty)'}${d ? `\n  About: ${d}` : ''}`
   }).join('\n')
 
-  const step1Prompt = `You are an e-commerce marketplace category expert for CartUp.pk (Pakistan, similar to Daraz).
+  const step1Prompt = `You are an e-commerce marketplace category expert for CartUp (Bangladesh, similar to Daraz).
 
 For EACH product, think like a BUYER clicking through the website menu. Give 3 category search phrases:
 - "leaf": the most specific sub-category leaf name only (e.g. "trimmers groomers clippers", "uninterrupted power supply", "rechargeable flashlights", "stickers labels", "prayer accessories", "colanders food strainers")
@@ -222,14 +219,13 @@ Return ONLY a JSON array, no markdown:
 
   let queryItems = []
   try {
-    const raw1 = await callGemini(step1Prompt, apiKey)
-    const clean1 = raw1.replace(/```json|```/g, '').trim()
-    const arr1 = JSON.parse(clean1.match(/\[[\s\S]*\]/)[0])
+    const arr1 = parseList(await callGemini(step1Prompt, apiKey))
     queryItems = arr1.map((item, i) => ({
       sku: String(item.sku || products[i]?.sku || ''),
       queries: [item.leaf || '', item.branch || '', item.alt || '', products[i]?.name || ''].filter(Boolean),
     }))
-  } catch {
+  } catch (e) {
+    if (STOP.test(e.message)) throw e
     queryItems = products.map(p => ({ sku: p.sku, queries: [p.name] }))
   }
 
@@ -249,11 +245,9 @@ ${step2Input}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","category_id":"...","category_path":"..."}]`
 
-  let map = {}
-  try {
-    const raw2 = await callGemini(step2Prompt, apiKey)
-    const clean2 = raw2.replace(/```json|```/g, '').trim()
-    const arr2 = JSON.parse(clean2.match(/\[[\s\S]*\]/)[0])
+  const map = {}
+  {
+    const arr2 = parseList(await callGemini(step2Prompt, apiKey))
     for (let i = 0; i < arr2.length; i++) {
       const item = arr2[i]
       const sku = String(item.sku || products[i]?.sku || '')
@@ -269,8 +263,6 @@ Return ONLY a JSON array, no markdown:
     for (const p of products) {
       if (!map[p.sku]) map[p.sku] = { category_id: '', category_path: '', category_error: 'Missing from response' }
     }
-  } catch (err) {
-    return Object.fromEntries(products.map(p => [p.sku, { category_id: '', category_path: '', category_error: err.message }]))
   }
 
   // ── Step 4: Verify picks — catch wrong matches before they reach output ───
@@ -286,16 +278,14 @@ ${verifyInput}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","ok":"yes"}]`
     try {
-      const rawV = await callGemini(verifyPrompt, apiKey)
-      const cleanV = rawV.replace(/```json|```/g, '').trim()
-      const arrV = JSON.parse(cleanV.match(/\[[\s\S]*\]/)[0])
+      const arrV = parseList(await callGemini(verifyPrompt, apiKey))
       for (let i = 0; i < arrV.length; i++) {
         const sku = String(arrV[i].sku || picked[i]?.sku || '')
         if (sku && String(arrV[i].ok).toLowerCase() === 'no' && map[sku]) {
           map[sku].category_error = `Low confidence — verify manually (suggested: ${map[sku].category_path})`
         }
       }
-    } catch { /* verify failed — keep picks as-is */ }
+    } catch (e) { if (STOP.test(e.message)) throw e /* else: verify failed — keep picks as-is */ }
   }
 
   return map
@@ -323,22 +313,15 @@ ${inputBlock}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","highlights":"..."}]`
 
-  try {
-    const raw = await callGemini(prompt, apiKey)
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
-    const map = {}
-    for (let i = 0; i < arr.length; i++) {
-      const item = arr[i]
-      const sku = String(item.sku || products[i]?.sku || '')
-      if (!sku) continue
-      map[sku] = stripImagesFromHighlights(applyReplacements(item.highlights || ''))
-    }
-    for (const p of products) { if (!map[p.sku]) map[p.sku] = '' }
-    return map
-  } catch {
-    return Object.fromEntries(products.map(p => [p.sku, '']))
+  const arr = parseList(await callGemini(prompt, apiKey))
+  const map = {}
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i]
+    const sku = String(item.sku || products[i]?.sku || '')
+    if (!sku || !item.highlights) continue
+    map[sku] = stripImagesFromHighlights(applyReplacements(item.highlights))
   }
+  return map
 }
 
 async function batchDescription(products, apiKey) {
@@ -363,22 +346,15 @@ ${inputBlock}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","description":"..."}]`
 
-  try {
-    const raw = await callGemini(prompt, apiKey)
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
-    const map = {}
-    for (let i = 0; i < arr.length; i++) {
-      const item = arr[i]
-      const sku = String(item.sku || products[i]?.sku || '')
-      if (!sku) continue
-      map[sku] = fixDescriptionImages(applyReplacements(item.description || ''))
-    }
-    for (const p of products) { if (!map[p.sku]) map[p.sku] = '' }
-    return map
-  } catch {
-    return Object.fromEntries(products.map(p => [p.sku, '']))
+  const arr = parseList(await callGemini(prompt, apiKey))
+  const map = {}
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i]
+    const sku = String(item.sku || products[i]?.sku || '')
+    if (!sku || !item.description) continue
+    map[sku] = fixDescriptionImages(applyReplacements(item.description))
   }
+  return map
 }
 
 // ── Combined pass: when BOTH Highlights and Description are enabled they are
@@ -408,27 +384,22 @@ ${inputBlock}
 Return ONLY a JSON array, no markdown:
 [{"sku":"...","highlights":"...","description":"..."}]`
 
-  try {
-    const raw = await callGemini(prompt, apiKey)
-    const clean = raw.replace(/```json|```/g, '').trim()
-    const arr = JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
-    const map = {}
-    for (let i = 0; i < arr.length; i++) {
-      const item = arr[i]
-      const sku = String(item.sku || products[i]?.sku || '')
-      if (!sku) continue
-      const fixed = enforceImageRules(applyReplacements(item.highlights || ''), applyReplacements(item.description || ''))
-      map[sku] = fixed
-    }
-    for (const p of products) { if (!map[p.sku]) map[p.sku] = { highlights: '', description: '' } }
-    return map
-  } catch {
-    return Object.fromEntries(products.map(p => [p.sku, { highlights: '', description: '' }]))
+  const arr = parseList(await callGemini(prompt, apiKey))
+  const map = {}
+  for (let i = 0; i < arr.length; i++) {
+    const item = arr[i]
+    const sku = String(item.sku || products[i]?.sku || '')
+    if (!sku || (!item.highlights && !item.description)) continue
+    map[sku] = enforceImageRules(applyReplacements(item.highlights || ''), applyReplacements(item.description || ''))
   }
+  return map
 }
 
 // ── Run a single pass with batching + checkpoint + pause ──────────────────────
-async function runPass(passNum, totalPasses, label, checkKey, products, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress) {
+// A batch the AI couldn't answer readably keeps the product's original values
+// (never blank) and gets a note in the Report; an AI limit stops the run like
+// a pause — progress saved, Resume continues from that batch.
+async function runPass(passNum, totalPasses, label, checkKey, products, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress, fallback, notes) {
   const pending = products.filter(p => !alreadyDone.has(p.sku))
   const results = {}
   const batches = []
@@ -447,11 +418,33 @@ async function runPass(passNum, totalPasses, label, checkKey, products, batchFn,
         ...cpState,
         passCompleted: passNum - 1,
         [passKey]: { ...(cpState[passKey] || {}), ...results },
+        notesResults: notes,
       })
       return { paused: true, results, done, total }
     }
 
-    const batchResult = await batchFn(batch)
+    let batchResult
+    try {
+      batchResult = await batchFn(batch)
+    } catch (e) {
+      const message = e.message || 'AI error'
+      if (STOP.test(message)) {
+        saveCheckpoint(file, checks, { ...cpState, passCompleted: passNum - 1, [passKey]: { ...(cpState[passKey] || {}), ...results }, notesResults: notes })
+        return { paused: true, stopped: message, results, done, total }
+      }
+      batchResult = {}
+      for (const p of batch) {
+        batchResult[p.sku] = fallback(p)
+        notes[p.sku] = [...(notes[p.sku] || []), `${label}: AI answer unreadable — original kept (${message.slice(0, 60)})`]
+      }
+    }
+    // A product the answer left out also keeps its original.
+    for (const p of batch) {
+      if (!(p.sku in batchResult)) {
+        batchResult[p.sku] = fallback(p)
+        notes[p.sku] = [...(notes[p.sku] || []), `${label}: missing from the AI answer — original kept`]
+      }
+    }
     Object.assign(results, batchResult)
     done += batch.length
 
@@ -461,6 +454,7 @@ async function runPass(passNum, totalPasses, label, checkKey, products, batchFn,
       ...cpState,
       passCompleted: passNum - 1,
       [passKey]: { ...(cpState[passKey] || {}), ...results },
+      notesResults: notes,
     })
   }
 
@@ -509,7 +503,7 @@ export async function buildPartialOutput(file, checks) {
     results.description[sku] = v.description
   }
 
-  return buildOutput(products, checks, results, invalidRows, true)
+  return buildOutput(products, checks, results, invalidRows, true, cp.notesResults || {})
 }
 
 export async function processGovernanceFile(file, checks, apiKey, onProgress, signal) {
@@ -535,9 +529,10 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
   const enabledPasses = PASS_ORDER.filter(k => k === 'highlights_description' ? bothHD : checks[k])
   const totalPasses = enabledPasses.length
 
+  if (!apiKey) throw new Error('No Gemini key ticked — every Governance check uses AI. Add or tick a key in Profile.')
   // Load checkpoint
   const cp = loadCheckpoint(file) || {}
-  const passCompleted = cp.passCompleted || 0
+  const notes = cp.notesResults || {}   // sku → report notes (AI answers that couldn't be used)
 
   // Results keyed by check name
   const results = {
@@ -561,9 +556,9 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
 
   for (const checkKey of enabledPasses) {
     passNum++
-    if (passCompleted >= passNum) continue  // already done
-
+    // Done when every product has its result (checks may have been switched since the pause).
     const alreadyDone = new Set(Object.keys(results[checkKey]))
+    if (products.every(p => alreadyDone.has(p.sku))) continue
     const label = {
       name:'Name', weight:'Weight', category:'Category',
       highlights:'Highlights', description:'Description',
@@ -621,11 +616,21 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       highlights_descriptionResults: results.highlights_description,
     }
 
-    const res = await runPass(passNum, totalPasses, label, checkKey, passProducts, batchFn, alreadyDone, file, checks, cpState, total, signal, onProgress)
+    const original = Object.fromEntries(products.map(p => [p.sku, p]))
+    const fallback = {
+      name:        p => original[p.sku].name,
+      weight:      () => ({ weight_kg: '', weight_confidence: '' }),
+      category:    () => ({ category_id: '', category_path: '', category_error: 'AI answer unreadable — match by hand' }),
+      highlights:  p => original[p.sku].highlights,
+      description: p => original[p.sku].description,
+      highlights_description: p => ({ highlights: original[p.sku].highlights, description: original[p.sku].description }),
+    }[checkKey]
+
+    const res = await runPass(passNum, totalPasses, label, checkKey, passProducts, batchFn, alreadyDone, file, checks, { ...cpState, notesResults: notes }, total, signal, onProgress, fallback, notes)
     Object.assign(results[checkKey], res.results)
     if (checkKey === 'highlights_description') syncCombined()
 
-    if (res.paused) return { paused: true, done: res.done, total }
+    if (res.paused) return { paused: true, stopped: res.stopped, done: res.done, total }
 
     saveCheckpoint(file, checks, {
       total,
@@ -636,6 +641,7 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
       highlightsResults:  results.highlights,
       descriptionResults: results.description,
       highlights_descriptionResults: results.highlights_description,
+      notesResults: notes,
     })
   }
 
@@ -643,10 +649,11 @@ export async function processGovernanceFile(file, checks, apiKey, onProgress, si
   clearCheckpoint()
   onProgress({ pass: totalPasses, totalPasses, label: 'Building output...', done: total, total })
 
-  return { paused: false, output: buildOutput(products, checks, results, invalidRows) }
+  const noted = Object.keys(notes).length
+  return { paused: false, noted, output: buildOutput(products, checks, results, invalidRows, false, notes) }
 }
 
-function buildOutput(products, checks, results, invalidRows, partial = false) {
+function buildOutput(products, checks, results, invalidRows, partial = false, notes = {}) {
   const cols = ['SKU ID', 'Original Name']
   if (checks.name)        cols.push('Name (Cleaned)')
   if (checks.weight)      cols.push('Weight (kg)', 'Weight Confidence')
@@ -659,11 +666,12 @@ function buildOutput(products, checks, results, invalidRows, partial = false) {
   const outputRows = products.map(p => {
     const w = results.weight[p.sku] || {}
     const cat = results.category[p.sku] || {}
-    const row = { 'SKU ID': p.sku, 'Original Name': p.name, 'Report': 'OK' }
+    const row = { 'SKU ID': p.sku, 'Original Name': p.name, 'Report': (notes[p.sku] || []).join('; ') || 'OK' }
     if (checks.name)        row['Name (Cleaned)']     = results.name[p.sku] || p.name
     if (checks.weight)      { row['Weight (kg)'] = w.weight_kg ?? ''; row['Weight Confidence'] = w.weight_confidence ?? '' }
-    if (checks.highlights)  row['Highlights']         = results.highlights[p.sku] || ''
-    if (checks.description) row['Description']        = results.description[p.sku] || ''
+    // Not processed yet (partial output) → the original, never an empty cell.
+    if (checks.highlights)  row['Highlights']         = results.highlights[p.sku] || p.highlights || ''
+    if (checks.description) row['Description']        = results.description[p.sku] || p.description || ''
     if (checks.category) {
       row['Category ID']   = cat.category_id || ''
       row['Category Path'] = cat.category_path || ''

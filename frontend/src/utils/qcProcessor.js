@@ -27,8 +27,10 @@ function callGemini(prompt) {
 }
 
 function parseJsonArray(raw) {
-  const clean = raw.replace(/```json|```/g, '').trim()
-  return JSON.parse(clean.match(/\[[\s\S]*\]/)[0])
+  const clean = String(raw || '').replace(/```json|```/g, '').trim()
+  const m = clean.match(/\[[\s\S]*\]/)
+  if (!m) throw new Error(`The AI answer had no JSON list: ${clean.slice(0, 60) || '(empty)'}`)
+  return JSON.parse(m[0])
 }
 
 export function readQcFile(file) {
@@ -38,12 +40,21 @@ export function readQcFile(file) {
       try {
         const wb = XLSX.read(e.target.result, { type: 'array' })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
-        resolve(rows.map(r => {
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: '' })
+        const rows = raw.map(r => {
           const o = {}
-          for (const c of [...QC_COLUMNS, ...EXTRA_COLUMNS]) o[c] = String(r[c] ?? '').trim()
+          for (const [k, v] of Object.entries(r)) o[String(k).trim()] = v
+          for (const c of [...QC_COLUMNS, ...EXTRA_COLUMNS]) o[c] = String(o[c] ?? '').trim()
           return o
-        }).filter(r => r['ProductId']))
+        }).filter(r => r['ProductId'])
+        // Say which columns are missing, instead of just "no rows".
+        if (raw.length && !rows.length) {
+          const found = Object.keys(raw[0]).slice(0, 12).join(', ')
+          throw new Error(`No "ProductId" column in the first sheet — is this the Admin QC export? Columns found: ${found}`)
+        }
+        const missing = QC_COLUMNS.filter(c => raw.length && !(c in raw[0]) && !Object.keys(raw[0]).some(k => k.trim() === c))
+        rows.missingColumns = missing
+        resolve(rows)
       } catch (err) { reject(err) }
     }
     reader.onerror = reject
@@ -384,6 +395,10 @@ function saveQcCheckpoint(file, aiIssues, confidence) {
 }
 
 // ── Run enabled AI passes sequentially (with checkpoint + resume) ─────────────
+// Products the AI couldn't check (limit used up, bad answer…) are returned in
+// `unchecked` and kept in the checkpoint, so "Continue" retries just those —
+// they are never passed as OK. Without a key only the basic checks run.
+const STOP = /limit is used|No Gemini API key/i
 export async function runQcChecks(rows, apiKey, checks, context, onProgress, signal, file) {
   const lists = getQcLists()
   const cp = file ? loadQcCheckpoint(file) : null
@@ -404,11 +419,12 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
     return issuesByProduct
   }
 
-  const passes = QC_PASS_DEFS.filter(p => checks[p.key])
+  const passes = apiKey ? QC_PASS_DEFS.filter(p => checks[p.key]) : []
   const totalPasses = passes.length
   const total = rows.length
+  let lastError = '', stopped = false
 
-  for (let p = 0; p < passes.length; p++) {
+  for (let p = 0; p < passes.length && !stopped; p++) {
     const pass = passes[p]
     const done = aiIssues[pass.key] || (aiIssues[pass.key] = {})
     const pending = rows.filter(r => !(r['ProductId'] in done))
@@ -430,8 +446,10 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
           if (map[pid + '__conf'] !== undefined) confidence[pid] = map[pid + '__conf']
         }
         saveQcCheckpoint(file, aiIssues, confidence)
-      } catch {
-        // batch failed — skip, don't block the pipeline (will retry on resume)
+      } catch (e) {
+        // Batch failed — its products stay unchecked (retried on Continue).
+        lastError = e.message || 'AI error'
+        if (STOP.test(lastError)) { stopped = true; break }
       }
       doneCount += batch.length
       onProgress({ pass: p + 1, totalPasses, label: pass.label, done: doneCount, total })
@@ -439,6 +457,17 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
   }
 
   // ── Final stage: verify spelling/grammar flags to remove false positives ──
+  const unchecked = new Map()   // pid → passes not done
+  for (const pass of passes) {
+    for (const r of rows) {
+      if (!(r['ProductId'] in (aiIssues[pass.key] || {}))) unchecked.set(r['ProductId'], [...(unchecked.get(r['ProductId']) || []), pass.label])
+    }
+  }
+  if (unchecked.size) {
+    saveQcCheckpoint(file, aiIssues, confidence)
+    return { paused: false, incomplete: true, unchecked, error: lastError, issuesByProduct: buildResult(), confidence, aiSkipped: !apiKey }
+  }
+
   const nameByPid = {}
   for (const r of rows) nameByPid[r['ProductId']] = r['Name (English)']
   const flagged = []
@@ -461,17 +490,19 @@ export async function runQcChecks(rows, apiKey, checks, context, onProgress, sig
   }
 
   clearQcCheckpoint()
-  return { paused: false, issuesByProduct: buildResult(), confidence }
+  return { paused: false, issuesByProduct: buildResult(), confidence, unchecked, aiSkipped: !apiKey }
 }
 
-// ── Output files (mergedIssues: {pid → [issue strings]}) ─────────────────────
-export function buildQcViewFile(rows, mergedIssues) {
+// ── Output files (mergedIssues: {pid → [issue strings]}; unchecked: Map pid → passes not done)
+export function buildQcViewFile(rows, mergedIssues, unchecked = new Map()) {
   const cols = ['SL', ...QC_COLUMNS, 'Report']
   const data = rows.map((r, i) => {
     const issues = mergedIssues[r['ProductId']] || []
+    const notDone = unchecked.get(r['ProductId'])
+    const report = [...issues, ...(notDone ? [`NOT CHECKED YET by AI: ${notDone.join(', ')}`] : [])]
     return cols.map(c =>
       c === 'SL' ? i + 1
-      : c === 'Report' ? (issues.length ? issues.join('; ') : 'OK')
+      : c === 'Report' ? (report.length ? report.join('; ') : 'OK')
       : (r[c] ?? ''))
   })
   const wb = XLSX.utils.book_new()
@@ -485,9 +516,10 @@ export function buildQcViewFile(rows, mergedIssues) {
   return XLSX.write(wb, { bookType:'xlsx', type:'array' })
 }
 
-export function buildQcPassFile(rows, mergedIssues) {
+// Products not fully checked are left out — never approved by mistake.
+export function buildQcPassFile(rows, mergedIssues, unchecked = new Map()) {
   const cols = ['Seller ID','Product ID','Approval Status','Product Tags','Reject Reason']
-  const data = rows.map(r => {
+  const data = rows.filter(r => !unchecked.has(r['ProductId'])).map(r => {
     const pid = r['ProductId']
     const issues = mergedIssues[pid] || []
     return [r['SellerId'], pid, issues.length ? 2 : 1, '', issues.join('; ')]

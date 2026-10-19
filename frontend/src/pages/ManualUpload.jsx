@@ -10,6 +10,7 @@ export default function ManualUpload() {
   const [status, setStatus]     = useState('')
   const [progress, setProgress] = useState('')
   const [error, setError]       = useState('')
+  const [summary, setSummary]   = useState(null)
 
   const handleFile = e => {
     const f = e.target.files[0]
@@ -28,10 +29,11 @@ export default function ManualUpload() {
 
   const handleProcess = async () => {
     if (!file) { setError('Please select a file'); return }
-    setError(''); setStatus('processing'); setProgress('Starting...')
+    setError(''); setStatus('processing'); setProgress('Starting...'); setSummary(null)
     try {
-      const outputArray = await processManualFile(file, apiKey, msg => setProgress(msg))
-      const blob = new Blob([outputArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const { bytes, summary } = await processManualFile(file, apiKey, msg => setProgress(msg))
+      setSummary(summary)
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href = url; a.download = 'cartup_manual_output.xlsx'; a.click()
@@ -154,6 +156,21 @@ export default function ManualUpload() {
         {status === 'success' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'12px 16px', background:'#dcfce7', borderRadius:8, color:'#16a34a', fontSize:13, fontWeight:500, marginBottom:16 }}>
             <CheckCircle size={14} /> Done! cartup_manual_output.xlsx downloaded.
+          </div>
+        )}
+        {status === 'success' && summary && (
+          <div data-manual-summary style={{ padding:'10px 14px', background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:8, fontSize:12.5, color:'#334155', lineHeight:1.7, marginBottom:16 }}>
+            <b>{summary.rows.toLocaleString()}</b> rows written
+            {summary.invalid > 0 && <span style={{ color:'#b91c1c' }}> · {summary.invalid.toLocaleString()} in the "invalid" sheet{summary.duplicates ? ` (${summary.duplicates} repeated Seller SKUs)` : ''}</span>}
+            {summary.noCategory > 0 && <span style={{ color:'#b45309' }}> · {summary.noCategory.toLocaleString()} without a category — fill in the Category Id</span>}
+            {[
+              summary.discountRemoved && `${summary.discountRemoved} special prices removed (75%+ discount)`,
+              summary.spNotBelow && `${summary.spNotBelow} special prices not below the price (noted)`,
+              summary.stockCapped && `${summary.stockCapped} stocks capped at 99,999`,
+              summary.namesHash && `${summary.namesHash} names: "#" → "-"`,
+              summary.lowWeight && `${summary.lowWeight} weights to check (empty or 0.00x)`,
+            ].filter(Boolean).map(t => <div key={t}>· {t}</div>)}
+            <div style={{ color:'#64748b', fontSize:11.5 }}>Each row's notes are in its Report column.</div>
           </div>
         )}
         {error && (

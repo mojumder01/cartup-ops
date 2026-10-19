@@ -6,15 +6,10 @@ import { loadTemplate, weightNeedsCheck } from './shopDuplicate'
 import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
+import { darazRows, cell } from './darazFiles'
 import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, applyDecisions } from './variantReview'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
-
-const VARIANT_COLS = [
-  'Clothing Materials','Shoe Material','Bag Material','Dial Materials',
-  'Strap Materials','Main Materials','Recommended Age','Watch TYespe',
-  'Clothing Size','Age Group','Shoe Size','Size','Color','Bedding Size','Model'
-]
 
 const SECTIONS = [
   { name: 'Basic Information',   color: 'FFD9E1F2', cols: 15 },
@@ -42,69 +37,62 @@ export const OUTPUT_COLS = [
   'status','Cartup Category Path','Variations Combo','Report'
 ]
 
-function readSheet(file, sheetName) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = e => {
-      try {
-        const wb = XLSX.read(e.target.result, { type: 'array' })
-        const ws = sheetName ? wb.Sheets[sheetName] : wb.Sheets[wb.SheetNames[0]]
-        if (!ws) { reject(new Error(`Sheet "${sheetName}" not found`)); return }
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
-        resolve(rows)
-      } catch(err) { reject(err) }
-    }
-    reader.onerror = reject
-    reader.readAsArrayBuffer(file)
-  })
-}
-
-function readAllSheets(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = e => {
-      try {
-        const wb = XLSX.read(e.target.result, { type: 'array' })
-        const result = {}
-        for (const name of wb.SheetNames) {
-          const ws = wb.Sheets[name]
-          result[name] = XLSX.utils.sheet_to_json(ws, { defval: '', range: 1 })
-        }
-        resolve(result)
-      } catch(err) { reject(err) }
-    }
-    reader.onerror = reject
-    reader.readAsArrayBuffer(file)
-  })
-}
-
+// Daraz HTML → only the allowed tags, without their attributes (Daraz writes
+// <li style="…">, <ul class="…">); every other tag goes, its text stays.
+const BREAKS = new Set(['br', 'div', 'p', 'li', 'ul', 'ol', 'tr', 'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table'])
 function cleanHtml(html, allowedTags) {
   if (!html) return ''
-  // Remove img tags
-  let clean = String(html).replace(/<img[^>]*>/gi, '')
-  // Remove disallowed tags but keep content
-  const allowed = allowedTags.join('|')
-  clean = clean.replace(new RegExp(`<(?!\/?(?:${allowed})(?:\s|>|\/))([^>]*)>`, 'gi'), '')
-  return clean.trim()
+  const allowed = new Set(allowedTags)
+  return String(html)
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (tag, name) => {
+      name = name.toLowerCase()
+      if (allowed.has(name)) return tag[1] === '/' ? `</${name}>` : `<${name}>`
+      return BREAKS.has(name) ? ' ' : ''
+    })
+    .replace(/[ \t\r\n]+/g, ' ')
+    .replace(/<(li|p)>\s*<\/\1>/gi, '')
+    .trim()
 }
+// Text of some HTML with its line breaks kept (for turning loose text into bullets).
+const htmlLines = html => String(html)
+  .replace(/<br\s*\/?>|<\/(p|div|li|tr|h\d)>/gi, '\n')
+  .replace(/<[^>]+>/g, ' ')
+  .split(/\n|•/).map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
 
 function cleanHighlights(html) {
   if (!html) return ''
   const clean = cleanHtml(html, ['ul','li'])
-  if (clean.includes('<li>')) return clean
-  // Extract text and wrap
-  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  if (!text) return ''
-  const lines = text.split(/[•\n]/).map(l => l.trim()).filter(Boolean)
-  return '<ul>' + lines.map(l => `<li>${l}</li>`).join('') + '</ul>'
+  if (/<li>/.test(clean)) return /^<ul>/.test(clean) ? clean : `<ul>${clean.replace(/<\/?ul>/g, '')}</ul>`
+  const lines = htmlLines(html)
+  return lines.length ? '<ul>' + lines.map(l => `<li>${l}</li>`).join('') + '</ul>' : ''
 }
 
 function cleanDescription(html) {
   if (!html) return ''
   const clean = cleanHtml(html, ['p'])
-  if (clean.includes('<p>')) return clean
-  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  return text ? `<p>${text}</p>` : ''
+  if (/<p>/.test(clean)) return clean
+  const lines = htmlLines(html)
+  return lines.length ? lines.map(l => `<p>${l}</p>`).join('') : ''
+}
+
+// Content without AI (or when the AI couldn't do a product): spelling rules
+// for the name; highlights / description made from each other or the name
+// when one is empty.
+function localContent({ name, highlights, description }) {
+  name = localFixName(name)
+  if (!highlights && !description) {
+    highlights  = `<ul><li>${name}</li></ul>`
+    description = `<p>${name}</p>`
+  } else if (!highlights) {
+    const text = description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    highlights = `<ul><li>${name}</li><li>${text.slice(0, 200)}</li></ul>`
+  } else if (!description) {
+    const text = highlights.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    description = `<p>${name}. ${text.slice(0, 300)}</p>`
+  }
+  return { name, highlights, description }
 }
 
 function getCartupCategories() {
@@ -114,11 +102,18 @@ function getCartupCategories() {
 // The CartUp upload template's dropdown lists (Color, Size, Brand, Warranty…)
 // — what the hidden payload sheet looks values up in; a value not on its list
 // shows #N/A there and the upload rejects the row. header key → listMatcher.
-export async function templateLists(file) {
-  const tpl = await loadTemplate(await file.arrayBuffer())
-  const lists = {}
-  for (const c of tpl.columns) if (c.lookup) lists[headerKey(c.header)] = listMatcher(c.lookup.rows, columnKind(c.header))
-  return lists
+// Read once per file (the file check reads it when it is picked).
+const listsCache = new WeakMap()
+export function templateLists(file) {
+  if (!listsCache.has(file)) {
+    listsCache.set(file, (async () => {
+      const tpl = await loadTemplate(await file.arrayBuffer())
+      const lists = {}
+      for (const c of tpl.columns) if (c.lookup) lists[headerKey(c.header)] = listMatcher(c.lookup.rows, columnKind(c.header))
+      return lists
+    })().catch(e => { listsCache.delete(file); throw e }))
+  }
+  return listsCache.get(file)
 }
 
 // Stage 1 (slow, once): read the Daraz files, AI content + categories → one
@@ -130,10 +125,10 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   onProgress('Reading files...')
 
   const [allPriceRows, basicRows, freightRows, skuimgRows] = await Promise.all([
-    readSheet(files.price, 'template'),
-    readSheet(files.basic, 'template'),
-    readSheet(files.weight, 'template'),
-    readSheet(files.skuimg, 'template'),
+    darazRows(files.price, 'price'),
+    darazRows(files.basic, 'basic'),
+    darazRows(files.weight, 'weight'),
+    darazRows(files.skuimg, 'skuimg'),
   ])
   const priceRows = options.activeOnly
     ? allPriceRows.filter(r => String(r['status'] || '').trim().toLowerCase() === 'active')
@@ -146,16 +141,10 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     lists = await templateLists(files.template)
   }
 
-  let brandDict = {}
+  const brandDict = {}
   if (files.attr) {
-    const attrSheets = await readAllSheets(files.attr)
-    for (const [sheetName, rows] of Object.entries(attrSheets)) {
-      if (sheetName === 'INDEX') continue
-      for (const row of rows) {
-        const pid = String(row['Product ID'] || '').trim()
-        const brand = String(row['*Brand'] || row['Brand'] || '').trim()
-        if (pid && !brandDict[pid]) brandDict[pid] = brand || 'No Brand'
-      }
+    for (const { pid, brand } of await darazRows(files.attr, 'attr')) {
+      if (pid && !brandDict[pid]) brandDict[pid] = brand || 'No Brand'
     }
   }
 
@@ -165,10 +154,12 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     const pid = String(r['Product ID'] || '').trim()
     if (pid && !basicDict[pid]) basicDict[pid] = r
   }
-  const freightDict = {}
+  // Weight rows are per product; a Weight file with a SellerSKU column gives each SKU its own.
+  const freightDict = {}, freightBySku = {}
   for (const r of freightRows) {
-    const pid = String(r['Product ID'] || '').trim()
+    const pid = String(r['Product ID'] || '').trim(), sku = String(r['SellerSKU'] || '').trim()
     if (pid && !freightDict[pid]) freightDict[pid] = r
+    if (sku && !freightBySku[sku]) freightBySku[sku] = r
   }
   const skuDict = {}
   for (const r of skuimgRows) {
@@ -219,20 +210,15 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     await runConcurrent(tasks)
   } else {
     // No AI — local fix + basic fallback
-    for (const p of pidList) {
-      let { name, highlights, description } = p
-      name = localFixName(name)
-      if (!highlights && !description) {
-        highlights  = `<ul><li>${name}</li></ul>`
-        description = `<p>${name}</p>`
-      } else if (!highlights) {
-        const text = description.replace(/<[^>]+>/g, ' ').trim()
-        highlights = `<ul><li>${name}</li><li>${text.slice(0, 200)}</li></ul>`
-      } else if (!description) {
-        const text = highlights.replace(/<[^>]+>/g, ' ').trim()
-        description = `<p>${name}. ${text.slice(0, 300)}</p>`
-      }
-      aiCache[p.pid] = { name, highlights, description }
+    for (const p of pidList) aiCache[p.pid] = localContent(p)
+  }
+  // Products the AI missed (or answered with an empty field) get the same fallback.
+  for (const p of pidList) {
+    const c = aiCache[p.pid]
+    if (!c || aiMissed.has(p.pid)) aiCache[p.pid] = localContent(p)
+    else if (!c.name || !c.highlights || !c.description) {
+      const local = localContent(p)
+      aiCache[p.pid] = { name: c.name || local.name, highlights: c.highlights || local.highlights, description: c.description || local.description }
     }
   }
 
@@ -260,8 +246,11 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       const sampleRow = priceRows.find(r => String(r['catId'] || '').trim() === cat)
       const sampleName = String(sampleRow?.['*Product Name(English)'] || '').trim()
       if (!sampleName) { catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat}` }; return }
-      const matched = await matchCategory(sampleName, cartupCategories, apiKey)
-      if (matched) {
+      let matched = null, failed = ''
+      try { matched = await matchCategory(sampleName, cartupCategories, apiKey) } catch (e) { failed = e.message }
+      if (failed) {
+        catMatchCache[cat] = { cartupId:'', cartupPath:'', tags:'', reportNote:`No category match for Daraz catId=${cat} (AI unavailable: ${failed.slice(0, 80)})` }
+      } else if (matched) {
         const cid = matched.id || ''
         catMatchCache[cat] = { cartupId: cid, cartupPath: matched.path || '', tags: cartup_map[cid]?.tags || '', reportNote: `[AI] ${matched.reason || 'AI matched'}` }
       } else {
@@ -293,16 +282,16 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     const row = rowsToBuild[i]
     if (i % 10 === 0) onProgress(`Building output row ${i + 1} of ${total}...`)
 
-    const pid    = String(row['Product ID'] || '').trim()
-    const cat    = String(row['catId'] || '').trim()
-    const name   = String(row['*Product Name(English)'] || '').trim()
-    const sku    = String(row['SellerSKU'] || '').trim()
-    const combo  = String(row['Variations Combo'] || '').trim()
-    const status = String(row['status'] || '').trim()
-    const price  = String(row['*Price'] || row['**Price(MRP)'] || row['Price'] || '').trim()
+    const pid    = cell(row, 'Product ID')
+    const cat    = cell(row, 'catId')
+    const name   = cell(row, '*Product Name(English)')
+    const sku    = cell(row, 'SellerSKU')
+    const combo  = cell(row, 'Variations Combo')
+    const status = cell(row, 'status')
+    const price  = cell(row, '*Price', '**Price(MRP)', 'Price')
 
     const b = basicDict[pid] || {}
-    const f = freightDict[pid] || {}
+    const f = freightBySku[sku] || freightDict[pid] || {}
     const s = skuDict[sku] || {}
 
     const img1   = String(b['*Product Images1'] || '').trim()
@@ -337,6 +326,8 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
 
     // ── Validity check ────────────────────────────────────────────────────────
     const missing = []
+    if (!pid)          missing.push('Product ID missing')
+    if (!sku)          missing.push('Seller SKU missing')
     if (!name)         missing.push('Name missing')
     if (!price)        missing.push('Price missing')
     if (!img1)         missing.push('Image 1 missing')
@@ -351,7 +342,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
         'Price':        price,
         'Image 1':      img1,
         'Variant Image':variantImage,
-        'Quantity':     String(row['*Quantity'] || '').trim(),
+        'Quantity':     cell(row, '*Quantity'),
         'Status':       status,
         'Report':       missing.join(' | '),
       })
@@ -404,10 +395,10 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       'Warranty Policy(Bangla)':  warrantyPolicy,
       'Warranty Type':            String(b[warrantyTypeCol] || '').trim(),
       'Warranty Period':          String(b['Warranty'] || '').trim(),
-      '**Package Weight (kg)':    String(f['*Package Weight (kg)'] || '').trim(),
-      '**Package Length(cm)':     String(f['*Package Length (cm)'] || '').trim(),
-      '*Package Width (cm)':      String(f['*Package Width (cm)'] || '').trim(),
-      '*Package Height(cm)':      String(f['*Package Height (cm)'] || '').trim(),
+      '**Package Weight (kg)':    cell(f, '*Package Weight (kg)'),
+      '**Package Length(cm)':     cell(f, '*Package Length (cm)'),
+      '*Package Width (cm)':      cell(f, '*Package Width (cm)'),
+      '*Package Height(cm)':      cell(f, '*Package Height (cm)'),
       'Clothing Size':            '',
       'Color':                    '',
       'Model':                    '',
@@ -418,11 +409,11 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       '**Seller SKU':             sku,
       '**Parent Sku':             pid,
       '*Variant Image':           variantImage,
-      '**Current Stock Qty':      String(row['*Quantity'] || '').trim(),
+      '**Current Stock Qty':      cell(row, '*Quantity'),
       '**Price(MRP)':             price,
-      'Special Price':            String(row['SpecialPrice'] || row['Special Price'] || '').trim(),
-      'Special Price Start Date': String(row['SpecialPrice Start'] || row['Special Price Start Date'] || '').trim(),
-      'Special Price End Date':   String(row['SpecialPrice End'] || row['Special Price End Date'] || '').trim(),
+      'Special Price':            cell(row, 'SpecialPrice', 'Special Price'),
+      'Special Price Start Date': cell(row, 'SpecialPrice Start', 'Special Price Start Date'),
+      'Special Price End Date':   cell(row, 'SpecialPrice End', 'Special Price End Date'),
       'status':                   status,
       'Cartup Category Path':     cartupPath,
       'Variations Combo':         combo,
@@ -513,7 +504,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const applied = applyDecisions(result, decisions, memory)
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {} } = options
   const problems = []
-  const rules = { discountRemoved: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0, edited: 0, specialPrices: 0 }
+  const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0, edited: 0, specialPrices: 0 }
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
@@ -589,7 +580,14 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       notes.push('Weight to check (0.00x)')
       rules.lowWeight++
     }
-    if (Number(out['**Current Stock Qty']) === 0) rules.stockZero++
+    // A special price must be below the price (checked after edits, so a fixed one isn't flagged).
+    const spNow = Number(out['Special Price']), mrpNow = Number(out['**Price(MRP)'])
+    if (spNow > 0 && mrpNow > 0 && spNow >= mrpNow) {
+      flag('Special Price', `Not below the price (${out['**Price(MRP)']}) — CartUp may reject it`)
+      rules.spNotBelow++
+    }
+    const stockText = String(out['**Current Stock Qty'] ?? '').trim()
+    if (stockText !== '' && Number(stockText) === 0) rules.stockZero++
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
   })
   return { ...applied, problems, rules }
@@ -665,7 +663,7 @@ function buildExcel(applied, invalidRows = [], lists = null) {
 
   const ws = XLSX.utils.aoa_to_sheet(wsData)
   ws['!cols'] = OUTPUT_COLS.map((col, i) => {
-    if (i === 2 || i === 3) return { wch: 50 }
+    if (i === 1) return { wch: 50 }
     if (col === 'Report' || col === 'Cartup Category Path') return { wch: 45 }
     return { wch: 20 }
   })

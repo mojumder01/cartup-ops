@@ -7,6 +7,7 @@ import {
   loadQcCheckpoint, clearQcCheckpoint,
   getQcBatchSize, saveQcBatchSize,
 } from '../utils/qcProcessor'
+import { safeHtml } from '../utils/safeHtml'
 import {
   CheckSquare, FileSpreadsheet, CheckCircle, AlertCircle, Upload,
   Pause, Eye, X, Download, RefreshCw, Flag, Image as ImageIcon,
@@ -74,7 +75,11 @@ export default function QC() {
   const [batchSize, setBatchSize] = useState(getQcBatchSize())
   const [fileObj, setFileObj]   = useState(null)
   const [inputKey, setInputKey] = useState(0)
+  const [unchecked, setUnchecked] = useState(new Map())  // pid → AI passes not done (AI error / limit)
+  const [runNote, setRunNote]   = useState(null)        // { kind: 'incomplete' | 'basic', text }
+  const [colWarn, setColWarn]   = useState('')
   const signalRef               = useRef({ paused:false })
+  const runRef                  = useRef(0)             // the latest run — results of an older one are ignored
 
   const activeRows  = useMemo(() => (rows || []).filter(r => !removedIds.has(r['ProductId'])), [rows, removedIds])
   const uniqueRows  = useMemo(() => uniqueByProductId(activeRows), [activeRows])
@@ -120,10 +125,13 @@ export default function QC() {
     setRows(null); setIssues({}); setManualFlags({}); setReportEdit({}); setVariantOk({})
     setStatus(''); setError(''); setPassInfo(null); setFilters({})
     setRemovedIds(new Set()); setSelectedIds(new Set()); setView('unique')
-    signalRef.current = { paused: true }  // stop any running checks from the old file
+    setUnchecked(new Map()); setRunNote(null); setColWarn('')
+    signalRef.current.paused = true       // stop any running checks from the old file
+    runRef.current++                      // … and ignore what they return
     try {
       const parsed = await readQcFile(f)
       if (!parsed.length) { setError('No valid rows found (ProductId required)'); return }
+      if (parsed.missingColumns?.length) setColWarn(`Columns not in this file (those checks see them as empty): ${parsed.missingColumns.join(', ')}`)
       const cp = loadQcCheckpoint(f)
       if (!cp) clearQcCheckpoint()   // old file's checkpoint — throw away
       setRows(parsed); setFileName(f.name); setFileObj(f)
@@ -134,18 +142,29 @@ export default function QC() {
 
   const handleRun = async () => {
     if (!uniqueRows.length) return
-    setError(''); setStatus('processing')
+    setError(''); setStatus('processing'); setRunNote(null)
     signalRef.current = { paused:false }
+    const run = ++runRef.current
     try {
       const res = await runQcChecks(uniqueRows, apiKey, checks, context, setPassInfo, signalRef.current, fileObj)
+      if (run !== runRef.current) return
       setIssues(res.issuesByProduct)
-      setStatus(res.paused ? 'paused' : 'done')
-      setHasCheckpoint(res.paused)
-    } catch(err) { setStatus(''); setError(err.message) }
+      setUnchecked(res.unchecked || new Map())
+      if (res.incomplete) {
+        setStatus('paused'); setHasCheckpoint(true)
+        setRunNote({ kind: 'incomplete', text: `${res.unchecked.size} product${res.unchecked.size > 1 ? 's were' : ' was'} not checked by AI${res.error ? ` (${res.error.slice(0, 140)})` : ''}. They are marked "NOT CHECKED YET" and left out of the QC Pass file — click Continue to check them.` })
+      } else {
+        setStatus(res.paused ? 'paused' : 'done')
+        setHasCheckpoint(res.paused)
+        if (res.aiSkipped) setRunNote({ kind: 'basic', text: 'No Gemini key — only the basic checks ran (image, empty fields, weight, competitor & restricted words). Add a key in Profile for the AI checks.' })
+      }
+    } catch(err) { if (run === runRef.current) { setStatus(''); setError(err.message) } }
   }
 
   const handlePause = () => { signalRef.current.paused = true }
   const handleReset = () => {
+    signalRef.current.paused = true; runRef.current++
+    setUnchecked(new Map()); setRunNote(null); setColWarn('')
     clearQcCheckpoint()
     setRows(null); setFileName(''); setFileObj(null); setIssues({}); setManualFlags({}); setReportEdit({})
     setVariantOk({}); setStatus(''); setError(''); setPassInfo(null); setFilters({})
@@ -186,8 +205,8 @@ export default function QC() {
     })
   }
 
-  const handleDownloadView = () => download(buildQcViewFile(uniqueRows, allMerged()), 'cartup_unique_qc_view.xlsx')
-  const handleDownloadPass = () => download(buildQcPassFile(uniqueRows, allMerged()), 'cartup_qc_pass.xlsx')
+  const handleDownloadView = () => download(buildQcViewFile(uniqueRows, allMerged(), unchecked), 'cartup_unique_qc_view.xlsx')
+  const handleDownloadPass = () => download(buildQcPassFile(uniqueRows, allMerged(), unchecked), 'cartup_qc_pass.xlsx')
 
   // modal helpers
   const modalRow = modal ? displayRows[modal.index] : null
@@ -229,7 +248,7 @@ export default function QC() {
               </span>
             )}
             {status !== 'processing' && (
-              <button onClick={handleRun} className="btn-primary" style={btn('#4f46e5','#fff')} disabled={!apiKey}>
+              <button onClick={handleRun} className="btn-primary" style={btn('#4f46e5','#fff')} title={apiKey ? '' : 'No Gemini key — only the basic checks will run'}>
                 <Upload size={13}/> {status==='paused' ? 'Continue' : 'Run QC Checks'}
               </button>
             )}
@@ -301,6 +320,18 @@ export default function QC() {
             <AlertCircle size={15} color='#dc2626'/><span style={{ fontSize:13, color:'#dc2626' }}>{error}</span>
           </div>
         )}
+        {runNote && (
+          <div data-qc-note style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'10px 14px', borderRadius:8, marginBottom:12,
+            background: runNote.kind === 'incomplete' ? '#fef2f2' : '#fffbeb', border:`1px solid ${runNote.kind === 'incomplete' ? '#fecaca' : '#fde68a'}` }}>
+            <AlertCircle size={15} color={runNote.kind === 'incomplete' ? '#dc2626' : '#d97706'} style={{ flexShrink:0, marginTop:1 }}/>
+            <span style={{ fontSize:12.5, color: runNote.kind === 'incomplete' ? '#b91c1c' : '#92400e' }}>{runNote.text}</span>
+          </div>
+        )}
+        {colWarn && (
+          <div style={{ display:'flex', alignItems:'flex-start', gap:8, padding:'8px 14px', borderRadius:8, marginBottom:12, background:'#fffbeb', border:'1px solid #fde68a', fontSize:12, color:'#92400e' }}>
+            <AlertCircle size={14} color='#d97706' style={{ flexShrink:0, marginTop:1 }}/> {colWarn}
+          </div>
+        )}
 
         {rows && (
           <>
@@ -349,7 +380,8 @@ export default function QC() {
               {(checksRun || Object.keys(manualFlags).length > 0 || Object.keys(reportEdit).length > 0) && (
                 <>
                   <span style={{ fontSize:12, color:'#15803d', fontWeight:600 }}>
-                    {uniqueRows.length - rejectCount} OK · {rejectCount} issues
+                    {uniqueRows.length - rejectCount - [...unchecked.keys()].filter(p => !mergedIssues(p).length).length} OK · {rejectCount} issues
+                    {unchecked.size > 0 && <span style={{ color:'#b45309' }}> · {unchecked.size} not checked yet</span>}
                   </span>
                   <button onClick={handleDownloadView} className="btn-success" style={btn('#16a34a','#fff')}><Download size={13}/> Unique-QC View</button>
                   <button onClick={handleDownloadPass} className="btn-info" style={btn('#0369a1','#fff')}><Download size={13}/> QC Pass File</button>
@@ -519,8 +551,9 @@ export default function QC() {
                                 {hasAny
                                   ? pIssues.length
                                     ? <span style={{ color:'#dc2626', fontSize:11, whiteSpace:'normal' }}>{pIssues.join('; ')}</span>
-                                    : <span style={{ color:'#16a34a', fontSize:11, fontWeight:600 }}>OK</span>
+                                    : unchecked.has(pid) ? null : <span style={{ color:'#16a34a', fontSize:11, fontWeight:600 }}>OK</span>
                                   : <span style={{ color:'#cbd5e1', fontSize:11 }}>—</span>}
+                                {unchecked.has(pid) && <div style={{ color:'#b45309', fontSize:11, fontWeight:600 }}>Not checked yet: {unchecked.get(pid).join(', ')}</div>}
                               </div>
                               {hasAny && (
                                 <button onClick={() => setEditModal({ pid, text: pIssues.join('; ') })} title="Edit report"
@@ -563,7 +596,7 @@ export default function QC() {
             <div style={{ padding:'14px 20px', overflow:'auto', flex:1 }}>
               {isImgModal
                 ? <img src={modalRow[modal.col]} alt="" style={{ maxWidth:'100%', maxHeight:'52vh', borderRadius:8, display:'block', margin:'0 auto' }}/>
-                : <div style={{ fontSize:13, lineHeight:1.6, color:'#334155' }} dangerouslySetInnerHTML={{ __html: modalRow[modal.col] }}/>}
+                : <div style={{ fontSize:13, lineHeight:1.6, color:'#334155' }} dangerouslySetInnerHTML={{ __html: safeHtml(modalRow[modal.col]) }}/>}
             </div>
 
             {/* Footer: flag + comment */}

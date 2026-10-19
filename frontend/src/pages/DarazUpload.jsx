@@ -7,40 +7,61 @@ import {
 } from '../utils/processor'
 import { loadMemory, rememberDecisions, forgetMemory, valueGroups } from '../utils/variantReview'
 import { sheetIssues, buildChecklist } from '../utils/checks'
+import { readDarazFile, crossCheck, DARAZ_FILES, REQUIRED_FILES } from '../utils/darazFiles'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
 import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import VariantReview from '../components/VariantReview'
 import SheetEditor from '../components/SheetEditor'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck } from 'lucide-react'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch } from 'lucide-react'
 
-// current: text shown while nothing has been picked here (e.g. a remembered file).
-function FileInput({ label, required, onChange, current, hint }) {
-  const [picked, setPicked] = useState('')
-  const fileName = picked || current
+// A file box. file: the picked File; current: text shown when nothing is
+// picked here (a remembered file); check: what the file check found
+// ({ issues, stats, sheet } or { lists }); checking: being read.
+function FileInput({ label, required, onChange, file, current, hint, check, checking, accept = '.xlsx,.xls,.csv' }) {
+  const fileName = file?.name || current
+  const errors = check?.issues?.filter(i => i.level === 'error') || []
+  const warns = check?.issues?.filter(i => i.level === 'warn') || []
+  const bad = errors.length > 0
+  const st = check?.stats || {}
+  const n = (count, word) => `${count.toLocaleString()} ${word}${count === 1 ? '' : 's'}`
+  const summary = check && !bad && [
+    check.sheet && check.sheet !== 'template' && `sheet "${check.sheet}"`,
+    st.rows != null && n(st.rows, 'row'),
+    st.products != null && n(st.products, 'product'),
+    st.skus != null && n(st.skus, 'SKU'),
+    st.active != null && st.active < st.rows && `${st.active.toLocaleString()} active`,
+    st.withBrand != null && `${st.withBrand.toLocaleString()} with a brand`,
+    check.lists != null && `CartUp template · ${check.lists} dropdown lists`,
+  ].filter(Boolean).join(' · ')
+  const color = bad ? '#dc2626' : fileName ? '#16a34a' : '#94a3b8'
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div style={{ marginBottom: 12 }} data-file-box={label}>
       <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
         {label} {required && <span style={{ color:'#dc2626' }}>*</span>}
       </label>
       {hint && <div style={{ fontSize:11, color:'#94a3b8', marginTop:-2, marginBottom:6 }}>{hint}</div>}
       <label className="file-drop" style={{
         display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
-        border:`1.5px dashed ${fileName ? '#16a34a' : '#e2e8f0'}`,
+        border:`1.5px dashed ${bad ? '#fca5a5' : fileName ? '#16a34a' : '#e2e8f0'}`,
         borderRadius:8, cursor:'pointer',
-        background: fileName ? '#dcfce7' : '#fafafa',
+        background: bad ? '#fef2f2' : fileName ? '#dcfce7' : '#fafafa',
       }}>
-        <input type="file" accept=".xlsx,.xls,.csv" style={{ display:'none' }}
+        <input type="file" accept={accept} style={{ display:'none' }}
           onChange={e => {
             const f = e.target.files[0]
             e.target.value = ''   // allow re-selecting the same file name
-            if(f){ setPicked(f.name); onChange(f) }
+            if (f) onChange(f)
           }}
         />
         {fileName
-          ? <><CheckCircle size={16} color='#16a34a' /><span style={{ fontSize:13, color:'#16a34a', fontWeight:500 }}>{fileName}</span></>
+          ? <>{bad ? <AlertCircle size={16} color={color} /> : <CheckCircle size={16} color={color} />}<span style={{ fontSize:13, color, fontWeight:500, wordBreak:'break-all' }}>{fileName}</span></>
           : <><FileSpreadsheet size={16} color='#94a3b8' /><span style={{ fontSize:13, color:'#94a3b8' }}>Choose file...</span></>
         }
       </label>
+      {checking && <div style={{ fontSize:11.5, color:'#64748b', marginTop:4, display:'flex', alignItems:'center', gap:5 }}><Loader size={11} style={{ animation:'spin 1s linear infinite' }} /> Checking the file…</div>}
+      {!checking && errors.map((e, i) => <div key={i} style={{ fontSize:11.5, color:'#b91c1c', marginTop:4, display:'flex', gap:5 }}><XCircle size={12} style={{ flexShrink:0, marginTop:2 }} /> {e.text}</div>)}
+      {!checking && summary && <div style={{ fontSize:11.5, color:'#15803d', marginTop:4 }}>{summary}</div>}
+      {!checking && warns.map((w, i) => <div key={i} style={{ fontSize:11.5, color:'#b45309', marginTop:2, display:'flex', gap:5 }}><AlertTriangle size={12} style={{ flexShrink:0, marginTop:2 }} /> {w.text}</div>)}
     </div>
   )
 }
@@ -65,6 +86,8 @@ export default function DarazUpload() {
   const [reviewing, setReviewing] = useState(null)   // where the review window opens: { view, state, col } | null
   const [sheetOpen, setSheetOpen] = useState(null)   // the sheet view's filter | null
   const [rechecking, setRechecking] = useState('')
+  const [fileChecks, setFileChecks] = useState({})   // kind → what the file check found
+  const [checking, setChecking]   = useState({})     // kind → the file being read
 
   // Run options — rows before processing; special price and image keys apply at download (no re-run).
   const [activeOnly, setActiveOnly] = useState(false)
@@ -73,6 +96,7 @@ export default function DarazUpload() {
   const [stockMode, setStockMode] = useState('file')   // 'file' | 'set' — one number for every row
   const [stockValue, setStockValue] = useState('0')
   const [aiRun, setAiRun]         = useState(null)     // AI calls of the latest run: { start, end }
+  const [keyFile, setKeyFile]     = useState(null)
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   const [keyPick, setKeyPick]     = useState({ sheet: 0, link: '', key: '' })
 
@@ -94,12 +118,29 @@ export default function DarazUpload() {
   const toCheck = checks.filter(c => c.level === 'check' && c.count).length
   const openCheck = c => c.open?.review ? setReviewing(c.open.review) : c.open?.sheet && setSheetOpen(c.open.sheet)
 
+  // Each file is checked as soon as it is picked (the template: are its dropdown lists readable?).
+  const checkFile = (kind, f) => {
+    setChecking(c => ({ ...c, [kind]: f }))
+    const done = r => {
+      setFileChecks(c => ({ ...c, [kind]: { ...r, file: f } }))
+      setChecking(c => c[kind] === f ? { ...c, [kind]: null } : c)   // a newer file may still be reading
+    }
+    if (kind === 'template') {
+      templateLists(f)
+        .then(lists => done({ lists: Object.keys(lists).length, issues: Object.keys(lists).length ? [] : [{ level: 'warn', text: 'No dropdown lists found — values can\'t be checked' }] }))
+        .catch(e => done({ issues: [{ level: 'error', text: `Not a CartUp upload template: ${e.message}` }] }))
+    } else {
+      readDarazFile(f, kind).then(done, e => done({ issues: [{ level: 'error', text: e.message }] }))
+    }
+  }
+
   // The CartUp template picked last time (on this page or Shop Duplicate).
   useEffect(() => {
     loadSavedTemplate().then(t => {
       if (!t) return
       setSaved(t)
       setFiles(p => p.template ? p : { ...p, template: t.file })
+      checkFile('template', t.file)   // ignored if another template was picked meanwhile
     })
   }, [])
   useEffect(() => { saveSpecialEnd(spEnd) }, [spEnd])
@@ -107,7 +148,15 @@ export default function DarazUpload() {
   const pick = key => f => {
     setFiles(p => ({ ...p, [key]: f })); setStatus(''); setError(''); setResult(null)
     if (key === 'template') saveTemplate(f)
+    checkFile(key, f)
   }
+  // A check belongs to the file now in its box (a slower, older check is ignored).
+  const checkOf = kind => fileChecks[kind]?.file === files[kind] ? fileChecks[kind] : null
+  const read = Object.fromEntries(Object.keys(DARAZ_FILES).map(k => [k, checkOf(k)]))
+  const cross = useMemo(() => read.price ? crossCheck(files, read) : [], [files, fileChecks])
+  const fileErrors = [...REQUIRED_FILES, 'attr', 'template'].filter(k => checkOf(k)?.issues?.some(i => i.level === 'error'))
+  const crossErrors = cross.filter(c => c.level === 'error')
+  const stillChecking = Object.entries(checking).some(([k, v]) => v && v === files[k])
   const pickKeyFile = async f => {
     try {
       const sheets = await readTableFile(f)
@@ -118,9 +167,15 @@ export default function DarazUpload() {
   }
 
   const handleProcess = async () => {
-    if (!files.price || !files.basic || !files.weight || !files.skuimg) {
-      setError('Please select all required files'); return
+    const missing = REQUIRED_FILES.filter(k => !files[k])
+    if (missing.length) { setError(`Please choose the ${missing.map(k => DARAZ_FILES[k].label).join(', ')} file${missing.length > 1 ? 's' : ''}`); return }
+    if (stillChecking) { setError('The files are still being checked — a moment…'); return }
+    if (fileErrors.length) {
+      setError(`Fix the file${fileErrors.length > 1 ? 's' : ''} marked in red first: ${fileErrors.map(k => DARAZ_FILES[k]?.label || 'CartUp template').join(', ')}`)
+      return
     }
+    if (crossErrors.length && !window.confirm(`The file check found a problem:\n\n${crossErrors.map(c => '• ' + c.text).join('\n')}\n\nProcess anyway?`)) return
+    if (result && !window.confirm('Process the files again? This runs the AI again (uses requests from today\'s limit) and starts the review over.')) return
     setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({})
     setAiRun({ start: sessionStats(), end: null })
     try {
@@ -144,6 +199,9 @@ export default function DarazUpload() {
       setResult(r => rematch(r, lists))
       saveTemplate(f)
       setSaved({ file: f, savedAt: Date.now() })
+      // The next run uses this template too.
+      setFiles(p => ({ ...p, template: f }))
+      setFileChecks(c => ({ ...c, template: { lists: Object.keys(lists).length, issues: [], file: f } }))
     } catch (e) { setError(`Template: ${e.message}`) }
     setRechecking('')
   }
@@ -203,16 +261,32 @@ export default function DarazUpload() {
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 20px' }}>
-          <FileInput label="Price / Stock file" required onChange={pick('price')} />
-          <FileInput label="Basic file"          required onChange={pick('basic')} />
-          <FileInput label="Weight file"         required onChange={pick('weight')} />
-          <FileInput label="SKU Image file"      required onChange={pick('skuimg')} />
-          <FileInput label="Attribute file (optional)" onChange={pick('attr')}
+          {[['price', 'Price / Stock file'], ['basic', 'Basic file'], ['weight', 'Weight file'], ['skuimg', 'SKU Image file']].map(([k, label]) => (
+            <FileInput key={k} label={label} required onChange={pick(k)} file={files[k]} check={checkOf(k)} checking={!!checking[k] && checking[k] === files[k]} />
+          ))}
+          <FileInput label="Attribute file (optional)" onChange={pick('attr')} file={files.attr} check={checkOf('attr')} checking={!!checking.attr && checking.attr === files.attr}
             hint="Brands come from here — without it every product is No Brand" />
-          <FileInput label="CartUp upload template (recommended)" onChange={pick('template')}
-            current={saved && savedLabel(saved)}
+          <FileInput label="CartUp upload template (recommended)" onChange={pick('template')} accept=".xlsx"
+            file={files.template && files.template !== saved?.file ? files.template : null} current={saved && savedLabel(saved)}
+            check={checkOf('template')} checking={!!checking.template && checking.template === files.template}
             hint="Color, Size, Brand, Warranty… are checked against its dropdown lists — remembered for next time" />
         </div>
+
+        {/* The files against each other */}
+        {cross.length > 0 && (
+          <div data-file-check style={{ marginBottom:12, padding:'10px 14px', border:`1px solid ${crossErrors.length ? '#fecaca' : '#e2e8f0'}`, borderRadius:10, background: crossErrors.length ? '#fef2f2' : '#fafafa' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:12.5, fontWeight:700, color:'#1a202c', marginBottom:4 }}>
+              <FileSearch size={14} color='#4f46e5' /> File check
+              {!REQUIRED_FILES.every(k => read[k]) && <span style={{ fontWeight:500, color:'#94a3b8', fontSize:11.5 }}>— more checks once every file is chosen</span>}
+            </div>
+            {cross.map((c, i) => (
+              <div key={i} style={{ display:'flex', gap:6, fontSize:12, lineHeight:1.5, color: c.level === 'error' ? '#b91c1c' : c.level === 'warn' ? '#92400e' : '#15803d' }}>
+                {c.level === 'error' ? <XCircle size={13} style={{ flexShrink:0, marginTop:3 }} /> : c.level === 'warn' ? <AlertTriangle size={13} style={{ flexShrink:0, marginTop:3 }} /> : <CheckCircle size={13} style={{ flexShrink:0, marginTop:3 }} />}
+                <span>{c.text}{c.sample && <span style={{ color:'#64748b', fontFamily:'monospace', fontSize:11 }}> — {c.sample}</span>}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Run options */}
         <div style={{ marginTop:8, padding:'14px 16px', background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:10, display:'flex', flexDirection:'column', gap:12 }}>
@@ -250,7 +324,7 @@ export default function DarazUpload() {
           <div style={{ display:'flex', alignItems:'flex-start', gap:10, flexWrap:'wrap' }}>
             <span style={{ ...lbl, paddingTop:8 }}>Image keys</span>
             <div style={{ flex:1, minWidth:260 }}>
-              <FileInput label="Image key file (optional — when CartUp image keys are ready)" onChange={pickKeyFile}
+              <FileInput label="Image key file (optional — when CartUp image keys are ready)" onChange={f => { setKeyFile(f); pickKeyFile(f) }} file={keyFile}
                 hint="Daraz image links are replaced by these keys; add it now or after processing" />
               {keySheets && (
                 <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', fontSize:12, marginTop:-4 }}>
@@ -304,7 +378,7 @@ export default function DarazUpload() {
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 16px', background:'#dcfce7', color:'#166534', fontSize:13, fontWeight:600 }}>
               <CheckCircle size={14} /> Processed — {rows.toLocaleString()} rows
               <span style={{ fontWeight:500 }}>
-                {result.invalidRows.length ? ` · ${result.invalidRows.length.toLocaleString()} in "invalid" (missing name, price or image)` : ''}
+                {result.invalidRows.length ? ` · ${result.invalidRows.length.toLocaleString()} in "invalid" (missing Product ID, Seller SKU, name, price or image)` : ''}
                 {result.duplicateSkus.length ? ` · ${result.duplicateSkus.length} repeated Seller SKU rows removed` : ''}
                 {result.skipped ? ` · ${result.skipped.toLocaleString()} inactive rows left out` : ''}
               </span>
@@ -440,7 +514,7 @@ export default function DarazUpload() {
         >
           {status === 'processing'
             ? <><Loader size={15} style={{ animation:'spin 1s linear infinite' }} /> Processing...</>
-            : <><Download size={15} /> Process & Download</>
+            : <><Download size={15} /> {result ? 'Process again' : 'Process & Download'}</>
           }
         </button>
       </div>

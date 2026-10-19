@@ -26,11 +26,17 @@ export async function login(email, password) {
   return res.json()
 }
 
+// 'UNAUTHORIZED' only when the server says the token is no good — a server
+// that is asleep or down ('SERVER_UNREACHABLE' / 'SERVER_ERROR') is not a reason to sign out.
 export async function getMe(token) {
-  const res = await fetch(`${API_URL}/auth/me`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) throw new Error('Unauthorized')
+  let res
+  try {
+    res = await fetch(`${API_URL}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+  } catch {
+    throw new Error('SERVER_UNREACHABLE')
+  }
+  if (res.status === 401 || res.status === 403) throw new Error('UNAUTHORIZED')
+  if (!res.ok) throw new Error('SERVER_ERROR')
   return res.json()
 }
 

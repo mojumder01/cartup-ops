@@ -37,6 +37,7 @@ export default function Visual() {
   const [status, setStatus]     = useState('')
   const [progress, setProgress] = useState('')
   const [error, setError]       = useState('')
+  const [summary, setSummary]   = useState(null)
 
   const handleProcess = async () => {
     if (!files.skuimg || !files.basic) {
@@ -44,8 +45,9 @@ export default function Visual() {
     }
     setError(''); setStatus('processing'); setProgress('Starting...')
     try {
-      const outputArray = await processVisualFiles(files.skuimg, files.basic, msg => setProgress(msg))
-      const blob = new Blob([outputArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const { bytes, summary } = await processVisualFiles(files.skuimg, files.basic, msg => setProgress(msg))
+      setSummary(summary)
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href = url; a.download = 'cartup_visual_output.xlsx'; a.click()
@@ -102,6 +104,13 @@ export default function Visual() {
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:'#f0fdf4', border:'1px solid #bbf7d0', borderRadius:8, marginTop:12 }}>
               <CheckCircle size={15} color='#16a34a' />
               <span style={{ fontSize:13, color:'#15803d', fontWeight:500 }}>Done — file downloaded!</span>
+            </div>
+          )}
+          {status === 'success' && summary && (
+            <div data-visual-summary style={{ marginTop:8, fontSize:12.5, color:'#334155', lineHeight:1.7 }}>
+              {summary.rows.toLocaleString()} rows · {summary.products.toLocaleString()} products
+              {summary.notInBasic > 0 && <div style={{ color:'#b45309' }}>· {summary.notInBasic} product{summary.notInBasic > 1 ? 's' : ''} in the SKU image file but not in the basic file — kept, marked "(not in the basic file)", no product images</div>}
+              {summary.noVariantImage > 0 && <div style={{ color:'#b45309' }}>· {summary.noVariantImage} row{summary.noVariantImage > 1 ? 's' : ''} without a variant image (variant with no SKU image)</div>}
             </div>
           )}
 

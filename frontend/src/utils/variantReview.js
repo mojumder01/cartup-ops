@@ -199,6 +199,7 @@ export function cellState(item, cell, decisions, memory, lists) {
   if (decisions[allKey]) return fromDecision(decisions[allKey], cell, 'all')
   const m = memory[allKey]
   if (m?.keep) return { value: cell.raw, state: 'kept', scope: 'memory' }
+  if (m?.noWarranty) return { value: '', state: 'remembered', scope: 'memory', noWarranty: true }
   if (m) {
     // A remembered pick only counts while it is still on the template's list.
     const hit = lists?.[headerKey(cell.col)]?.match(m.value)

@@ -63,6 +63,12 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 | CartUp upload template | recommended | Its dropdown lists (Color, Size, Brand, Warranty…) — remembered in the browser after the first pick, shared with Shop Duplicate |
 | Image key file | optional | A sheet pairing Daraz image links with CartUp image keys — add it before or after processing (the keys often come later); pick its sheet, link column and key column (guessed automatically) |
 
+**File check** (`utils/darazFiles.js`) — every file is read and checked the moment it is picked, so a wrong or incomplete file shows up before processing:
+- **Under each box:** rows, products, Seller SKUs (and how many are active) in green; problems in amber (rows without Product ID, Seller SKU, price or name; repeated Seller SKUs; products without Image 1; weights empty or starting with 0.00); errors in red — **the wrong file in a box** ("This looks like the Basic file — put it in the Basic box"), the **CartUp template in a Daraz box**, **missing columns**, an empty or unreadable file. The CartUp template box says how many dropdown lists it has.
+- **File check panel** — the files against each other: the **same file in two boxes**; **Price and Basic from different exports** (fewer than half the products in both); products in the Price file but not in Basic (→ "invalid") or Weight (→ empty weight), Seller SKUs not in the SKU Image file (with the first IDs as examples); how many products get a brand from the Attribute file.
+- **Process** is blocked while a box is red (with the reason); a cross-file error asks "Process anyway?". Files are read once — processing reuses them. A title row above the header, another sheet name than `template`, or extra spaces in headers are handled. If the Weight file has a `SellerSKU` column, each SKU gets its own weight.
+- After a run the button says **Process again** and asks first (it runs the AI again and starts the review over).
+
 **Options** (on the page):
 - **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
 - **Special price:** include or leave out. When included it runs **from the day the file is made to the end date you pick** (remembered while it is still ahead); a special price that is a **discount of 75% or more** is removed and logged. Nothing else is removed.
@@ -112,9 +118,10 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 | Weight starts with 0.00 | check | Sheet → Weight to check |
 | Image links without a CartUp key (with an image key file) | check | Sheet → Image link without a key |
 | Names not cleaned by AI (AI unavailable — limit used up…) | check | Sheet → Names not cleaned by AI |
+| Special price not below the price | check | Sheet → Special price not below the price |
 | Kept as new values | info | Review → By value, kept as new |
 | Rows with 0 stock (from the file, or set by the Stock option) | info | Sheet → Stock 0 |
-| Rows left out (invalid sheet) | info | — |
+| Rows left out (invalid sheet, with the reason) | info | — |
 
 **Review window — "Check & match values"** (opens by itself when values are left; or from the check list). Two views, both with filters: **column** (all, a group — variant columns / Brand / Warranty / other — or one column, with its open count), **state**, and **search**.
 - **By value** — each seller value once, across all products: column, seller value, how many products and SKUs use it, and what it is now. States: *Not on list* · *Matched automatically* (close-spelling matches first — the ones worth a glance) · *Kept as new* · *All*. For an open value the closest CartUp values are shown as one-click chips; or **Keep as new**, **Pick…** (search the whole list, Enter takes the first), **No Brand** (Brand), **No Warranty** (Warranty Period), undo, and **Products ›** to see the products with that value. A pick here covers every SKU with that value and is remembered in this browser.
@@ -124,9 +131,9 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 
 **Step 3 — Output:** `cartup_daraz_output.xlsx` — downloads at once when nothing needs a decision, otherwise from the review window ("Download file", also on the page). Sheets:
 - **product** — with the decisions applied; the Report column notes each row's changes, values not on the list, and identical variants
-- **invalid** — rows missing required fields (as before)
+- **invalid** — rows that can't be uploaded, with the reason: no Product ID, no Seller SKU, no name, no price, no Image 1, or a colour variant without a variant image
 - **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock set by the Stock option, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
-- **to check** — flagged but not changed: weights starting with 0.00, image links without a key
+- **to check** — flagged but not changed: weights starting with 0.00, image links without a key, special prices not below the price
 - **new values** (with the template) — every value not on CartUp's lists, once each: column, value, status (*Add to the CartUp list — decided*, or *Not reviewed — shows #N/A until matched or added*), how many SKUs and products use it, the Seller SKUs, and the closest CartUp values
 
 ---
@@ -143,8 +150,10 @@ Download template → Fill in products → Upload → AI process → Download ou
 
 1. Click **Download Template** to get the input format
 2. Required columns: **Name**, **Parent SKU**. Optional: Price, Color/Size (comma-separated — variants auto-expand), Highlights, Description, Brand, Image 1–8, Stock, Weight, etc.
-3. Upload the filled file → **Process & Download**
+3. Upload the filled file → **Process & Download** (the `template` sheet is read when there is one; Excel date cells become `YYYY-MM-DD`)
 4. Color/Size values expand into one row per variant, with variant columns filled only when valid for the matched category
+5. House rules as in Daraz Upload: `#` in names → `-`, stock never above 99,999, a **75%+ special price removed**; a special price not below the price and weights empty or starting with 0.00 are **noted** in the row's Report. A **repeated Seller SKU** goes to the "invalid" sheet (the first row is kept).
+6. After processing the page shows a summary: rows written, rows in "invalid", rows without a category, and what the rules changed
 
 ### Shop Duplicate
 
@@ -204,6 +213,8 @@ Upload SKU Image file + Basic file → Generate → Download image output
 
 **Output columns:** `Parent SKU | Product | Seller SKU | Image 1–8 | Variant Image | Variant Combo`
 
+Each product comes out once (a product repeated in the Basic file isn't doubled). A product in the SKU Image file but not in the Basic file is **kept** — marked "(not in the basic file)", without product images — instead of being dropped; the page shows how many, and how many rows have no variant image. The `template` sheet of a Daraz export is read when there is one.
+
 ---
 
 ## 5. QC (Quality Check)
@@ -217,7 +228,7 @@ Upload Admin QC file → toggle checks → Run → review table (image/HTML prev
 manual flags, edit reports) → check variants manually → Download 2 output files
 ```
 
-**Step 1 — Upload** the Admin QC export (.xlsx). Required: `ProductId`. The table shows 14 columns; rows dedupe by Product ID in **Unique-QC View**.
+**Step 1 — Upload** the Admin QC export (.xlsx). Required: `ProductId`. The table shows 14 columns; rows dedupe by Product ID in **Unique-QC View**. A file without `ProductId` says which columns it has; missing columns are listed (those checks see them as empty).
 
 **Step 2 — Configure (control bar):**
 - **Check toggles** — turn each check on/off: Name, Category, Image, Highlights, Description, Weight, Restricted, Competitor
@@ -239,10 +250,12 @@ manual flags, edit reports) → check variants manually → Download 2 output fi
 
 After all passes, a **verify pass** re-checks every spelling/grammar flag and removes false positives (brand names, model codes, local words).
 
+**When the AI can't check a product** (today's limit used up, a bad answer…), it is **never passed as OK**: the table marks it *Not checked yet*, the Unique-QC View says "NOT CHECKED YET by AI: …", it is **left out of the QC Pass file**, and the checkpoint stays so **Continue** checks just those products. When the daily limit is used up the run stops at once instead of trying every batch. **Without a Gemini key** only the basic checks run (image, empty fields, weight, competitor and restricted words) — the page says so.
+
 **Step 4 — Review in the table:**
 - **All Products / Unique-QC View / Variant Check** view buttons
 - Click an **image** → large viewer with Prev/Next arrows, flag button, comment box
-- Click **View** on HL/Desc → rendered HTML preview (no raw tags) with Prev/Next + comment box
+- Click **View** on HL/Desc → rendered HTML preview (no raw tags) with Prev/Next + comment box. Seller HTML is cleaned first — scripts, event handlers (`onerror=…`) and `javascript:` links are removed, so product text can't run code in the app (same in Governance → Data Viz)
 - **Pencil icon** on any report → edit issues manually (separate with `;`, empty = OK)
 - **Filter** button → per-column text filters
 - **Checkboxes + Remove Selected**, or **Remove by ID** (paste multiple IDs) → removed products are excluded from both outputs. Undo anytime.
@@ -254,9 +267,9 @@ After all passes, a **verify pass** re-checks every spelling/grammar flag and re
 | File | Contents |
 |---|---|
 | **Unique-QC View** | SL + the 14 columns + Report (all issues joined with `;`, or `OK`) |
-| **QC Pass File** | `Seller ID \| Product ID \| Approval Status \| Product Tags \| Reject Reason` — Status **1** = all OK, **2** = rejected (all issues in Reject Reason) |
+| **QC Pass File** | `Seller ID \| Product ID \| Approval Status \| Product Tags \| Reject Reason` — Status **1** = all OK, **2** = rejected (all issues in Reject Reason). Products not checked yet are left out |
 
-**Pause / Resume:** Pause stops after the current batch; progress saves to the browser (checkpoint). Re-upload the same file → Continue resumes exactly where it stopped. Uploading a *different* file wipes everything automatically.
+**Pause / Resume:** Pause stops after the current batch; progress saves to the browser (checkpoint). Re-upload the same file → Continue resumes exactly where it stopped. Uploading a *different* file wipes everything automatically and stops the old run (its results are ignored).
 
 ---
 
@@ -302,6 +315,8 @@ Pass 5: Description (recreated from cleaned Name + fixed Highlights)
 
 **Large files (5k–15k):** checkpoint saves every batch, so a browser crash, rate-limit stop, or manual pause never loses progress. Resume across days if the daily API quota runs out.
 
+**When the AI can't do a batch:** the daily limit (or no key / network) **stops the run like a pause** — "Stopped — … Progress is saved" — and Resume continues from that batch. An answer that can't be read **keeps the product's original values** (never an empty Highlights / Description) and the Report column says so ("Highlights + Description: AI answer unreadable — original kept"); the page counts these products. A pass is skipped on Resume only when every product already has its result, so switching checks on or off between runs no longer skips the wrong pass. Every check here uses AI, so **Run is off without a Gemini key**.
+
 ---
 
 ## 7. Settings & Configuration
@@ -311,7 +326,7 @@ All settings persist in the browser (localStorage).
 | Setting | Where | Default |
 |---|---|---|
 | Gemini API keys, models and limits, pause between requests, requests at the same time, per-minute guard | Profile & Settings | Gemini 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite, 1 s, 3, on |
-| Word replacements (applies to Production output) | Profile & Settings | `daraz` → `cartup` |
+| Word replacements (applies to Production output) — in the text only, never inside HTML tags or web links (Daraz-hosted images keep working); the found word's capitals are kept (`Daraz` → `Cartup`, `DARAZ` → `CARTUP`) | Profile & Settings | `daraz` → `cartup` |
 | QC batch size | QC control bar | 5 |
 | Governance batch size | Governance page | 10 |
 | Competitor list | QC → Lists button | 17 marketplaces |
@@ -354,13 +369,15 @@ AI runs on **Gemini only** (Production, QC, Governance) — Grok and Groq were r
 | Problem | Fix |
 |---|---|
 | Old version showing after update | Hard refresh: `Ctrl+Shift+R` (check version in sidebar footer) |
+| "Waking up the server…" / signed out in the morning | The sign-in server sleeps when idle. The app now waits for it (about a minute) and, with a saved profile, opens straight away — you are signed out only when the server says the sign-in is no longer valid |
+| A Daraz file box is red | Read the line under it — usually the file is in the wrong box, or it is the CartUp template; the File check panel below lists files that don't match each other |
 | "Rate limit" error | Daily or per-minute limit hit on every ticked key — add or tick more keys or backup models in Profile, or wait until the reset time shown there; progress is saved |
 | Selecting a file does nothing | Fixed in v25.6.30+ — hard refresh. All inputs accept re-selecting the same filename |
 | New file shows old data | Fixed — uploading a new file wipes all previous state and stops running checks |
 | Paused, want to continue later | Re-upload the **same** file (same name + size) → Continue/Resume button appears |
 | Category obviously wrong | Check the Report/Note column — low-confidence picks are labelled for manual review. Add a context hint (QC) to improve accuracy |
 | AI checks skipped | No Gemini key ticked — add or tick one in Profile & Settings |
-| Output missing products | Check the `invalid` sheet (Governance) or error column (Production) — rows without required fields are listed there |
+| Output missing products | Check the `invalid` sheet — every row there says why (no Product ID, Seller SKU, name, price or image; repeated Seller SKU) |
 
 ---
 

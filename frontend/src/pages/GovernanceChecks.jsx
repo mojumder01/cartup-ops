@@ -124,6 +124,8 @@ export default function GovernanceChecks() {
   const [passInfo, setPassInfo]   = useState(null)
   const [error, setError]         = useState('')
   const [batchSize, setBatchSize] = useState(getGovBatchSize())
+  const [stopped, setStopped]     = useState('')   // why the last run stopped (AI limit…)
+  const [noted, setNoted]         = useState(0)    // products whose AI answer couldn't be used
   const signalRef                 = useRef({ paused:false })
 
   const toggleCheck = key => setChecks(c => ({ ...c, [key]: !c[key] }))
@@ -141,7 +143,8 @@ export default function GovernanceChecks() {
   const handleRun = async () => {
     if (!file) { setError('Please select a file'); return }
     if (!anyChecked) { setError('Please enable at least one check'); return }
-    setError(''); setStatus('processing')
+    if (!apiKey) { setError('No Gemini key ticked — every Governance check uses AI. Add or tick a key in Profile.'); return }
+    setError(''); setStatus('processing'); setStopped(''); setNoted(0)
     signalRef.current = { paused: false }
 
     try {
@@ -153,9 +156,11 @@ export default function GovernanceChecks() {
 
       if (result.paused) {
         setStatus('paused')
+        setStopped(result.stopped || '')
         setCheckpoint(loadCheckpoint(file))
         return
       }
+      setNoted(result.noted || 0)
 
       const blob = new Blob([result.output], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url  = URL.createObjectURL(blob)
@@ -296,7 +301,7 @@ export default function GovernanceChecks() {
           )}
           {!apiKey && (
             <div style={{ marginTop:12, padding:'8px 12px', background:'#fef3c7', border:'1px solid #fde68a', borderRadius:8, fontSize:12, color:'#92400e' }}>
-              No API key — AI checks skipped. Add key in Profile &amp; Settings.
+              No Gemini key ticked — every check here uses AI, so Run is off. Add or tick a key in Profile &amp; Settings.
             </div>
           )}
         </div>
@@ -317,25 +322,27 @@ export default function GovernanceChecks() {
         {status === 'paused' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:8, marginBottom:12 }}>
             <Pause size={15} color='#d97706'/>
-            <span style={{ fontSize:13, color:'#92400e' }}>Paused — progress saved. Re-upload same file and click Resume.</span>
+            <span style={{ fontSize:13, color:'#92400e' }}>
+              {stopped ? <>Stopped — {stopped.slice(0, 200)}. Progress is saved; click Resume when keys have room again (same file).</> : 'Paused — progress saved. Re-upload same file and click Resume.'}
+            </span>
           </div>
         )}
         {status === 'success' && (
           <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', background:'#f0fdf4', border:'1px solid #bbf7d0', borderRadius:8, marginBottom:12 }}>
-            <CheckCircle size={15} color='#16a34a'/><span style={{ fontSize:13, color:'#15803d', fontWeight:500 }}>All passes complete — output downloaded!</span>
+            <CheckCircle size={15} color='#16a34a'/><span style={{ fontSize:13, color:'#15803d', fontWeight:500 }}>All passes complete — output downloaded!{noted > 0 && <span style={{ color:'#b45309' }}> {noted} product{noted > 1 ? 's' : ''} kept their original text where the AI answer couldn't be used — see the Report column.</span>}</span>
           </div>
         )}
 
         {/* Buttons */}
         <div style={{ display:'flex', gap:10, alignItems:'center' }}>
           {status !== 'processing' && (
-            <button onClick={handleRun} disabled={!anyChecked || !file}
-              className={!anyChecked || !file ? '' : 'btn-primary'}
+            <button onClick={handleRun} disabled={!anyChecked || !file || !apiKey}
+              className={!anyChecked || !file || !apiKey ? '' : 'btn-primary'}
               style={{
                 display:'flex', alignItems:'center', gap:8, padding:'12px 26px',
-                background: !anyChecked || !file ? '#a5b4fc' : '#4f46e5',
+                background: !anyChecked || !file || !apiKey ? '#a5b4fc' : '#4f46e5',
                 color:'#fff', border:'none', borderRadius:10, fontWeight:600, fontSize:14,
-                cursor: !anyChecked || !file ? 'not-allowed' : 'pointer',
+                cursor: !anyChecked || !file || !apiKey ? 'not-allowed' : 'pointer',
               }}>
               {checkpoint
                 ? (() => {

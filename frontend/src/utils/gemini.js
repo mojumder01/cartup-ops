@@ -74,6 +74,16 @@ function callGemini(prompt) {
   return callAI(prompt, { maxOutputTokens: 4096 })
 }
 
+// The JSON array in an AI answer (it may come wrapped in ``` fences or text).
+export function jsonArray(raw) {
+  const clean = String(raw || '').replace(/```json|```/g, '').trim()
+  const m = clean.match(/\[[\s\S]*\]/)
+  if (!m) throw new Error(`The AI answer had no JSON list: ${clean.slice(0, 80) || '(empty)'}`)
+  const arr = JSON.parse(m[0])
+  if (!Array.isArray(arr)) throw new Error('The AI answer was not a list')
+  return arr
+}
+
 // ── Combined: clean + categorise in ONE API call ─────────────────────────────
 export async function processAndCategoriseBatch(products, cartupCategories, apiKey) {
   // products: [{pid, name, highlights, description}]
@@ -198,19 +208,18 @@ ${IMAGE_RULE_PROMPT}
 ${inputBlock}
 Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},...]`
   try {
-    const result = await callGemini(prompt, apiKey)
-    const clean = result.replace(/```json|```/g, '').trim()
-    const parsed = JSON.parse(clean)
+    const parsed = jsonArray(await callGemini(prompt, apiKey))
     const map = {}
-    for (const item of parsed) {
-      if (item.pid) {
-        const { highlights, description } = enforceImageRules(item.highlights || '', item.description || '')
-        map[item.pid] = { name: item.name, highlights, description }
-      }
-    }
-    for (const p of localFixed) {
-      if (!map[p.pid]) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description }
-    }
+    parsed.forEach((item, i) => {
+      const pid = String(item?.pid ?? item?.id ?? localFixed[i]?.pid ?? '')
+      if (!pid || !localFixed.some(p => p.pid === pid)) return
+      const { highlights, description } = enforceImageRules(String(item.highlights || ''), String(item.description || ''))
+      map[pid] = { name: String(item.name || '').trim(), highlights, description }
+    })
+    // Products the answer left out keep the local fix — and are reported.
+    const missing = localFixed.filter(p => !map[p.pid])
+    for (const p of missing) map[p.pid] = { name: p.name, highlights: p.highlights, description: p.description }
+    if (missing.length) onError?.('The AI answer left some products out', missing.map(p => p.pid))
     return map
   } catch (e) {
     onError?.(e.message || 'Unknown error', localFixed.map(p => p.pid))
@@ -323,9 +332,11 @@ Required output format — one object per product:
 }
 
 // ── Single category match (kept for compatibility) ────────────────────────────
+// Throws when the AI couldn't answer (so the caller can say why there is no match).
 export async function matchCategory(productName, cartupCategories, apiKey) {
   if (!apiKey || !productName) return null
   const results = await matchCategoriesBatch([{ pid: '__single__', name: productName }], cartupCategories, apiKey)
+  if (results.__error__) throw new Error(results.__error__)
   return results['__single__'] || null
 }
 

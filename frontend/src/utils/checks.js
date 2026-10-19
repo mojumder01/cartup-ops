@@ -15,6 +15,7 @@ export const ISSUE_TYPES = {
   required: { label: 'Required — empty', level: 'error' },
   weight:   { label: 'Weight to check (0.00x)', level: 'warn' },
   image:    { label: 'Image link without a key', level: 'warn' },
+  price:    { label: 'Special price not below the price', level: 'warn' },
   flag:     { label: 'Other flags', level: 'warn' },
 }
 
@@ -31,7 +32,7 @@ export function sheetIssues(output, columns, lists) {
       if (c === '**Category Id' && !v) set(k, 'category', 'No CartUp category — add the Category Id')
       else if (c.startsWith('**') && !v) set(k, 'required', 'Required — empty')
       else if (v && list && list.match(v)?.how !== 'exact') set(k, 'list', `Not on CartUp's ${colLabel(c)} list — shows #N/A`)
-      else if (flagged.has(k)) set(k, c === WEIGHT_COL ? 'weight' : IMAGE_COLS.includes(c) ? 'image' : 'flag', flagged.get(k))
+      else if (flagged.has(k)) set(k, c === WEIGHT_COL ? 'weight' : IMAGE_COLS.includes(c) ? 'image' : c === 'Special Price' ? 'price' : 'flag', flagged.get(k))
     }
   })
   return m
@@ -83,6 +84,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   add({ id: 'weight', level: 'check', count: byType.weight || 0, unit: 'row',
     title: 'Weight starts with 0.00', why: '0.001–0.009 kg (or 0) — CartUp may show a delivery charge of 0',
     open: { sheet: 'weight' } })
+  if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
+    title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',
+    open: { sheet: 'price' } })
   if (imageKeys) add({ id: 'image', level: 'check', count: byType.image || 0, unit: 'link',
     title: 'Image links without a CartUp key', why: 'Not in the image key file — the Daraz link stays',
     open: { sheet: 'image' } })
@@ -103,6 +107,6 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })
   if (result.invalidRows.length) add({ id: 'invalid', level: 'info', count: result.invalidRows.length, unit: 'row',
-    title: 'Rows left out', why: 'Missing name, price or image — listed in the "invalid" sheet, not in the upload' })
+    title: 'Rows left out', why: 'Missing Product ID, Seller SKU, name, price or image — listed in the "invalid" sheet with the reason, not in the upload' })
   return items
 }

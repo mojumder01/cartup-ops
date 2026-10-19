@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx'
 import MAPPINGS from './mappings.json'
 import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
+import { weightNeedsCheck } from './shopDuplicate'
 
 const { cartup_map, cat_variant_map } = MAPPINGS
 
@@ -11,8 +12,8 @@ const SECTIONS = [
   { name: 'Product Description', color: 'FFFCE4D6', cols: 5  },
   { name: 'Service',             color: 'FFFFF2CC', cols: 4  },
   { name: 'Delivery',            color: 'FFDDEBF7', cols: 4  },
-  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 11 },
-  { name: 'Extra',               color: 'FFEDEDED', cols: 8  },
+  { name: 'Variant Attribute',   color: 'FFF2F2F2', cols: 15 },
+  { name: 'Extra',               color: 'FFEDEDED', cols: 3  },
 ]
 
 const OUTPUT_COLS = [
@@ -57,11 +58,17 @@ function ensureHtmlDescription(text, name) {
   return `<p>${text.trim()}</p>`
 }
 
-// Flexible column finder
+// Flexible column finder (dates from Excel cells come back as YYYY-MM-DD)
 function col(row, ...keys) {
   for (const k of keys) {
     const found = Object.keys(row).find(h => h.toLowerCase().trim() === k.toLowerCase())
-    if (found && row[found] !== undefined && row[found] !== '') return String(row[found]).trim()
+    if (!found) continue
+    const v = row[found]
+    if (v instanceof Date && !Number.isNaN(v.getTime())) {
+      const p = n => String(n).padStart(2, '0')
+      return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`
+    }
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim()
   }
   return ''
 }
@@ -81,8 +88,9 @@ function readFile(file) {
     const reader = new FileReader()
     reader.onload = e => {
       try {
-        const wb = XLSX.read(e.target.result, { type: 'array' })
-        const ws = wb.Sheets[wb.SheetNames[0]]
+        const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
+        // The "template" sheet when there is one (the downloaded template has a rules sheet too).
+        const ws = wb.Sheets.template || wb.Sheets[wb.SheetNames[0]]
         const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
         resolve(rows)
       } catch (err) { reject(err) }
@@ -354,11 +362,34 @@ export async function processManualFile(file, apiKey, onProgress) {
   // ── Step 4: Build output rows ─────────────────────────────────────────────
   onProgress('Building output rows...')
   const outputRows = []
+  const summary = { rows: 0, invalid: 0, duplicates: 0, discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, spNotBelow: 0 }
+  const seenSkus = new Set()
 
   for (const r of expandedRows) {
+    // Seller SKU must be unique: a repeated one goes to "invalid" (the first row is kept).
+    if (seenSkus.has(r.sellerSku)) {
+      invalidRows.push({ 'Name': uniqueProducts[r.pid]?.name || '', 'SKU': r.sellerSku, 'Parent SKU': r.parentSku, 'Price': r.price, 'Image 1': r.img1, 'Stock': r.stock, 'Status': r.status, 'Report': 'Duplicate Seller SKU — the first row is kept' })
+      summary.duplicates++
+      continue
+    }
+    seenSkus.add(r.sellerSku)
     const ai = aiCache[r.pid] || { name: uniqueProducts[r.pid]?.name || '', highlights: '', description: '' }
     const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: 'No category match found' }
-    const productName = ai.name || uniqueProducts[r.pid]?.name || ''
+    const notes = []
+    // House rules (as in Daraz Upload): "#" → "-" in names, stock ≤ 99,999,
+    // a 75%+ special price removed; special price ≥ price and weights starting
+    // with 0.00 are noted, not changed.
+    if (/#/.test(ai.name || '')) { summary.namesHash++; notes.push('"#" in name → "-"') }
+    const productName = String(ai.name || uniqueProducts[r.pid]?.name || '').replace(/#/g, '-')
+    let stock = r.stock
+    if (Number(stock) > 99999) { notes.push(`Stock ${stock} capped at 99,999`); stock = '99999'; summary.stockCapped++ }
+    let { specialPrice, spStart, spEnd } = r
+    const sp = Number(specialPrice), mrp = Number(r.price)
+    if (sp > 0 && mrp > 0 && 1 - sp / mrp >= 0.75) {
+      notes.push(`Special price removed: ${Math.round((1 - sp / mrp) * 100)}% discount`)
+      specialPrice = ''; spStart = ''; spEnd = ''; summary.discountRemoved++
+    } else if (sp > 0 && mrp > 0 && sp >= mrp) { notes.push('Special price not below the price — check it'); summary.spNotBelow++ }
+    if (weightNeedsCheck(r.weight)) { notes.push('Weight to check (empty or 0.00x)'); summary.lowWeight++ }
     const highlights = ensureHtmlHighlights(ai.highlights, productName)
     const description = ensureHtmlDescription(ai.description, productName)
 
@@ -370,8 +401,8 @@ export async function processManualFile(file, apiKey, onProgress) {
 
     outputRows.push({
       '**Category Id':            cat.cartupId,
-      '**Name (English)':         ai.name,
-      'Name (Bengali)':           ai.name,
+      '**Name (English)':         productName,
+      'Name (Bengali)':           productName,
       '**Product Image 1':        r.img1,
       'Product Image 2':          r.img2,
       'Product Image 3':          r.img3,
@@ -415,19 +446,22 @@ export async function processManualFile(file, apiKey, onProgress) {
       '**Seller SKU':             r.sellerSku,
       '**Parent Sku':             r.parentSku,
       '*Variant Image':           r.img1,
-      '**Current Stock Qty':      r.stock,
+      '**Current Stock Qty':      stock,
       '**Price(MRP)':             r.price,
-      'Special Price':            r.specialPrice,
-      'Special Price Start Date': r.spStart,
-      'Special Price End Date':   r.spEnd,
+      'Special Price':            specialPrice,
+      'Special Price Start Date': spStart,
+      'Special Price End Date':   spEnd,
       'status':                   r.status,
       'Cartup Category Path':     cat.cartupPath,
-      'Report':                   cat.reportNote,
+      'Report':                   [cat.reportNote, ...notes].filter(Boolean).join(' | '),
     })
   }
+  summary.rows = outputRows.length
+  summary.invalid = invalidRows.length
+  summary.noCategory = outputRows.filter(r => !r['**Category Id']).length
 
   onProgress('Building Excel output...')
-  return buildExcel(outputRows, invalidRows)
+  return { bytes: buildExcel(outputRows, invalidRows), summary }
 }
 
 function buildExcel(rows, invalidRows = []) {

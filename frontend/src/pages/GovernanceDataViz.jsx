@@ -5,6 +5,7 @@ import {
   fileKeyFor, saveDataVizSession, loadDataVizSession, clearDataVizSession,
   diffEdits, applyEdits,
 } from '../utils/govDataVizProcessor'
+import { safeHtml } from '../utils/safeHtml'
 import {
   FileSpreadsheet, AlertCircle, RefreshCw, Download, X,
   ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Image as ImageIcon,
@@ -691,7 +692,7 @@ export default function GovernanceDataViz() {
                   <div>
                     <div style={{ fontSize:10.5, color:'#94a3b8', fontWeight:600, marginBottom:6, textTransform:'uppercase' }}>Live Preview</div>
                     <div style={{ fontSize:13, lineHeight:1.6, color:'#334155', border:'1.5px solid #e2e8f0', borderRadius:8, padding:'10px 12px', minHeight:300 }}
-                      dangerouslySetInnerHTML={{ __html: getVal(headers, modalRow, modal.col) }}/>
+                      dangerouslySetInnerHTML={{ __html: safeHtml(getVal(headers, modalRow, modal.col)) }}/>
                   </div>
                 </div>
               )}
