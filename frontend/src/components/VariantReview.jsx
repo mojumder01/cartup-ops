@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { reviewGroups, valueGroups, decisionKey, headerKey, colLabel, colGroup, splitCombo, RISK, COMBO_TARGETS } from '../utils/variantReview'
+import { reviewGroups, valueGroups, decisionKey, headerKey, colLabel, colGroup, splitCombo, productFixes, RISK, COMBO_TARGETS } from '../utils/variantReview'
 import { MATCH_LABEL } from '../utils/listMatch'
 import CopyButton from './CopyButton'
-import { X, Search, Check, Plus, RotateCcw, ChevronRight, ChevronLeft, AlertTriangle, ImageOff, Download, Tag, ShieldOff, Filter, Layers, Rows3 } from 'lucide-react'
+import { X, Search, Check, Plus, RotateCcw, ChevronRight, ChevronLeft, AlertTriangle, ImageOff, Download, Tag, ShieldOff, Filter, Layers, Rows3, Wand2 } from 'lucide-react'
 
 // Review window for Daraz Upload: the dropdown values (Color, Size, Brand,
 // Warranty…) checked against CartUp's lists. Two ways in:
 //   By value   — each distinct seller value once, across all products: one
 //                pick settles it everywhere (and is remembered next time)
 //   By product — one Parent SKU at a time with each Seller SKU's image; a
-//                pick can cover one SKU, the product, or every SKU
+//                pick can cover one SKU, the product, or every SKU; and
+//                quick fixes — complete ways to set a variant column for the
+//                whole product in one click (the size, colour and size, a part
+//                of the combo, the list's numbering, or as the seller wrote it),
+//                also for every similar product at once
 // Both filter by column and state, so a check ("brands", "warranty", "fuzzy
 // auto-matches") is one click from the Daraz page's check list.
 
@@ -80,17 +84,23 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
   }, [result])
 
   // ── By product ──
+  // Variants worth a look: not on the list, the same as a sibling, numbered or size put in Color.
+  const variantTrouble = g => g.dupes.length > 0 || g.skus.some(s => Object.entries(s.cells).some(([c, v]) =>
+    COMBO_TARGETS.includes(c) && (v.state === 'open' || (v.state === 'auto' && (v.how === 'numbered' || v.how === 'sizecolor')))))
   const q = query.trim().toLowerCase()
   const cellsIn = g => g.skus.flatMap(s => Object.entries(s.cells).filter(([c]) => colMatches(colFilter, c)).map(([, v]) => v))
   const pTest = {
     attention: g => cellsIn(g).some(v => v.state === 'open') || g.dupes.length > 0,
+    variants: g => variantTrouble(g),
     open: g => cellsIn(g).some(v => v.state === 'open'),
     dupes: g => g.dupes.length > 0,
     changed: g => cellsIn(g).some(v => v.state !== 'open' && v.state !== 'kept' && v.value !== v.cell.raw),
     all: g => colFilter === 'all' || cellsIn(g).length > 0,
   }
   const pCount = useMemo(() => Object.fromEntries(Object.entries(pTest).map(([k, t]) => [k, groups.filter(t).length])), [groups, colFilter])
-  const shown = groups.filter(g => pTest[pState](g) &&
+  // A product just fixed stays in view (with its quick fixes, to undo) until another is picked.
+  const [stay, setStay] = useState(null)
+  const shown = groups.filter(g => (g.parent === stay || pTest[pState](g)) &&
     (!q || g.parent.toLowerCase().includes(q) || String(g.name).toLowerCase().includes(q) ||
       g.skus.some(s => s.sku.toLowerCase().includes(q) || Object.values(s.cells).some(v => v.cell.raw.toLowerCase() === q))))
   const group = shown.find(g => g.parent === selected) || shown[0] || null
@@ -154,7 +164,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
     return next
   })
   const goNext = () => setAdvanceFrom(editing)
-  const pickParent = p => { setSelected(p); setEditing(null) }
+  const pickParent = p => { setSelected(p); setEditing(null); if (p !== stay) setStay(null) }
   const stepParent = d => {
     const i = shown.findIndex(g => g.parent === group?.parent)
     const g = shown[i + d]
@@ -196,6 +206,42 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
     return m
   }, [vShown.map(v => v.key).join('\n'), limit, valueEdit, result.lists])
   const showProducts = v => { setView('products'); setColFilter(`c:${v.col}`); setPState('all'); setQuery(v.raw); setEditing(null) }
+
+  // ── Quick fixes (By product) ──
+  // For a product whose variants need a look: complete ways to set a variant
+  // column for all its SKUs at once (each SKU gets its own pick), and the same
+  // fix for every similar product (same category and columns, same kind of fix).
+  const fixes = useMemo(() => {
+    if (!group || (!variantTrouble(group) && group.parent !== stay)) return []
+    // Only the columns with the trouble (not on the list, numbered, size put in Color);
+    // variants that are merely alike: every variant column.
+    const troubled = c => group.skus.some(s => { const v = s.cells[c]; return v && (v.state === 'open' || (v.state === 'auto' && (v.how === 'numbered' || v.how === 'sizecolor'))) })
+    const variantCols = group.cols.filter(c => COMBO_TARGETS.includes(c))
+    const cols = variantCols.some(troubled) ? variantCols.filter(troubled) : variantCols
+    return cols.map(col => ({ col, plans: productFixes(group.skus.map(s => s.item), col, result.lists) })).filter(f => f.plans.length)
+  }, [group, result, stay])
+  const similar = useMemo(() => {
+    if (!group || !fixes.length) return {}
+    const shape = g => `${g.category}|${(g.skus[0]?.item.applicable || []).join(',')}`
+    const others = groups.filter(g => g.parent !== group.parent && shape(g) === shape(group) && variantTrouble(g))
+    const out = {}
+    for (const { col, plans } of fixes) for (const plan of plans) {
+      out[`${col}|${plan.id}`] = others.map(g => productFixes(g.skus.map(s => s.item), col, result.lists).find(x => x.id === plan.id)).filter(Boolean)
+    }
+    return out
+  }, [fixes, groups])
+  const fixKey = (sku, col) => `sku|${sku}|${col}`   // = decisionKey.sku
+  const isApplied = (col, plan) => plan.values.every(r => decisions[fixKey(r.sku, col)]?.value === r.value)
+  const applyFixes = (col, plans) => { setStay(group?.parent); setDecisions(prev => {
+    const next = { ...prev }
+    for (const plan of plans) for (const r of plan.values) next[fixKey(r.sku, col)] = r.onList ? { value: r.value } : { value: r.value, keep: true }
+    return next
+  }) }
+  const undoFix = (col, plan) => setDecisions(prev => {
+    const next = { ...prev }
+    for (const r of plan.values) delete next[fixKey(r.sku, col)]
+    return next
+  })
 
   const btn = { display:'flex', alignItems:'center', gap:6, padding:'7px 12px', borderRadius:8, fontSize:12.5, fontWeight:600, cursor:'pointer', border:'1.5px solid #e2e8f0', background:'#fff', color:'#334155' }
   const mini = { ...btn, padding:'3px 8px', fontSize:11.5, gap:4 }
@@ -239,7 +285,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
           </select>
           {view === 'products' ? (
             <div style={segBox}>
-              {[['attention', 'Needs attention'], ['open', 'Open values'], ['dupes', 'Same variant'], ['changed', 'Changed automatically'], ['all', 'All']]
+              {[['attention', 'Needs attention'], ['variants', 'Variants to check'], ['open', 'Open values'], ['dupes', 'Same variant'], ['changed', 'Changed automatically'], ['all', 'All']]
                 .map(([k, label]) => seg(pState === k, `${label} (${pCount[k]})`, () => setPState(k), k))}
             </div>
           ) : (
@@ -361,7 +407,8 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                   <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:3 }}>
                     {g.open > 0 && <span style={{ fontSize:10.5, fontWeight:700, color:'#b91c1c', background:'#fee2e2', borderRadius:10, padding:'1px 7px' }}>{g.open} open</span>}
                     {g.dupes.length > 0 && <span style={{ fontSize:10.5, fontWeight:700, color:'#92400e', background:'#fef3c7', borderRadius:10, padding:'1px 7px' }}>same variant</span>}
-                    {!g.open && !g.dupes.length && <Check size={14} color='#16a34a' />}
+                    {!g.open && !g.dupes.length && variantTrouble(g) && <span style={{ fontSize:10.5, fontWeight:700, color:'#3730a3', background:'#eef2ff', borderRadius:10, padding:'1px 7px' }}>check</span>}
+                    {!g.open && !g.dupes.length && !variantTrouble(g) && <Check size={14} color='#16a34a' />}
                   </div>
                 </div>
               ))}
@@ -394,6 +441,54 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
               {group.skus[0]?.item.images?.length > 1 && (
                 <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
                   {group.skus[0].item.images.map((src, i) => <Thumb key={i} src={src} size={big ? 72 : 40} onOpen={setZoom} />)}
+                </div>
+              )}
+
+              {fixes.length > 0 && (
+                <div data-quick-fix style={{ marginBottom:12, border:'1px solid #c7d2fe', background:'#f5f7ff', borderRadius:10, padding:'10px 12px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, fontWeight:700, fontSize:12.5, color:'#3730a3', marginBottom:8 }}>
+                    <Wand2 size={14} /> Quick fix — set {fixes.map(f => colLabel(f.col)).join(' / ')} for all {group.skus.length} SKUs at once
+                  </div>
+                  {fixes.map(({ col, plans }) => (
+                    <div key={col} style={{ marginBottom:4 }}>
+                      {fixes.length > 1 && <div style={{ fontSize:11.5, fontWeight:700, color:'#475569', margin:'4px 0' }}>{colLabel(col)}</div>}
+                      <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                        {plans.map(plan => {
+                          const applied = isApplied(col, plan)
+                          const now = !applied && plan.values.every(r => group.skus.find(x => x.sku === r.sku)?.cells[col]?.value === r.value)
+                          const more = similar[`${col}|${plan.id}`] || []
+                          return (
+                            <div key={plan.id} data-fix={plan.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 10px', background:'#fff', border: applied ? '1.5px solid #22c55e' : '1px solid #e2e8f0', borderRadius:8, flexWrap:'wrap' }}>
+                              <div style={{ minWidth:180 }}>
+                                <div style={{ fontWeight:700, fontSize:12.5, color:'#0f172a' }}>{plan.label}{applied && <span style={{ color:'#15803d', fontWeight:600 }}> · in use</span>}{now && <span style={{ color:'#4f46e5', fontWeight:600 }}> · what it has now</span>}</div>
+                                <div style={{ fontSize:11, color:'#64748b' }}>{plan.why}</div>
+                              </div>
+                              <div style={{ flex:1, display:'flex', flexWrap:'wrap', gap:4, minWidth:200 }}>
+                                {plan.values.map(r => (
+                                  <span key={r.sku} title={`${r.sku}${r.onList ? '' : ' — new value'}`} style={{ fontSize:11.5, padding:'2px 8px', borderRadius:10,
+                                    background: r.onList ? '#ecfdf5' : '#fffbeb', color: r.onList ? '#065f46' : '#92400e', border: `1px solid ${r.onList ? '#a7f3d0' : '#fde68a'}` }}>{r.value}</span>
+                                ))}
+                              </div>
+                              <span style={{ fontSize:11, color: plan.newValues ? '#92400e' : '#15803d', fontWeight:600, whiteSpace:'nowrap' }}>
+                                {plan.newValues ? `${plan.newValues} new value${plan.newValues > 1 ? 's' : ''} for CartUp` : 'all on CartUp\'s list'}
+                              </span>
+                              {applied
+                                ? <button onClick={() => undoFix(col, plan)} style={mini}><RotateCcw size={12} /> Undo</button>
+                                : <button onClick={() => applyFixes(col, [plan])} style={{ ...mini, background:'#4f46e5', borderColor:'#4f46e5', color:'#fff' }}><Check size={12} /> Use this</button>}
+                              {more.length > 0 && (
+                                <button onClick={() => applyFixes(col, [plan, ...more])} style={mini} title={`Same category and columns: ${more.map(p => p.values[0]?.sku).slice(0, 5).join(', ')}…`}>
+                                  <Layers size={12} /> Use for this + {more.length} similar product{more.length > 1 ? 's' : ''}
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ fontSize:11, color:'#64748b', marginTop:6 }}>
+                    Green = on CartUp's list · amber = a new value (listed in the "new values" sheet for CartUp to add; #N/A until then). A quick fix is a pick per SKU — click any value below to change just one.
+                  </div>
                 </div>
               )}
 

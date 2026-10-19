@@ -109,6 +109,9 @@ function aliases(raw, kind) {
     if (/^((as|same as|like) (the )?(picture|pic|image|photo|shown)s?|as shown|picture colou?r|as per (picture|image))$/.test(v)) out.push('same as picture', 'as per image', 'picture color')
     if (/^(not specified|n\/?a|none|default|no colou?r)$/.test(v)) out.push('not specified')
     if (/^random( colou?rs?)?$/.test(v)) out.push('random')
+    // Gender as a variant (diapers, belts…), as sellers write it.
+    if (/^(mail|male|man|men|gents?|boys?)$/.test(v)) out.push('male', 'men')
+    if (/^(female|famale|femail|woman|women|ladies|lady|girls?)$/.test(v)) out.push('female', 'famale', 'women')
   } else if (kind === 'size' || kind === 'shoeSize') {
     out.push(...sizeAliases(v, kind))
   } else if (kind === 'warrantyPeriod') {

@@ -294,6 +294,61 @@ export function sizesIntoColor(items, lists) {
   return null
 }
 
+// ── Quick fixes ───────────────────────────────────────────────────────────────
+// For the review window: complete ways to set one variant column for every
+// SKU of a product at once — each a full set of values, no two alike —
+// so a product whose variants don't match is fixed with one click (and the
+// same fix can go to every similar product).
+//   id: 'size' · 'colour+size' · 'part:<i>' · 'range' · 'numbered' · 'new'
+//   values: [{ sku, value, onList }] — onList false = a new value for CartUp to add
+// items: one product's SKUs; col: the variant column (Color, Size…).
+export function productFixes(items, col, lists) {
+  const list = lists?.[headerKey(col)]
+  if (!list || items.length < 2 || !items.every(it => it.cells.some(c => c.col === col))) return []
+  const hit = listHit(list)
+  const parts = items.map(it => splitCombo(it.combo))
+  const width = Math.max(0, ...parts.map(p => p.length))
+  const differing = [...Array(width).keys()].filter(i => new Set(parts.map(p => (p[i] || '').toLowerCase())).size > 1)
+  const colourAt = [...Array(width).keys()].find(i => parts.every(p => p[i] && valueKind(p[i]) === 'color'))
+  const colourOf = k => colourAt !== undefined ? (hit(parts[k][colourAt]) || parts[k][colourAt]) : ''
+  const plans = [], seen = new Set()
+  const add = (id, label, why, values) => {
+    if (!values.every(Boolean) || new Set(values.map(sameKey)).size < values.length) return
+    const sig = values.map(sameKey).join('|')
+    if (seen.has(sig)) return
+    seen.add(sig)
+    const rows = values.map((v, k) => ({ sku: items[k].sku, value: v, onList: sameKey(hit(v) || '') === sameKey(v) }))
+    plans.push({ id, label, why, values: rows, newValues: rows.filter(r => !r.onList).length })
+  }
+  // A part tells the variants apart only when every SKU's is different (not just some).
+  const tellsApart = i => parts.every(p => p[i]) && new Set(parts.map(p => p[i].toLowerCase().replace(/\s+/g, ''))).size === parts.length
+  const sizePos = differing.find(i => tellsApart(i) && parts.every(p => isSizePart(p[i])))
+  if (sizePos !== undefined) {
+    const sizes = parts.map(p => p[sizePos])
+    add('size', 'The size', `e.g. "${sizes[0]}" → ${col}`, resolveNames(sizes.map(x => nameTries(x, '', false)), new Set(), hit))
+    if (colourAt !== undefined) add('colour+size', 'Colour and size', `e.g. "${parts[0][colourAt]}, ${sizes[0]}"`, resolveNames(sizes.map((x, k) => nameTries(x, colourOf(k), true).filter(n => sameKey(n).startsWith(sameKey(colourOf(k))) && sameKey(n) !== sameKey(colourOf(k)))), new Set(), hit))
+  }
+  for (const i of differing) {
+    if (i === sizePos || i === colourAt || !tellsApart(i)) continue
+    add(`part:${i}`, `Part ${i + 1} of the combo`, `e.g. "${parts[0][i] || '—'}"`, resolveNames(parts.map(p => p[i] ? nameTries(p[i], '', false) : null), new Set(), hit))
+  }
+  if (colourAt !== undefined && tellsApart(colourAt)) add('part:colour', 'The colour', `e.g. "${parts[0][colourAt]}"`, resolveNames(parts.map((p, k) => [colourOf(k)]), new Set(), hit))
+  // A range ("37-39"): its first size as the list has it.
+  const cur = items.map(it => { const c = it.cells.find(x => x.col === col); return String(c.auto ?? c.raw) })
+  if (cur.every(v => /^\s*\d+(\.\d+)?\s*-\s*\d+/.test(v))) add('range', 'First size of each range', `e.g. "${cur[0]}" → ${cur[0].split('-')[0].trim()}`, resolveNames(cur.map(v => [`${v.split('-')[0].trim()} (EU)`, v.split('-')[0].trim()]), new Set(), hit))
+  // The list's own numbered entries (Grey-1, Grey-2…).
+  const base = colourOf(0) || cur[0]
+  const numbered = items.map((_, k) => { const h = list.match(`${base}-${k + 1}`); return h && sameKey(h.value) === sameKey(`${base}-${k + 1}`) ? h.value : null })
+  add('numbered', `Numbered (${base}-1, ${base}-2…)`, 'the list\'s numbered entries — says nothing about the variant', numbered)
+  // As written — new values for CartUp to add ("Grey SPL", "EU 42 S").
+  const written = parts.map((p, k) => uniq([colourAt !== undefined && !differing.includes(colourAt) ? colourOf(k) : '', ...differing.map(i => (p[i] || '').replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').replace(/:/g, ' '))]).join(' ').replace(/\s+/g, ' ').trim())
+  add('new', 'As the seller wrote it', 'new values — CartUp adds them to its list (#N/A until then)', written.map(w => hit(w) || w))
+  // Best first: on CartUp's list and saying what the variant is; then the
+  // list's numbering (on the list, says nothing); then new values.
+  const rank = p => p.newValues ? 2 + p.newValues / 1000 : p.id === 'numbered' ? 1 : 0
+  return plans.sort((a, b) => rank(a) - rank(b))
+}
+
 // What a product's variants differ by, from its Variations Combo values:
 // 'colour', 'size', 'colour+size', 'other' — or '' for a single SKU / no combo.
 export function variantKind(items) {
@@ -362,7 +417,8 @@ export function cellState(item, cell, decisions, memory, lists) {
   return { value: cell.raw, state: 'open', conflict: cell.conflict }
 }
 function fromDecision(d, cell, scope) {
-  if (d.keep) return { value: cell.raw, state: 'kept', scope }
+  // keep: the seller's value as a new list value — or, with a value, that value (a quick fix's new value).
+  if (d.keep) return { value: d.value ?? cell.raw, state: 'kept', scope }
   if (d.noWarranty) return { value: '', state: 'picked', scope, noWarranty: true }
   return { value: d.value, state: d.value === cell.raw ? 'ok' : 'picked', scope }
 }
@@ -511,12 +567,13 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
         if (st.value !== cell.raw) changed.push(`${colLabel(cell.col)} ${cell.raw} → ${st.value}`)
       }
       if (st.state === 'open' || st.state === 'kept') {
-        const k = `${colLabel(cell.col)}|${cell.raw.toLowerCase()}`
-        if (!newValues.has(k)) newValues.set(k, { column: colLabel(cell.col), value: cell.raw, skus: [], parents: new Set(), decided: true, listKey: headerKey(cell.col) })
+        const written = st.state === 'kept' ? st.value : cell.raw
+        const k = `${colLabel(cell.col)}|${written.toLowerCase()}`
+        if (!newValues.has(k)) newValues.set(k, { column: colLabel(cell.col), value: written, skus: [], parents: new Set(), decided: true, listKey: headerKey(cell.col) })
         const nv = newValues.get(k)
         nv.skus.push(item.sku); nv.parents.add(item.parent)
         if (st.state === 'open') nv.decided = false
-        fresh.push(`${colLabel(cell.col)} "${cell.raw}"`)
+        fresh.push(`${colLabel(cell.col)} "${written}"`)
       }
     }
     // "No Warranty" picked for a warranty period that isn't on the list.

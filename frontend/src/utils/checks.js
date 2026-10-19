@@ -77,7 +77,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Other values not on CartUp lists', why: 'Materials, unit… — pick a match or keep as new',
       open: { review: { view: 'values', state: 'open', col: 'g:other' } } })
     add({ id: 'dupes', level: 'fix', count: output.stats.dupes, unit: 'SKU',
-      title: 'Variants with the same values', why: 'SKUs of one Parent SKU must differ — change one value (e.g. Multicolor-1, -2)',
+      title: 'Variants with the same values', why: 'SKUs of one Parent SKU must differ — open the product for one-click quick fixes, or change one value',
       open: { review: { view: 'products', state: 'dupes', col: 'all' } } })
   }
   add({ id: 'category', level: 'fix', count: byType.category || 0, unit: 'row',
@@ -87,8 +87,8 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',
     open: { sheet: 'required' } })
   if (byType.numbered) add({ id: 'numbered', level: 'fix', count: byType.numbered, unit: 'SKU',
-    title: 'Variants told apart only by a number', why: 'Multicolor-1, -2…: the seller\'s variants differ by something CartUp has no column for (e.g. "Vitamin C", "tea tree") — check each, or pick a real value',
-    open: { sheet: 'numbered' } })
+    title: 'Variants told apart only by a number', why: 'Multicolor-1, -2…: the seller\'s variants differ by something CartUp has no column for — open the product for one-click quick fixes (the size, a part of the combo, or as the seller wrote it)',
+    open: { review: { view: 'products', state: 'variants', col: 'g:variant' } } })
   add({ id: 'leftout', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
     title: 'Rows left out of the upload', why: imageKeys
       ? 'No package weight, no product image with a CartUp key, or no key for the Variant Image — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet'
@@ -105,8 +105,8 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       open: { review: { view: 'values', state: 'changed', col: 'all' } } })
   }
   if (byType.sizecolor) add({ id: 'sizecolor', level: 'check', count: byType.sizecolor, unit: 'SKU',
-    title: 'Size put in the Color column', why: 'The category has Color but no size column — variants that differ by size (S, M, L…) or side (Left / Right) get Grey-L, L, M (Left)… in Color instead of Grey-1, Grey-2; a quick look confirms them',
-    open: { sheet: 'sizecolor' } })
+    title: 'Size put in the Color column', why: 'The category has Color but no size column — variants that differ by size (S, M, L…) or side (Left / Right) get Grey-L, L, M (Left)… in Color instead of Grey-1, Grey-2; a quick look confirms them (quick fixes switch a product between "L" and "Grey-L")',
+    open: { review: { view: 'products', state: 'variants', col: 'g:variant' } } })
   if (byType.marked) add({ id: 'marked', level: 'check', count: byType.marked, unit: 'value',
     title: 'Variant columns marked "Yes"', why: 'Variations Combo option "Mark Yes": the columns the category needs say Yes — "Yes" isn\'t on CartUp\'s lists, so the hidden sheet shows #N/A for them',
     open: { sheet: 'marked' } })
