@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { poolSummary, onAiChange, sessionStats, resetText, maskKey } from '../utils/aiPool'
 import {
-  processDarazFiles, buildOutput, buildDarazWorkbook, templateLists, rematch, rowKey,
+  processDarazFiles, buildOutput, buildDarazWorkbook, darazSummary, templateLists, rematch, rowKey,
   readTableFile, guessImageKeys, makeImageKeyMap, makeImageKeyColumns, OUTPUT_COLS,
 } from '../utils/processor'
 import { loadMemory, rememberDecisions, forgetMemory, valueGroups } from '../utils/variantReview'
@@ -96,6 +96,7 @@ export default function DarazUpload() {
   const [stockMode, setStockMode] = useState('file')   // 'file' | 'set' — one number for every row
   const [stockValue, setStockValue] = useState('0')
   const [aiRun, setAiRun]         = useState(null)     // AI calls of the latest run: { start, end }
+  const [copied, setCopied]       = useState(false)
   const [keyFile, setKeyFile]     = useState(null)
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   // mode 'link': a Daraz link column + a key column · 'columns': keys per Seller SKU, one column per image
@@ -209,8 +210,10 @@ export default function DarazUpload() {
     setRechecking('')
   }
 
-  function download(res = result, dec = decisions, ed = edits) {
-    const { bytes } = buildDarazWorkbook(res, dec, memory, { ...options, edits: ed })
+  async function download(res = result, dec = decisions, ed = edits) {
+    let bytes
+    try { ({ bytes } = await buildDarazWorkbook(res, dec, memory, { ...options, activeOnly, edits: ed })) }
+    catch (e) { setError(`Could not build the file: ${e.message}`); return }
     const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
@@ -236,6 +239,7 @@ export default function DarazUpload() {
   const needs = output?.attention.size || 0
   const autoPct = rows ? Math.round(((rows - needs) / rows) * 100) : 0
   const valuePct = stats?.checked ? Math.round(((stats.checked - stats.open) / stats.checked) * 100) : 100
+  const summary = output ? darazSummary(result, output, { ...options, activeOnly }) : ''
   const ruleLine = output && [
     output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (75%+ discount)`,
     output.rules.stockSet && `${output.rules.stockSet} stocks set to ${stockSet}`,
@@ -243,7 +247,7 @@ export default function DarazUpload() {
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
     output.rules.lowWeight && `${output.rules.lowWeight} weights starting with 0.00 flagged`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
-    output.excluded.size && `${output.excluded.size} colour variants without a variant image left out`,
+    output.excluded.size && `${output.excluded.size} rows without Image 1 or a variant image left out`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
 
@@ -491,6 +495,17 @@ export default function DarazUpload() {
                   <Table2 size={14} /> View &amp; edit sheet{needs ? ` (${needs} rows to check)` : ''}
                 </button>
                 <button onClick={() => download()} style={btn(false)}><Download size={14} /> Download file</button>
+              </div>
+
+              {/* The run in a few lines — the same text as the "summary" sheet's one cell */}
+              <div data-summary style={{ marginTop:12, border:'1px solid #e2e8f0', borderRadius:8, background:'#f8fafc' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderBottom:'1px solid #e2e8f0', fontSize:12, fontWeight:700, color:'#1a202c' }}>
+                  <ClipboardCheck size={13} color='#4f46e5' /> Report summary
+                  <span style={{ fontWeight:500, color:'#94a3b8' }}>also in the file's "summary" sheet, cell A1</span>
+                  <button onClick={() => { navigator.clipboard?.writeText(summary).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }, () => {}) }}
+                    style={{ marginLeft:'auto', border:'1px solid #c7d2fe', background:'#fff', color:'#4f46e5', borderRadius:6, padding:'2px 10px', fontSize:11.5, fontWeight:600, cursor:'pointer' }}>{copied ? 'Copied' : 'Copy'}</button>
+                </div>
+                <pre style={{ margin:0, padding:'8px 10px', fontSize:11.5, lineHeight:1.6, whiteSpace:'pre-wrap', fontFamily:'inherit', color:'#334155' }}>{summary}</pre>
               </div>
 
               <details style={{ marginTop:12 }}>

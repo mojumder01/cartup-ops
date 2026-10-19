@@ -13,9 +13,9 @@ export const ISSUE_TYPES = {
   list:     { label: 'Not on CartUp list (#N/A)', level: 'error' },
   category: { label: 'No category', level: 'error' },
   required: { label: 'Required — empty', level: 'error' },
-  varimg:   { label: 'No variant image (left out)', level: 'error' },
+  noimage:  { label: 'No Image 1 / variant image (left out)', level: 'error' },
   weight:   { label: 'Weight to check (0.00x)', level: 'warn' },
-  image:    { label: 'Image link without a key', level: 'warn' },
+  image:    { label: 'Image without a CartUp key (not uploaded)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
   flag:     { label: 'Other flags', level: 'warn' },
 }
@@ -31,8 +31,8 @@ export function sheetIssues(output, columns, lists) {
       const list = lists?.[headerKey(c)]
       const k = `${i}|${c}`
       if (c === '**Category Id' && !v) set(k, 'category', 'No CartUp category — add the Category Id')
+      else if ((c === '**Product Image 1' || c === '*Variant Image') && !v) set(k, 'noimage', flagged.get(k) || 'No image — row left out')
       else if (c.startsWith('**') && !v) set(k, 'required', 'Required — empty')
-      else if (c === '*Variant Image' && !v) set(k, 'varimg', flagged.get(k) || 'No variant image')
       else if (v && list && list.match(v)?.how !== 'exact') set(k, 'list', `Not on CartUp's ${colLabel(c)} list — shows #N/A`)
       else if (flagged.has(k)) set(k, c === WEIGHT_COL ? 'weight' : IMAGE_COLS.includes(c) ? 'image' : c === 'Special Price' ? 'price' : 'flag', flagged.get(k))
     }
@@ -76,9 +76,11 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   add({ id: 'required', level: 'fix', count: byType.required || 0, unit: 'cell',
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',
     open: { sheet: 'required' } })
-  if (output.excluded?.size || result.items.some(it => it.pendingVariant)) add({ id: 'varimg', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
-    title: 'Colour variants without a variant image', why: 'Not in the SKU Image file — add an image key file with a Variant Image column, or paste a key in the sheet; until then they go to the "invalid" sheet',
-    open: { sheet: 'varimg' } })
+  if (output.excluded?.size || result.items.some(it => it.pendingVariant)) add({ id: 'noimage', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
+    title: 'Rows without Image 1 or a variant image', why: imageKeys
+      ? 'No CartUp image key for Image 1 or the Variant Image — add the key (key file or sheet), or the row goes to the "invalid" sheet'
+      : 'Colour variants not in the SKU Image file — add an image key file with a Variant Image column, or paste a key in the sheet; until then they go to the "invalid" sheet',
+    open: { sheet: 'noimage' } })
   if (result.template) {
     const fuzzy = values.filter(v => v.status === 'changed' && v.how === 'similar')
     const changed = values.filter(v => v.status === 'changed')
@@ -92,10 +94,10 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
     title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',
     open: { sheet: 'price' } })
-  if (imageKeys) add({ id: 'image', level: 'check', count: byType.image || 0, unit: 'link',
-    title: 'Image links without a CartUp key', why: imageKeys.forItem && output.rules.keyRowsMissing
-      ? `${output.rules.keyRowsMissing.toLocaleString()} Seller SKU${output.rules.keyRowsMissing === 1 ? ' is' : 's are'} not in the image key file — the Daraz links stay`
-      : 'Not in the image key file — the Daraz link stays',
+  if (imageKeys) add({ id: 'image', level: 'check', count: byType.image || 0, unit: 'image',
+    title: 'Images without a CartUp key', why: (imageKeys.forItem && output.rules.keyRowsMissing
+      ? `${output.rules.keyRowsMissing.toLocaleString()} Seller SKU${output.rules.keyRowsMissing === 1 ? ' is' : 's are'} not in the image key file — `
+      : 'Not in the image key file — ') + 'those images are not uploaded (a row without Image 1 or a variant image is left out)',
     open: { sheet: 'image' } })
   if (result.ai?.missed) {
     const m = result.ai.message || ''

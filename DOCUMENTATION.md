@@ -30,6 +30,18 @@ Sign in with your team email and password.
 2. Go to **Profile & Settings** (top-right) → **Gemini API — keys & models** → paste one or more keys (one per line, any format: `AIza…`, `AQ.…`, `gen-…`) → **Add keys**, or **Import** a .txt
 3. Add **several keys**: every key has its own limit per model (e.g. 15 a minute and 500 a day on Gemini 3.5 Flash Lite), and requests are spread over the ticked keys — see [Gemini keys & models](#gemini-keys--models-profile--settings)
 
+### Which parts use the Gemini API
+Only these call Gemini (they use requests from the ticked keys' daily limits); everything else runs in the browser with no API.
+
+| Page | Uses Gemini for | Without a key |
+|---|---|---|
+| Daraz Upload | Name, Highlights, Description clean-up (5 products a request, once per Product ID) · CartUp category for a Daraz category not in the mapping (one request per unmapped category) | Spelling rules only; unmapped categories stay empty |
+| Manual Upload | Name, Highlights, Description clean-up + CartUp category in one request per batch | Spelling rules only; no category |
+| QC | Name spelling, category match, weight, highlights, description, restricted items (+ a second check of flagged spelling issues) | Instant checks only (image missing, `<img>` in highlights…) |
+| Governance Checks | Every check (name, weight, category, highlights, description) | Refuses to run |
+
+**No API:** reading and checking the Daraz files, category mapping from the built-in table, matching Color/Size/Brand/Warranty to CartUp's lists, the review window, house rules (special price, stock, weight, "#"), image keys, the sheet view, the report summary, Shop Duplicate, Visual, word replacements. The backend (Render) is used only for sign-in.
+
 ### Navigation
 | Section | Purpose |
 |---|---|
@@ -73,8 +85,9 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 - **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
 - **Special price:** include or leave out. When included it runs **from the day the file is made to the end date you pick** (remembered while it is still ahead); a special price that is a **discount of 75% or more** is removed and logged. Nothing else is removed.
 - **Stock:** *As in file* (never above 99,999), or **the same stock for every row** — e.g. `0` when the seller wants to upload with no stock; every changed row is logged in **changes**
-- **Image keys:** *keys per Seller SKU* — each row is found by its Seller SKU (or Product ID when that is the match column; then every variant gets the same images) and each mapped column's key replaces that image; an empty cell keeps the Daraz image; the page shows how many SKUs the file has and how many rows were found. *Daraz link → key* — every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key; links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`). Either way, links still without a key are listed in **to check** (with "Seller SKU not in the image key file" when the row wasn't found)
-- **Colour variants without a variant image** (none in the SKU Image file) are kept through the review, so an image key file (Variant Image column) or a hand edit can give them one; any still without one when the file is built go to **invalid** — check list item *Colour variants without a variant image*, sheet filter *No variant image (left out)*
+- **Image keys:** with a key file the images are **the file's, as they are**. *Keys per Seller SKU* — each row is found by its Seller SKU (or Product ID when that is the match column; then every variant gets the same images) and each mapped column's key goes into that image. *Daraz link → key* — every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key; links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`). Either way, **an image without a key is not uploaded** (the Daraz link is removed — in **changes** and **to check**, with "Seller SKU not in the image key file" when the row wasn't found). A product that isn't a colour variant takes Image 1's key as its variant image
+- **Rows without Image 1 or a variant image** are left out of the upload and listed in **invalid** with the reason — e.g. no CartUp key for Image 1, or a colour variant with no variant image (none in the SKU Image file and no key). Colour variants are kept through the review so a key file or a hand edit can still give them one. Check list item *Rows without Image 1 or a variant image*, sheet filter *No Image 1 / variant image (left out)*
+- **Report summary** — the run in a few lines: rows in the Price file → uploaded / left out, then per topic — Inactive, Price (no price, special prices removed or flagged), Image (left out, keyed, not uploaded), Weight (flagged 0.00x/empty — never left out), Stock, other reasons, Category, AI. Shown on the page with a **Copy** button, and in the file's **summary** sheet as one cell (A1)
 - Special price, stock and image keys apply when the file is built, so they can be changed after processing without running again
 
 **Step 2 — Click "Process & Download".** The system:
@@ -117,8 +130,8 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 | Required cells empty | fix | Sheet → Required — empty |
 | Close-spelling matches (plus how many were matched automatically in all) | check | Review → By value, matched automatically (riskiest first) |
 | Weight starts with 0.00 | check | Sheet → Weight to check |
-| Colour variants without a variant image | fix | Sheet → No variant image (left out) |
-| Image links without a CartUp key (with an image key file) | check | Sheet → Image link without a key |
+| Rows without Image 1 or a variant image | fix | Sheet → No Image 1 / variant image (left out) |
+| Images without a CartUp key (with an image key file — not uploaded) | check | Sheet → Image without a CartUp key |
 | Names not cleaned by AI (AI unavailable — limit used up…) | check | Sheet → Names not cleaned by AI |
 | Special price not below the price | check | Sheet → Special price not below the price |
 | Kept as new values | info | Review → By value, kept as new |
@@ -133,10 +146,11 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 
 **Step 3 — Output:** `cartup_daraz_output.xlsx` — downloads at once when nothing needs a decision, otherwise from the review window ("Download file", also on the page). Sheets:
 - **product** — with the decisions applied; the Report column notes each row's changes, values not on the list, and identical variants
-- **invalid** — rows that can't be uploaded, with the reason: no Product ID, no Seller SKU, no name, no price, no Image 1, or a colour variant still without a variant image when the file is built
+- **invalid** — rows that can't be uploaded, with the reason: no Product ID, no Seller SKU, no name, no price, no Image 1 (or no CartUp key for it), or still no variant image when the file is built
 - **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock set by the Stock option, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
-- **to check** — flagged but not changed: weights starting with 0.00, image links without a key, special prices not below the price
+- **to check** — flagged: weights starting with 0.00, images without a CartUp key (not uploaded), rows left out for no image, special prices not below the price
 - **new values** (with the template) — every value not on CartUp's lists, once each: column, value, status (*Add to the CartUp list — decided*, or *Not reviewed — shows #N/A until matched or added*), how many SKUs and products use it, the Seller SKUs, and the closest CartUp values
+- **summary** — the report summary in one cell (A1, wrapped), the same text as on the page
 
 ---
 

@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import JSZip from 'jszip'
 import MAPPINGS from './mappings.json'
 import { processProductsBatch, matchCategory, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
@@ -428,7 +429,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   }
 
   matchItems(items, lists)
-  return { items, invalidRows, duplicateSkus, skipped, lists, template: !!lists, ai: apiKey ? { products: pidList.length, missed: aiMissed.size, message: aiMessage } : null }
+  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, ai: apiKey ? { products: pidList.length, missed: aiMissed.size, message: aiMessage } : null }
 }
 
 const groupBy = (arr, key) => {
@@ -507,7 +508,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {} } = options
   const problems = [], excluded = new Set(), leftOut = []
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0,
-    keyRows: 0, keyRowsMissing: 0, edited: 0, specialPrices: 0 }
+    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, edited: 0, specialPrices: 0 }
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
@@ -578,21 +579,33 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       rules.edited++
     }
 
-    // Flagged, not changed (after edits, so a fixed value isn't flagged).
+    // With a key file the images are the file's: a Daraz link still without a
+    // key (after edits, so a pasted key counts) is not uploaded.
     if (imageKeys) {
-      const why = imageKeys.forItem && !keyRow ? 'Seller SKU not in the image key file' : 'No image key for this link yet'
+      const why = imageKeys.forItem && !keyRow ? 'Seller SKU not in the image key file' : 'No CartUp image key for this link'
       for (const c of IMAGE_COLS) {
-        if (/^https?:\/\//i.test(String(out[c] ?? '').trim())) { flag(c, why); rules.imageMissing++ }
+        const link = String(out[c] ?? '').trim()
+        if (!/^https?:\/\//i.test(link)) continue
+        flag(c, `${why} — image not uploaded`)
+        log(colLabel(c), link, '', `${why} — image not uploaded`)
+        out[c] = ''
+        rules.imageMissing++
       }
+      // Not a colour variant: the variant image may be Image 1, as in stage 1.
+      const colour = item.combo && item.applicable?.includes('Color')
+      if (!String(out['*Variant Image']).trim() && out['**Product Image 1'] && !colour) out['*Variant Image'] = out['**Product Image 1']
     }
-    // No variant image (a colour variant without one in the SKU Image file, and
-    // no key for it): left out of the upload, listed in "invalid".
-    if (!String(out['*Variant Image'] ?? '').trim()) {
-      flag('*Variant Image', 'No variant image — add it with an image key file or in the sheet, or the row goes to "invalid"')
+    // No Image 1 or no variant image (a colour variant without one in the SKU
+    // Image file, or no key for it): left out of the upload, listed in "invalid".
+    const noImg1 = !String(out['**Product Image 1'] ?? '').trim(), noVariant = !String(out['*Variant Image'] ?? '').trim()
+    if (noImg1 || noVariant) {
+      const keyed = imageKeys ? ' (no CartUp image key)' : ''
+      if (noImg1) { flag('**Product Image 1', `No Image 1${keyed} — row left out ("invalid")`); rules.leftNoImage++ }
+      if (noVariant) { flag('*Variant Image', `No variant image${keyed} — add it with an image key file or in the sheet, or the row goes to "invalid"`); rules.leftNoVariant++ }
       excluded.add(i)
       leftOut.push({ 'Product ID': out['**Parent Sku'], 'SellerSKU': out['**Seller SKU'], 'Product Name': out['**Name (English)'], 'catId': item.darazCat ?? '',
-        'Price': out['**Price(MRP)'], 'Image 1': out['**Product Image 1'], 'Variant Image': '', 'Quantity': out['**Current Stock Qty'], 'Status': out['status'],
-        'Report': 'Variant Image missing (colour variant — not in the SKU Image file or the image key file)' })
+        'Price': out['**Price(MRP)'], 'Image 1': out['**Product Image 1'], 'Variant Image': out['*Variant Image'], 'Quantity': out['**Current Stock Qty'], 'Status': out['status'],
+        'Report': [noImg1 && `Image 1 missing${keyed}`, noVariant && (item.pendingVariant && !imageKeys ? 'Variant Image missing (colour variant — not in the SKU Image file)' : `Variant Image missing${keyed}`)].filter(Boolean).join(' | ') })
     }
     // Weight starting with 0.00 (0.001–0.009) or none at all: CartUp may show a delivery charge of 0.
     if (weightNeedsCheck(out['**Package Weight (kg)'])) {
@@ -615,9 +628,65 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
 }
 
 // The output workbook for a processed run: decisions, rules and edits applied.
-export function buildDarazWorkbook(result, decisions = {}, memory = {}, options = {}) {
+export async function buildDarazWorkbook(result, decisions = {}, memory = {}, options = {}) {
   const output = buildOutput(result, decisions, memory, options)
-  return { bytes: buildExcel(output, [...result.invalidRows, ...output.leftOut], result.lists), output }
+  const bytes = buildExcel(output, [...result.invalidRows, ...output.leftOut], result.lists, darazSummary(result, output, options))
+  return { bytes: await wrapCell(bytes, 'summary', 'A1'), output }
+}
+
+// SheetJS (community) writes no cell styles: "wrap text" is added in the XML
+// so the summary cell shows its lines as lines.
+async function wrapCell(bytes, sheetName, ref) {
+  const zip = await JSZip.loadAsync(bytes)
+  const book = await zip.file('xl/workbook.xml').async('string')
+  const names = [...book.matchAll(/<sheet [^>]*name="([^"]*)"/g)].map(m => m[1])
+  const sheetFile = zip.file(`xl/worksheets/sheet${names.indexOf(sheetName) + 1}.xml`)
+  if (!names.includes(sheetName) || !sheetFile) return bytes
+  let styles = await zip.file('xl/styles.xml').async('string')
+  const count = Number(styles.match(/<cellXfs count="(\d+)"/)?.[1])
+  if (!count) return bytes
+  styles = styles.replace(/<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/, (_, xfs) =>
+    `<cellXfs count="${count + 1}">${xfs}<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs>`)
+  const sheet = (await sheetFile.async('string')).replace(new RegExp(`<c r="${ref}"( s="\\d+")?`), `<c r="${ref}" s="${count}"`)
+  zip.file('xl/styles.xml', styles)
+  zip.file(sheetFile.name, sheet)
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+}
+
+// The run in a few lines (one cell of the "summary" sheet, or copied from the
+// page): how many rows went in, and how many were left out or changed for
+// inactive, price, image, weight, stock… A row left out for two reasons
+// counts under both.
+export function darazSummary(result, output, options = {}) {
+  const n = v => Number(v || 0).toLocaleString()
+  const s = (v, one, many = one + 's') => `${n(v)} ${v === 1 ? one : many}`
+  const r = output.rules
+  const out = [...result.invalidRows, ...output.leftOut]
+  const leftFor = re => out.filter(row => String(row.Report).split(' | ').some(x => re.test(x))).length
+  const uploaded = output.rows.filter((_, i) => !output.excluded.has(i))
+  const products = new Set(uploaded.map(row => row['**Parent Sku'])).size
+  const total = result.total ?? output.rows.length + result.invalidRows.length + result.duplicateSkus.length + (result.skipped || 0)
+  const left = total - uploaded.length
+  const join = parts => parts.filter(Boolean).join(' · ')
+  const lines = [
+    `CartUp upload summary — ${todayISO()}`,
+    `Rows: ${n(total)} in the Price file → ${s(uploaded.length, 'row')} uploaded (${s(products, 'product')}) · ${n(left)} left out`,
+    `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
+    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price)`, r.discountRemoved && `${s(r.discountRemoved, 'special price')} removed (75%+ discount)`,
+      r.spNotBelow && `${s(r.spNotBelow, 'special price')} not below the price (flagged)`])}`,
+    `Image: ${join([`${n(leftFor(/Image/))} left out (${n(leftFor(/^Image 1/))} no Image 1, ${n(leftFor(/^Variant Image/))} no variant image)`,
+      options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`,
+      options.imageKeys?.forItem && r.keyRowsMissing && `${s(r.keyRowsMissing, 'Seller SKU')} not in the key file`,
+      !options.imageKeys && 'no image key file (Daraz links)'])}`,
+    `Weight: 0 left out · ${n(r.lowWeight)} flagged (0.00x or empty — CartUp may charge 0 delivery)`,
+    `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at 99,999`, `${n(r.stockZero)} with 0 stock`])}`,
+    `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
+      `${n(result.duplicateSkus.length)} repeated Seller SKU`])}`,
+    `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category`,
+    result.ai ? `AI: ${n(result.ai.products - result.ai.missed)} of ${n(result.ai.products)} products cleaned${result.ai.missed ? ` (${n(result.ai.missed)} spelling fix only)` : ''}` : 'AI: off (spelling fix only)',
+    r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
+  ]
+  return lines.filter(Boolean).join('\n')
 }
 
 // ── Image keys ────────────────────────────────────────────────────────────────
@@ -697,7 +766,7 @@ export function guessImageKeys(sheet) {
 }
 
 // applied: buildOutput(...) — final rows, change log, flagged values, values not on the lists.
-function buildExcel(applied, invalidRows = [], lists = null) {
+function buildExcel(applied, invalidRows = [], lists = null, summary = '') {
   const wb = XLSX.utils.book_new()
   const validRows = applied.rows.filter((_, i) => !applied.excluded?.has(i))
 
@@ -770,6 +839,14 @@ function buildExcel(applied, invalidRows = [], lists = null) {
     const wsNv = XLSX.utils.aoa_to_sheet(nvData)
     wsNv['!cols'] = [{ wch: 16 }, { wch: 30 }, { wch: 44 }, { wch: 7 }, { wch: 11 }, { wch: 40 }, { wch: 50 }]
     XLSX.utils.book_append_sheet(wb, wsNv, 'new values')
+  }
+
+  // ── Sheet 6: summary — the whole report in cell A1 (copy one cell) ─────────
+  if (summary) {
+    const wsSum = XLSX.utils.aoa_to_sheet([[summary]])
+    wsSum['!cols'] = [{ wch: 120 }]
+    wsSum['!rows'] = [{ hpt: 15 * summary.split('\n').length + 6 }]
+    XLSX.utils.book_append_sheet(wb, wsSum, 'summary')
   }
 
   return XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
