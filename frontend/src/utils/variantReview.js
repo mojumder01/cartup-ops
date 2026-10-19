@@ -143,8 +143,12 @@ export function separateCollisions(items, lists) {
       const used = new Set(items.map(it => cellOf(it, col)).filter(Boolean).map(c => current(c).toLowerCase()))
       const numbered = []
       for (let n = 1; numbered.length < g.length && n <= 50; n++) {
+        // Only the list's real numbered entries ("Grey-2"), not look-alikes ("Grey (5)", "Grey16"),
+        // and only small numbers (a list's "L-21" is not a numbering).
+        if (n > g.length + 3) break
         const hit = list.match(`${base}-${n}`)
-        if (hit && (hit.how === 'exact' || hit.how === 'format') && !used.has(hit.value.toLowerCase())) numbered.push(hit.value)
+        const real = hit && hit.value.toLowerCase().replace(/\s+/g, '') === `${base}-${n}`.toLowerCase().replace(/\s+/g, '')
+        if (real && !used.has(hit.value.toLowerCase())) numbered.push(hit.value)
       }
       if (numbered.length === g.length) {
         g.forEach((it, k) => {
@@ -166,47 +170,92 @@ export function separateCollisions(items, lists) {
   }
 }
 
-// A size with no column of its own: the category has Color but no size
-// column, so variants that differ only by size ("Grey, L", "Grey, XL") would
-// all be "Grey". The size goes into Color instead of a number — "Grey-L" /
-// "Grey L" / "Grey Large" when CartUp's Color list has it, else the size as
-// the list spells it ("L", "Large"). Compound sizes ("M/Right", "S(20-30)")
-// are tried whole, then by their size alone. Each SKU on its own: never a
-// value another SKU of the product has. Returns the SKUs still alike (one of
-// them can keep the plain colour; two or more are numbered).
+// ── Sizes (and the like) in the Color column ─────────────────────────────────
+// Categories with Color but no size column: the size, side or age that tells
+// a product's variants apart goes into Color, the way CartUp's Color list
+// spells it — "M (Left)", "Grey-L", "Kids", "Universal", "1-2 Years".
 const SIZE_WORD = { S: 'Small', M: 'Medium', L: 'Large', XS: 'Extra Small' }
 const SIZE_HEAD = /^(int(?:ernational|l)?\s*[:\-.]\s*)?(\d?x{0,4}[sml]|xs|\d?xl|free size|one size)(?=$|[\s/(\-,])/i
+// Words sellers use for a size or a kind of variant, and CartUp's names for them.
+const WORD_ALIAS = {
+  universel: ['Universal', 'Free Size', 'One Size'], universal: ['Universal', 'Free Size', 'One Size'], free: ['Free Size'],
+  spl: ['Special'], special: ['Special'], ch: ['Kids', 'Child'], child: ['Kids', 'Child'], children: ['Kids'], kid: ['Kids'], kids: ['Kids'],
+  ad: ['Adult'], adult: ['Adult'], mail: ['Male'], male: ['Male'], men: ['Men'], female: ['Female', 'Famale'], women: ['Women'],
+}
+const AGE = /^\d+(\.\d+)?\s*(-\s*\d+(\.\d+)?)?\s*\/?\s*(years?|yrs?|months?)$/i
+const isSizePart = p => valueKind(p) === 'size' || SIZE_HEAD.test(p.trim()) || AGE.test(p.trim()) || /^(universe?l|spl|special|ch|child|kids?|ad|adult)$/i.test(p.trim())
+const uniq = a => a.filter((w, k) => w && a.findIndex(x => x && x.toLowerCase() === w.toLowerCase()) === k)
+// The names to try for a part, best first: the whole part ("M/Left" → M (Left)),
+// its known names, then just its size ("M(30-40)" → M); with the colour first
+// when asked ("Grey-L", "Grey L").
+function nameTries(part, base, withColour) {
+  const whole = part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').replace(/\s*\/\s*(years?|months?)/i, ' $1').replace(/\s+/g, ' ').trim()
+  const head = SIZE_HEAD.exec(part.trim())?.[2]
+  const alias = w => [w, SIZE_WORD[w.toUpperCase()], ...(WORD_ALIAS[w.toLowerCase()] || [])]
+  // A compound part ("CH/Left", "M(30-40)"): as "A (B)", then each word on its own.
+  const bits = whole.split(/\s*[\/()]\s*/).filter(Boolean)
+  const compound = bits.length > 1 ? [...alias(bits[0]).filter(Boolean).map(a => `${a} (${bits.slice(1).join(' ')})`), ...bits.flatMap(alias)] : []
+  const wholes = uniq([...alias(whole), ...compound])
+  const heads = head && head.toLowerCase() !== whole.toLowerCase() ? uniq([head, SIZE_WORD[head.toUpperCase()]]) : []
+  const coloured = ws => withColour && base ? ws.flatMap(w => [`${base}-${w}`, `${base} ${w}`]) : []
+  return uniq([...coloured(wholes), ...wholes, ...coloured(heads), ...heads])
+}
+// One value per SKU from its own list of tries, no two alike and none already
+// taken (used). Values that differ only in spacing or punctuation ("Grey-XL",
+// "Grey XL") count as alike. SKUs that clash all move on to their next try;
+// any left without a value then take their best try that is still free.
+// → value or null per SKU.
+const sameKey = v => String(v).toLowerCase().replace(/[^a-z0-9]/g, '')
+function resolveNames(tries, used, hit) {
+  const usedKeys = new Set([...used].map(sameKey))
+  const opts = tries.map(t => t ? uniq(t.map(hit).filter(Boolean)).filter(v => !usedKeys.has(sameKey(v))) : [])
+  const at = opts.map(() => 0)
+  const settle = () => {
+    const v = opts.map((o, k) => o[at[k]] ?? null), count = new Map()
+    for (const x of v) if (x) count.set(sameKey(x), (count.get(sameKey(x)) || 0) + 1)
+    return { v, clash: x => !!x && count.get(sameKey(x)) > 1 }
+  }
+  for (let round = 0; round < 16; round++) {
+    const { v, clash } = settle()
+    let moved = false
+    v.forEach((x, k) => { if (clash(x)) { at[k]++; moved = true } })
+    if (!moved) break
+  }
+  const { v, clash } = settle()
+  const out = v.map(x => clash(x) ? null : x)
+  const taken = new Set(out.filter(Boolean).map(sameKey))
+  out.forEach((x, k) => {
+    if (x) return
+    const free = opts[k].find(o => !taken.has(sameKey(o)))
+    if (free) { out[k] = free; taken.add(sameKey(free)) }
+  })
+  return out
+}
+const listHit = list => name => { const h = list.match(name); return h && ['exact', 'format', 'alias'].includes(h.how) ? h.value : null }
+function putInColor(it, value, part, note, lists) {
+  let c = it.cells.find(x => x.col === 'Color')
+  if (!c) { c = makeCell('Color', value, lists); it.cells.push(c) }
+  c.auto = value; c.how = 'sizecolor'; c.note = note
+  it.unused = it.unused.filter(x => x !== part)
+}
+
+// Collision step, SKU by SKU: variants still alike in Color get their size (or
+// the part that tells them apart — Left / Right, Long / Short) in Color.
+// Returns the SKUs still alike (one of them can keep the plain colour; two or
+// more are numbered).
 function sizeIntoColor(g, col, items, lists) {
   const list = col === 'Color' && lists?.[headerKey('Color')]
   if (!list) return g
   const cellOf = it => it.cells.find(c => c.col === 'Color')
   const base = cellOf(g[0]).auto ?? cellOf(g[0]).raw
   const used = new Set(items.filter(it => !g.includes(it)).map(it => cellOf(it)).filter(Boolean).map(c => String(c.auto ?? c.raw).toLowerCase()))
-  const hit = name => { const h = list.match(name); return h && ['exact', 'format', 'alias'].includes(h.how) ? h.value : null }
-  // The size part of a SKU (else the first part that tells the SKUs apart —
-  // Left / Right, Long / Short) and the names to try for it, best first.
   const differs = p => g.some(o => !o.unused.some(x => x.toLowerCase() === p.toLowerCase()))
-  const tries = it => {
-    const part = it.unused.find(p => valueKind(p) === 'size' || SIZE_HEAD.test(p.trim())) || it.unused.find(differs)
-    if (!part) return null
-    const whole = part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').trim()
-    const head = SIZE_HEAD.exec(part.trim())?.[2]
-    const words = [whole, SIZE_WORD[whole.toUpperCase()], head, SIZE_WORD[head?.toUpperCase()]].filter((w, k, a) => w && a.indexOf(w) === k)
-    return { part, names: [...words.flatMap(w => [`${base}-${w}`, `${base} ${w}`]), ...words] }
-  }
-  const picks = g.map(it => { const t = tries(it); if (!t) return null; const v = t.names.map(hit).find(Boolean); return v ? { value: v, part: t.part } : null })
-  // Only values no other SKU of the product ends up with.
-  const count = new Map()
-  for (const p of picks) if (p) count.set(p.value.toLowerCase(), (count.get(p.value.toLowerCase()) || 0) + 1)
+  const parts = g.map(it => it.unused.find(p => isSizePart(p) && differs(p)) || it.unused.find(differs) || null)
+  const picks = resolveNames(parts.map(p => p && nameTries(p, base, true)), used, listHit(list))
   const left = []
   g.forEach((it, k) => {
-    const p = picks[k]
-    if (!p || count.get(p.value.toLowerCase()) > 1 || used.has(p.value.toLowerCase())) { left.push(it); return }
-    const c = cellOf(it)
-    c.auto = p.value; c.how = 'sizecolor'
-    c.note = `"${p.part}" in the Color column — the category has no column for it`
-    it.unused = it.unused.filter(x => x !== p.part)
-    used.add(p.value.toLowerCase())
+    if (!picks[k]) { left.push(it); return }
+    putInColor(it, picks[k], parts[k], `"${parts[k]}" in the Color column — the category has no column for it`, lists)
   })
   return left
 }
@@ -214,46 +263,31 @@ function sizeIntoColor(g, col, items, lists) {
 // The product as a whole, the way a person reads it: what do its variants
 // differ by — colour, size, or both — and which columns does the category
 // have? When it has Color but no size column and the sizes differ:
-//   only the size differs  → the size alone in Color ("L", "Large", "M (Left)")
+//   only the size differs  → the size alone in Color ("L", "Large", "M (Left)", "Kids")
 //   colour and size differ → both in Color ("Grey-L", "Black Medium")
 // in CartUp's list spelling, and only when every SKU with a size gets a value
-// and no two SKUs end up alike; otherwise it is left to the variant-collision
-// step (which tries the same per SKU, then numbers what is still alike).
+// and no two SKUs end up alike; otherwise it is left to the collision step.
 const SIZE_COLS = ['Shoe Size', 'Clothing Size', 'Bedding Size', 'Size']
 export function sizesIntoColor(items, lists) {
   const list = lists?.[headerKey('Color')]
   const app = items[0]?.applicable || []
   if (!list || items.length < 2 || !app.includes('Color') || SIZE_COLS.some(c => app.includes(c))) return null
   const cellOf = it => it.cells.find(c => c.col === 'Color')
-  const sizeOf = it => it.unused.find(p => valueKind(p) === 'size' || SIZE_HEAD.test(p.trim()))
-  const sizes = items.map(sizeOf)
+  const sizes = items.map(it => it.unused.find(isSizePart) || null)
   if (new Set(sizes.filter(Boolean).map(x => x.toLowerCase())).size < 2) return null   // the size doesn't tell variants apart
   const colourOf = it => { const c = cellOf(it); return c ? String(c.auto ?? c.raw) : '' }
   const colourVaries = new Set(items.map(it => colourOf(it).toLowerCase())).size > 1
-  const hit = name => { const h = list.match(name); return h && ['exact', 'format', 'alias'].includes(h.how) ? h.value : null }
-  const words = part => {
-    const whole = part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').trim(), head = SIZE_HEAD.exec(part.trim())?.[2]
-    return [whole, SIZE_WORD[whole.toUpperCase()], head, SIZE_WORD[head?.toUpperCase()]].filter((w, k, a) => w && a.indexOf(w) === k)
-  }
-  // Only the size differs: the size alone (else size with the colour); both differ: size with the colour.
+  const hit = listHit(list)
   for (const withColour of colourVaries ? [true] : [false, true]) {
-    const picks = items.map((it, k) => {
-      if (!sizes[k]) return null
-      const base = colourOf(it)
-      return words(sizes[k]).flatMap(w => withColour && base ? [`${base}-${w}`, `${base} ${w}`] : [w]).map(hit).find(Boolean) || null
-    })
+    // SKUs without a size keep their colour — no SKU may take that value.
+    const used = new Set(items.filter((it, k) => !sizes[k]).map(it => colourOf(it).toLowerCase()).filter(Boolean))
+    const picks = resolveNames(sizes.map((x, k) => x && nameTries(x, colourOf(items[k]), withColour)), used, hit)
     if (items.some((it, k) => sizes[k] && !picks[k])) continue
-    const values = items.map((it, k) => (picks[k] || colourOf(it)).toLowerCase())
-    if (new Set(values).size < items.length) continue
     items.forEach((it, k) => {
       if (!picks[k]) return
-      let c = cellOf(it)
-      if (!c) { c = makeCell('Color', picks[k], lists); it.cells.push(c) }
-      c.auto = picks[k]; c.how = 'sizecolor'
-      c.note = withColour && colourVaries ? `colour and size "${sizes[k]}" in the Color column — the variants differ by both and the category has no size column`
+      putInColor(it, picks[k], sizes[k], withColour && colourVaries ? `colour and size "${sizes[k]}" in the Color column — the variants differ by both and the category has no size column`
         : withColour ? `size "${sizes[k]}" with the colour in the Color column — the category has no size column`
-        : `size "${sizes[k]}" in the Color column — the variants differ only by size and the category has no size column`
-      it.unused = it.unused.filter(x => x !== sizes[k])
+        : `size "${sizes[k]}" in the Color column — the variants differ only by size and the category has no size column`, lists)
     })
     return colourVaries ? 'colour+size' : 'size'
   }
@@ -271,7 +305,7 @@ export function variantKind(items) {
   for (let i = 0; i < width; i++) {
     const vals = rows.map(r => (r[i] || '').toLowerCase())
     if (new Set(vals).size < 2) continue
-    const kinds = rows.map(r => r[i] && (valueKind(r[i]) === 'size' || SIZE_HEAD.test(r[i].trim()) ? 'size' : valueKind(r[i]))).filter(Boolean)
+    const kinds = rows.map(r => r[i] && (isSizePart(r[i]) ? 'size' : valueKind(r[i]))).filter(Boolean)
     if (kinds.filter(k => k === 'size').length >= kinds.length / 2) size = true
     else if (kinds.filter(k => k === 'color').length >= kinds.length / 2) colour = true
     else other = true
