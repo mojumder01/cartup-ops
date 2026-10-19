@@ -35,7 +35,7 @@ Only these call Gemini (they use requests from the ticked keys' daily limits); e
 
 | Page | Uses Gemini for | Without a key |
 |---|---|---|
-| Daraz Upload | Name (unless **AI name check** is off), Highlights, Description clean-up (5 products a request, once per Product ID) · CartUp category for a Daraz category not in the mapping (one request per unmapped category) | Spelling rules only; unmapped categories stay empty |
+| Daraz Upload | Name, Highlights, Description clean-up — each can be turned off with the **AI check** boxes (5 products a request, once per Product ID) · CartUp category for a Daraz category not in the mapping (one request per unmapped category) | Spelling rules only; unmapped categories stay empty |
 | Manual Upload | Name, Highlights, Description clean-up + CartUp category in one request per batch | Spelling rules only; no category |
 | QC | Name spelling, category match, weight, highlights, description, restricted items (+ a second check of flagged spelling issues) | Instant checks only (image missing, `<img>` in highlights…) |
 | Governance Checks | Every check (name, weight, category, highlights, description) | Refuses to run |
@@ -83,7 +83,7 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 
 **Options** (on the page):
 - **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
-- **AI name check** (checkbox, on by default, remembered): on — Gemini fixes the names' spelling and repeated words; off — names get the spelling rules only, while the AI still cleans highlights and description (the change log says "AI name check off"). Chosen before processing
+- **AI check** — three checkboxes, all on by default and remembered: **Name**, **Highlights**, **Description**. Ticked: Gemini fixes its spelling/grammar. Unticked: that field gets the local clean-up only (spelling rules for the name; HTML clean-up for highlights/description) and isn't sent to the AI, so fewer tokens. All three off: no AI requests for the content at all (a Daraz category missing from the mapping still asks the AI). The change log, summary and AI line say which were off. Chosen before processing
 - **Special price:** include or leave out. When included it runs **from the day the file is made to the end date you pick** (remembered while it is still ahead); a special price that is a **discount of 75% or more** is removed and logged. Nothing else is removed.
 - **Stock:** *As in file* (never above 99,999), or **the same stock for every row** — e.g. `0` when the seller wants to upload with no stock; every changed row is logged in **changes**
 - **Image keys:** with a key file the images are **the file's, as they are**. *Keys per Seller SKU* — each row is found by its Seller SKU (or Product ID when that is the match column; then every variant gets the same images) and each mapped column's key goes into that image. *Daraz link → key* — every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key; links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`). Either way, **an image without a key is not uploaded** (the Daraz link is removed — in **changes** and **to check**, with "Seller SKU not in the image key file" when the row wasn't found). A product that isn't a colour variant takes Image 1's key as its variant image

@@ -123,8 +123,11 @@ export function templateLists(file) {
 // template; stage 3 (buildOutput) applies decisions, rules and hand edits.
 // options.activeOnly: only rows whose status is "active".
 export async function processDarazFiles(files, apiKey, onProgress, options = {}) {
-  // options.aiName false: names get the spelling rules only (AI still does highlights and description)
-  const aiName = options.aiName !== false
+  // options.aiFields: { name, highlights, description } — false: that field gets
+  // the local clean-up only (spelling rules for names). All off: no AI requests
+  // for the content (unmapped categories still ask the AI).
+  const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false }
+  const aiName = aiFields.name, aiContent = aiFields.name || aiFields.highlights || aiFields.description
   onProgress('Reading files...')
 
   const [allPriceRows, basicRows, freightRows, skuimgRows] = await Promise.all([
@@ -197,7 +200,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   const aiMissed = new Set()
   let aiMessage = ''
   const aiFailed = (message, pids) => { pids.forEach(p => aiMissed.add(p)); aiMessage = message }
-  if (apiKey) {
+  if (apiKey && aiContent) {
     const batches = []
     for (let i = 0; i < pidList.length; i += BATCH_SIZE) {
       batches.push(pidList.slice(i, i + BATCH_SIZE))
@@ -206,7 +209,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     let done = 0
     const tasks = batches.map((batch, bi) => async () => {
       onProgress(`AI processing products ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}... (batch ${bi + 1}/${total_batches})`)
-      const result = await processProductsBatch(batch, apiKey, aiFailed, { name: aiName })
+      const result = await processProductsBatch(batch, apiKey, aiFailed, aiFields)
       Object.assign(aiCache, result)
       done += batch.length
     })
@@ -431,7 +434,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   }
 
   matchItems(items, lists)
-  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, ai: apiKey ? { products: pidList.length, missed: aiMissed.size, message: aiMessage, name: aiName } : null }
+  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields } : null }
 }
 
 const groupBy = (arr, key) => {
@@ -655,6 +658,16 @@ async function wrapCell(bytes, sheetName, ref) {
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
 
+// Which content the AI cleaned, for the summary and the page.
+export function aiSummary(ai) {
+  if (!ai) return 'AI: off (spelling fix only)'
+  const f = ai.fields || { name: ai.name !== false, highlights: true, description: true }
+  const on = ['name', 'highlights', 'description'].filter(k => f[k]), off = ['name', 'highlights', 'description'].filter(k => !f[k])
+  if (!on.length) return 'AI: name, highlights and description checks off (local clean-up only)'
+  return `AI (${on.join(', ')}): ${(ai.products - ai.missed).toLocaleString()} of ${ai.products.toLocaleString()} products cleaned`
+    + (ai.missed ? ` (${ai.missed.toLocaleString()} local clean-up only)` : '') + (off.length ? ` · ${off.join(', ')}: AI check off (local clean-up only)` : '')
+}
+
 // The run in a few lines (one cell of the "summary" sheet, or copied from the
 // page): how many rows went in, and how many were left out or changed for
 // inactive, price, image, weight, stock… A row left out for two reasons
@@ -685,7 +698,7 @@ export function darazSummary(result, output, options = {}) {
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category`,
-    result.ai ? `AI: ${n(result.ai.products - result.ai.missed)} of ${n(result.ai.products)} products cleaned${result.ai.missed ? ` (${n(result.ai.missed)} spelling fix only)` : ''}${result.ai.name === false ? ' · names: AI check off (spelling rules only)' : ''}` : 'AI: off (spelling fix only)',
+    aiSummary(result.ai),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
   ]
   return lines.filter(Boolean).join('\n')
