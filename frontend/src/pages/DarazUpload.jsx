@@ -91,6 +91,7 @@ export default function DarazUpload() {
 
   // Run options — rows before processing; special price and image keys apply at download (no re-run).
   const [activeOnly, setActiveOnly] = useState(false)
+  const [aiName, setAiName]       = useState(() => { try { return localStorage.getItem('daraz_ai_name') !== 'off' } catch { return true } })
   const [spInclude, setSpInclude] = useState(true)
   const [spEnd, setSpEnd]         = useState(loadSpecialEnd)
   const [stockMode, setStockMode] = useState('file')   // 'file' | 'set' — one number for every row
@@ -148,6 +149,7 @@ export default function DarazUpload() {
     })
   }, [])
   useEffect(() => { saveSpecialEnd(spEnd) }, [spEnd])
+  useEffect(() => { try { localStorage.setItem('daraz_ai_name', aiName ? 'on' : 'off') } catch {} }, [aiName])
 
   const pick = key => f => {
     setFiles(p => ({ ...p, [key]: f })); setStatus(''); setError(''); setResult(null)
@@ -183,7 +185,7 @@ export default function DarazUpload() {
     setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({})
     setAiRun({ start: sessionStats(), end: null })
     try {
-      const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly })
+      const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly, aiName })
       setAiRun(r => r && { ...r, end: sessionStats() })
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
@@ -308,6 +310,16 @@ export default function DarazUpload() {
             <span style={{ fontSize:11.5, color:'#94a3b8' }}>by the price file's status column</span>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <span style={lbl}>AI name check</span>
+            <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12.5, cursor:'pointer' }}>
+              <input type="checkbox" checked={aiName} onChange={e => setAiName(e.target.checked)} style={{ accentColor:'#4f46e5' }} /> Check &amp; fix names with AI
+            </label>
+            <span style={{ fontSize:11.5, color:'#94a3b8' }}>
+              {aiName ? 'spelling and repeated words fixed by Gemini' : 'off — names get the spelling rules only (AI still cleans highlights and description)'}
+              {result && result.ai && result.ai.name !== aiName ? ' · applies when you process again' : ''}
+            </span>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
             <span style={lbl}>Special price</span>
             <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12.5, cursor:'pointer' }}>
               <input type="checkbox" checked={spInclude} onChange={e => setSpInclude(e.target.checked)} style={{ accentColor:'#4f46e5' }} /> Include
@@ -396,7 +408,7 @@ export default function DarazUpload() {
         {apiKey ? (
           <div style={{ background: pool.left ? '#eef2ff' : '#fef3c7', borderRadius:8, padding:'10px 14px', fontSize:12, color: pool.left ? '#4338ca' : '#92400e', marginTop:12, lineHeight:1.6 }}>
             <Zap size={13} style={{ verticalAlign:'middle', marginRight:6 }} />
-            AI on — names, highlights, description &amp; categories with Gemini ({pool.models[0]?.label || 'no model'}) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
+            AI on — {aiName ? 'names, ' : ''}highlights, description &amp; categories with Gemini ({pool.models[0]?.label || 'no model'}) · {pool.ticked} key{pool.ticked === 1 ? '' : 's'} ticked
             {' · '}<b>{pool.left.toLocaleString()}</b> requests left today (≈ {(pool.left * BATCH).toLocaleString()} products) · ≈ {pool.perMinute}/min · resets {resetText()}
             {!pool.left && <> — today's limit is used: names get the spelling fix only. Add or tick keys/models in Profile, or wait for the reset.</>}
           </div>
@@ -519,7 +531,7 @@ export default function DarazUpload() {
                     {stats.kept > 0 && <div>· {stats.kept.toLocaleString()} kept as new values for CartUp's lists ("new values" sheet)</div>}
                     {stats.open > 0 && <div style={{ color:'#b91c1c' }}>· {stats.open.toLocaleString()} values ({stats.openValues.toLocaleString()} different) in {stats.openParents.toLocaleString()} products not on the lists yet — they'd show #N/A in payload_hidden</div>}
                   </> : <div>· Values were not checked against CartUp's lists (no template)</div>}
-                  {result.ai && <div>· AI cleaned {(result.ai.products - result.ai.missed).toLocaleString()} of {result.ai.products.toLocaleString()} products{result.ai.missed ? ` — ${result.ai.missed.toLocaleString()} got the spelling fix only` : ''}{aiUse ? ` · ${aiUse.calls.toLocaleString()} request${aiUse.calls === 1 ? '' : 's'}, ${aiUse.tokens.toLocaleString()} tokens` : ''}</div>}
+                  {result.ai && <div>· AI cleaned {(result.ai.products - result.ai.missed).toLocaleString()} of {result.ai.products.toLocaleString()} products{result.ai.name === false ? ' (highlights and description — names: spelling rules only)' : ''}{result.ai.missed ? ` — ${result.ai.missed.toLocaleString()} got the spelling fix only` : ''}{aiUse ? ` · ${aiUse.calls.toLocaleString()} request${aiUse.calls === 1 ? '' : 's'}, ${aiUse.tokens.toLocaleString()} tokens` : ''}</div>}
                   {ruleLine.length > 0 && <div>· {ruleLine.join(' · ')}</div>}
                 </div>
               </details>

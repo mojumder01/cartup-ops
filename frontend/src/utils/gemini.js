@@ -186,11 +186,12 @@ Return ONLY a JSON array, no markdown:
 }
 
 // ── Batch process up to 5 products in ONE API call (no category) ──────────────
-export async function processProductsBatch(products, apiKey, onError) {
+export async function processProductsBatch(products, apiKey, onError, { name: aiName = true } = {}) {
   // products: [{pid, name, highlights, description}]
   // returns: {pid: {name, highlights, description}}
   // onError(message, pids): the AI call failed, so these products got the
-  // local spelling fix only.
+  // local spelling fix only. aiName false: the AI leaves names alone (they get
+  // the local spelling fix only).
   if (!products.length) return {}
   const localFixed = products.map(p => ({ ...p, name: localFixName(p.name || '') }))
   if (!apiKey) {
@@ -201,7 +202,7 @@ export async function processProductsBatch(products, apiKey, onError) {
   ).join('\n\n')
   const prompt = `You are cleaning e-commerce product data. Process ALL ${products.length} products below and return ONLY a JSON array, no markdown, no explanation.
 STRICT RULES:
-1. name: fix ALL spelling mistakes (zero tolerance), remove duplicate words. Brand names and model codes stay unchanged.
+1. name: ${aiName ? 'fix ALL spelling mistakes (zero tolerance), remove duplicate words. Brand names and model codes stay unchanged.' : 'copy it EXACTLY as given — do not change it.'}
 2. highlights: <ul><li> HTML — use ONLY given information, DO NOT add any AI-generated info/marketing/invented specs, DO NOT remove any spec/feature/measurement/detail, fix ALL spelling+grammar (zero tolerance), remove only non-Latin chars/hashtags/empty items; if empty create bullets from name.
 3. description: <p> HTML — use ONLY given information, DO NOT add anything AI-generated, DO NOT remove any spec/detail, fix ALL spelling+grammar (zero tolerance), remove only non-Latin chars and obvious boilerplate ("click add to cart" etc); if empty write 2 sentences from name.
 ${IMAGE_RULE_PROMPT}
@@ -214,7 +215,7 @@ Return ONLY: [{"pid":"...","name":"...","highlights":"...","description":"..."},
       const pid = String(item?.pid ?? item?.id ?? localFixed[i]?.pid ?? '')
       if (!pid || !localFixed.some(p => p.pid === pid)) return
       const { highlights, description } = enforceImageRules(String(item.highlights || ''), String(item.description || ''))
-      map[pid] = { name: String(item.name || '').trim(), highlights, description }
+      map[pid] = { name: aiName ? String(item.name || '').trim() : localFixed.find(p => p.pid === pid).name, highlights, description }
     })
     // Products the answer left out keep the local fix — and are reported.
     const missing = localFixed.filter(p => !map[p.pid])

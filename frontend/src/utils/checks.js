@@ -103,7 +103,8 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     const m = result.ai.message || ''
     const reason = /limit is used/i.test(m) ? "today's Gemini limit was used up" : /at their limit/i.test(m) ? 'every key was at its limit' : m.slice(0, 80) || 'no answer'
     add({ id: 'ai', level: 'check', count: result.ai.missed, unit: 'product',
-      title: 'Names not cleaned by AI', why: `AI unavailable (${reason}) — these got the spelling rules only; check the names`,
+      title: result.ai.name === false ? 'Products not cleaned by AI' : 'Names not cleaned by AI',
+      why: `AI unavailable (${reason}) — these got the spelling rules only; check the ${result.ai.name === false ? 'highlights and descriptions' : 'names'}`,
       open: { sheet: 'name' } })
   }
   if (result.template) {

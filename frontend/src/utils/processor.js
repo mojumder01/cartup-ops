@@ -123,6 +123,8 @@ export function templateLists(file) {
 // template; stage 3 (buildOutput) applies decisions, rules and hand edits.
 // options.activeOnly: only rows whose status is "active".
 export async function processDarazFiles(files, apiKey, onProgress, options = {}) {
+  // options.aiName false: names get the spelling rules only (AI still does highlights and description)
+  const aiName = options.aiName !== false
   onProgress('Reading files...')
 
   const [allPriceRows, basicRows, freightRows, skuimgRows] = await Promise.all([
@@ -204,7 +206,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     let done = 0
     const tasks = batches.map((batch, bi) => async () => {
       onProgress(`AI processing products ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}... (batch ${bi + 1}/${total_batches})`)
-      const result = await processProductsBatch(batch, apiKey, aiFailed)
+      const result = await processProductsBatch(batch, apiKey, aiFailed, { name: aiName })
       Object.assign(aiCache, result)
       done += batch.length
     })
@@ -422,14 +424,14 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       'Report':                   reportNote,
     }
 
-    const nameHow = !apiKey ? 'Name fixed (spelling rules)' : aiMissed.has(pid) ? 'Name fixed (spelling rules — AI unavailable)' : 'Name fixed by AI'
+    const nameHow = !apiKey ? 'Name fixed (spelling rules)' : !aiName ? 'Name fixed (spelling rules — AI name check off)' : aiMissed.has(pid) ? 'Name fixed (spelling rules — AI unavailable)' : 'Name fixed by AI'
     items.push({ out, sku, parent: pid, name: fixedName, darazName: name, nameHow, combo, applicable, brandFromFile: !!brandFromFile,
       category: cartupPath, reportNote, image: variantImage, productImage: img1, images: images.filter(Boolean),
       darazCat: cat, pendingVariant: !variantImage })
   }
 
   matchItems(items, lists)
-  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, ai: apiKey ? { products: pidList.length, missed: aiMissed.size, message: aiMessage } : null }
+  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, ai: apiKey ? { products: pidList.length, missed: aiMissed.size, message: aiMessage, name: aiName } : null }
 }
 
 const groupBy = (arr, key) => {
@@ -683,7 +685,7 @@ export function darazSummary(result, output, options = {}) {
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category`,
-    result.ai ? `AI: ${n(result.ai.products - result.ai.missed)} of ${n(result.ai.products)} products cleaned${result.ai.missed ? ` (${n(result.ai.missed)} spelling fix only)` : ''}` : 'AI: off (spelling fix only)',
+    result.ai ? `AI: ${n(result.ai.products - result.ai.missed)} of ${n(result.ai.products)} products cleaned${result.ai.missed ? ` (${n(result.ai.missed)} spelling fix only)` : ''}${result.ai.name === false ? ' · names: AI check off (spelling rules only)' : ''}` : 'AI: off (spelling fix only)',
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
   ]
   return lines.filter(Boolean).join('\n')
