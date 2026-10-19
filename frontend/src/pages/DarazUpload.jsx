@@ -92,6 +92,8 @@ export default function DarazUpload() {
 
   // Run options — rows before processing; special price and image keys apply at download (no re-run).
   const [activeOnly, setActiveOnly] = useState(false)
+  // Variations Combo: 'match' (values to the variant columns) or 'yes' (columns the category needs marked "Yes")
+  const [variantMode, setVariantMode] = useState(() => { try { return localStorage.getItem('daraz_variant_mode') === 'yes' ? 'yes' : 'match' } catch { return 'match' } })
   // Which content the AI cleans (each off → local clean-up only, fewer tokens; all off → no content requests)
   const [aiFields, setAiFields]   = useState(() => {
     const all = { name: true, highlights: true, description: true }
@@ -156,6 +158,9 @@ export default function DarazUpload() {
   }, [])
   useEffect(() => { saveSpecialEnd(spEnd) }, [spEnd])
   useEffect(() => { try { localStorage.setItem('daraz_ai_fields', JSON.stringify(aiFields)) } catch {} }, [aiFields])
+  useEffect(() => { try { localStorage.setItem('daraz_variant_mode', variantMode) } catch {} }, [variantMode])
+  // Changing it after processing re-matches the same run (no files read, no AI).
+  const pickVariantMode = m => { setVariantMode(m); if (result && result.variantMode !== m) setResult(r => rematch(r, r.lists, m)) }
 
   const pick = key => f => {
     setFiles(p => ({ ...p, [key]: f })); setStatus(''); setError(''); setResult(null)
@@ -191,7 +196,7 @@ export default function DarazUpload() {
     setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({}); setDeleted(new Set())
     setAiRun({ start: sessionStats(), end: null })
     try {
-      const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly, aiFields })
+      const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly, aiFields, variantMode })
       setAiRun(r => r && { ...r, end: sessionStats() })
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
@@ -329,6 +334,19 @@ export default function DarazUpload() {
                 : !aiFields.name && !aiFields.highlights && !aiFields.description ? 'all off — no AI requests: names get the spelling rules, highlights and description come from the Basic file as they are'
                 : `unticked — ${['name', 'highlights', 'description'].filter(k => !aiFields[k]).map(k => k === 'name' ? 'name: spelling rules only' : `${k}: from the Basic file as it is`).join(' · ')}`}
               {result?.ai && ['name', 'highlights', 'description'].some(k => (result.ai.fields?.[k] ?? true) !== aiFields[k]) ? ' · applies when you process again' : ''}
+            </span>
+          </div>
+          <div data-variant-mode style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <span style={lbl}>Variations Combo</span>
+            <div style={{ display:'flex', gap:3, background:'#eef2f7', borderRadius:8, padding:3 }}>
+              {seg(variantMode === 'match', 'Match to variant columns', () => pickVariantMode('match'))}
+              {seg(variantMode === 'yes', 'Mark needed columns "Yes"', () => pickVariantMode('yes'))}
+            </div>
+            <span style={{ fontSize:11.5, color:'#94a3b8' }}>
+              {variantMode === 'match'
+                ? 'Black, XL → Color Black, Size XL (matched to CartUp\'s lists; identical variants get Black-1, Black-2… and are flagged)'
+                : 'no matching, no numbering — each variant column the category needs says "Yes" ("Yes" isn\'t on CartUp\'s lists: #N/A in the hidden sheet)'}
+              {' · the original combo is always in the file\'s Variations Combo column'}
             </span>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>

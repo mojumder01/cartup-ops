@@ -74,8 +74,9 @@ export function placeParts(parts, plan, applicable, lists) {
 }
 
 // source: 'daraz' (from the seller's files), 'default' (filled in by us,
-// e.g. Unit = pcs — not logged) or 'fill' (a variant value the category needs
-// but the seller left out — logged and noted in Report).
+// e.g. Unit = pcs — not logged), 'fill' (a variant value the category needs
+// but the seller left out — logged and noted in Report) or 'mark' ("Yes" in a
+// variant column the category needs, when Variations Combo isn't matched).
 export function makeCell(col, raw, lists, source = 'daraz') {
   const list = lists?.[headerKey(col)] ?? null
   const hit = list?.match(raw) ?? null
@@ -228,10 +229,11 @@ function changeLabel(st) {
 }
 
 // SKUs of one product whose variant values (after everything) are identical.
+// ("Yes" marks are not variant values — they never count.)
 function duplicateVariants(items, valueOf) {
   const groups = new Map()
   for (const it of items) {
-    if (!it.cells.some(c => COMBO_TARGETS.includes(c.col))) continue
+    if (!it.cells.some(c => COMBO_TARGETS.includes(c.col) && c.source !== 'mark')) continue
     const k = variantTuple(it.cells, valueOf(it))
     if (!groups.has(k)) groups.set(k, [])
     groups.get(k).push(it.sku)
@@ -330,13 +332,14 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
 
   result.items.forEach((item, rowIndex) => {
     const out = { ...item.out }
-    const changed = [], fresh = [], filled = []
+    const changed = [], fresh = [], filled = [], marked = []
     let noWarranty = false
     for (const cell of item.cells) {
       const st = cellState(item, cell, decisions, memory, result.lists)
       out[cell.col] = st.value
       if (st.noWarranty) noWarranty = true
       if (st.state === 'auto' && st.how === 'numbered') numbered.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
+      if (cell.source === 'mark') { marked.push(colLabel(cell.col)); continue }
       if (!cell.listed) continue
       stats.checked++
       if (st.state in stats) stats[st.state]++
@@ -373,6 +376,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
     }
     const notes = [item.reportNote]
     if (filled.length) notes.push(`Not given, set by rule (category needs it): ${filled.join(', ')}`)
+    if (marked.length) notes.push(`Marked Yes — the category needs: ${marked.join(', ')} (Variations Combo not matched: "${item.combo}")`)
     if (fresh.length) notes.push(`Not on CartUp list (#N/A until added or matched): ${fresh.join(', ')}`)
     if (changed.length) notes.push(`Changed: ${changed.join(', ')}`)
     if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex) }

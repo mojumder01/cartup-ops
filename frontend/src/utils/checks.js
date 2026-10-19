@@ -15,9 +15,10 @@ export const ISSUE_TYPES = {
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
   noimage:  { label: 'Image missing (row kept)', level: 'warn' },
-  spremoved:{ label: 'Special price removed (75%+ discount)', level: 'warn' },
+  spremoved:{ label: 'Special price removed (75–99% discount)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
-  defaults: { label: 'Set by rule (Same as picture / One Size)', level: 'warn' },
+  defaults: { label: 'Set by rule (Not Specified / One Size)', level: 'warn' },
+  marked:   { label: 'Marked "Yes" (combo not matched)', level: 'warn' },
   flag:     { label: 'Other flags', level: 'warn' },
 }
 
@@ -26,6 +27,7 @@ export function sheetIssues(output, columns, lists, items = null) {
   const m = new Map()
   // Variant values set by rule (Same as picture, One Size), per cell.
   const filled = items && new Set(items.flatMap((it, i) => (it.cells || []).filter(c => c.source === 'fill' && String(output.rows[i]?.[c.col] ?? '') === (c.auto ?? c.raw)).map(c => `${i}|${c.col}`)))
+  const marked = items && new Set(items.flatMap((it, i) => (it.cells || []).filter(c => c.source === 'mark' && String(output.rows[i]?.[c.col] ?? '') === 'Yes').map(c => `${i}|${c.col}`)))
   const flagged = new Map(output.problems.map(p => [`${p.row}|${p.column}`, p]))
   const set = (k, type, text) => m.set(k, { level: ISSUE_TYPES[type].level, type, text })
   output.rows.forEach((r, i) => {
@@ -36,6 +38,7 @@ export function sheetIssues(output, columns, lists, items = null) {
       const k = `${i}|${c}`
       const f = flagged.get(k)
       if (f?.type) set(k, f.type, f.problem)
+      else if (marked?.has(k)) set(k, 'marked', '"Yes": the category needs this variant column (Variations Combo not matched) — not on CartUp\'s list, the hidden sheet shows #N/A')
       else if (c === '**Category Id' && !v) set(k, 'category', 'No CartUp category — add the Category Id')
       else if (c.startsWith('**') && !v) set(k, 'required', 'Required — empty')
       else if (v && list && list.match(v)?.how !== 'exact') set(k, 'list', `Not on CartUp's ${colLabel(c)} list — shows #N/A`)
@@ -100,8 +103,11 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Close-spelling matches', why: 'Matched by similar spelling — a quick glance confirms them',
       open: { review: { view: 'values', state: 'changed', col: 'all' } } })
   }
+  if (byType.marked) add({ id: 'marked', level: 'check', count: byType.marked, unit: 'value',
+    title: 'Variant columns marked "Yes"', why: 'Variations Combo option "Mark Yes": the columns the category needs say Yes — "Yes" isn\'t on CartUp\'s lists, so the hidden sheet shows #N/A for them',
+    open: { sheet: 'marked' } })
   if (byType.defaults) add({ id: 'defaults', level: 'check', count: byType.defaults, unit: 'value',
-    title: 'Variant values set by rule', why: 'The category needs Color / Model / Size but the seller gave none — set to Same as picture / One Size; Check = YES and Report say so',
+    title: 'Variant values set by rule', why: 'The category needs Color / Model / Size but the seller gave none — set to Not Specified (Color), Same as picture (Model), One Size (sizes); Check = YES and Report say so',
     open: { sheet: 'defaults' } })
   if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
     title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',
@@ -124,7 +130,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })
   if (output.rules.discountRemoved) add({ id: 'spremoved', level: 'info', count: output.rules.discountRemoved, unit: 'row',
-    title: 'Special prices removed (75–100% discount)', why: 'The special price was removed, the SKU stays — Report and the change log say so',
+    title: 'Special prices removed (75–99% discount)', why: 'The special price was removed, the SKU stays — Report and the change log say so',
     open: { sheet: 'spremoved' } })
   if (result.invalidRows.length) add({ id: 'invalid', level: 'info', count: result.invalidRows.length, unit: 'row',
     title: 'Rows left out (no name / price)', why: 'No name, no price (MRP), or no Product ID / Seller SKU — listed in the "invalid" sheet with the reason, not in the upload' })

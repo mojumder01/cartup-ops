@@ -423,8 +423,9 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       darazCat: cat, pendingVariant: !variantImage })
   }
 
-  matchItems(items, lists)
-  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields } : null }
+  const variantMode = options.variantMode === 'yes' ? 'yes' : 'match'
+  matchItems(items, lists, variantMode)
+  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields } : null }
 }
 
 const groupBy = (arr, key) => {
@@ -455,22 +456,31 @@ function warrantyRules(it, lists) {
   }
 }
 
-const FILL_DEFAULTS = { Color: 'Same as picture', Model: 'Same as picture', Size: 'One Size', 'Clothing Size': 'One Size', 'Shoe Size': 'One Size', 'Bedding Size': 'One Size' }
+const FILL_DEFAULTS = { Color: 'Not Specified', Model: 'Same as picture', Size: 'One Size', 'Clothing Size': 'One Size', 'Shoe Size': 'One Size', 'Bedding Size': 'One Size' }
 
 // Stage 2 — every dropdown value against the template's lists (or none, when
 // no template is given). Repeatable: a newer template only re-runs this.
-export function matchItems(items, lists) {
+// variantMode: 'match' — Variations Combo values go to the variant columns
+// (matched to the lists; variants that would be identical are numbered,
+// e.g. Black-1, Black-2) · 'yes' — the combo isn't matched: every variant
+// column the category needs is just marked "Yes" (the combo stays in its
+// own column of the file).
+export function matchItems(items, lists, variantMode = 'match') {
   for (const group of groupBy(items, it => it.parent).values()) {
     // Variations Combo → variant columns, guided by the pattern of the product's other SKUs.
-    const plan = planParent(group.map(it => it.combo), group[0].applicable, lists)
+    const plan = variantMode === 'yes' ? [] : planParent(group.map(it => it.combo), group[0].applicable, lists)
     for (const it of group) {
-      const parts = splitCombo(it.combo)
-      const placed = placeParts(parts, plan, it.applicable, lists)
       it.cells = []; it.unused = []; it.fixed = {}; it.ruleChanges = []
-      parts.forEach((part, p) => placed[p] ? it.cells.push(makeCell(placed[p], part, lists)) : it.unused.push(part))
+      if (variantMode === 'yes') {
+        for (const col of COMBO_TARGETS) if (it.applicable.includes(col)) it.cells.push(makeCell(col, 'Yes', null, 'mark'))
+      } else {
+        const parts = splitCombo(it.combo)
+        const placed = placeParts(parts, plan, it.applicable, lists)
+        parts.forEach((part, p) => placed[p] ? it.cells.push(makeCell(placed[p], part, lists)) : it.unused.push(part))
+      }
       // A variant column the category needs but the seller didn't fill (no
-      // variant, or a variant of another kind): Color / Model → "Same as
-      // picture", a size → "One Size" — in the list's own spelling.
+      // variant, or a variant of another kind): Color → "Not Specified",
+      // Model → "Same as picture", a size → "One Size" — in the list's own spelling.
       for (const [col, value] of Object.entries(FILL_DEFAULTS)) {
         if (it.applicable.includes(col) && !it.cells.some(c => c.col === col)) it.cells.push(makeCell(col, value, lists, 'fill'))
       }
@@ -486,18 +496,21 @@ export function matchItems(items, lists) {
       warrantyRules(it, lists)
     }
     // One size format per product; variants that would end up identical numbered apart (Multicolor-1, -2…).
-    harmonizeSizes(group, lists)
-    separateCollisions(group, lists)
+    if (variantMode !== 'yes') {
+      harmonizeSizes(group, lists)
+      separateCollisions(group, lists)
+    }
   }
   return items
 }
 
 // Same run, checked against a newer template (e.g. after values were added to
 // CartUp's lists) — no files read, no AI.
-export function rematch(result, lists) {
+// Also when the variant option changes (variantMode: see matchItems).
+export function rematch(result, lists, variantMode = result.variantMode) {
   const items = result.items.map(it => ({ ...it }))
-  matchItems(items, lists)
-  return { ...result, items, lists, template: !!lists }
+  matchItems(items, lists, variantMode)
+  return { ...result, items, lists, template: !!lists, variantMode }
 }
 
 // Key of a row for hand edits (Seller SKUs are unique after stage 1).
@@ -549,15 +562,15 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       rules.stockCapped++
     }
 
-    // Special price: only when wanted; a discount of 75% or more (up to 100% —
-    // a special price of 0) removes the special price, never the SKU; dates =
-    // today → the chosen end.
+    // Special price: only when wanted; a discount of 75–99% removes the
+    // special price, never the SKU; a special price of 0 means none (not a
+    // 100% discount) and is just left empty; dates = today → the chosen end.
     const spText = String(out['Special Price'] ?? '').trim()
     const sp = Number(spText), mrp = Number(out['**Price(MRP)'])
     const clearSpecial = () => { out['Special Price'] = ''; out['Special Price Start Date'] = ''; out['Special Price End Date'] = '' }
-    if (!specialPrice.include || spText === '' || Number.isNaN(sp)) clearSpecial()
+    if (!specialPrice.include || spText === '' || Number.isNaN(sp) || sp <= 0) clearSpecial()
     else if (mrp > 0 && 1 - sp / mrp >= 0.75) {
-      const pct = Math.min(100, Math.round((1 - sp / mrp) * 100))
+      const pct = Math.min(99, Math.round((1 - sp / mrp) * 100))
       const why = `Special price ${spText} removed — ${pct}% discount (75% or more); the SKU stays`
       log('Special Price', spText, '', why)
       notes.push(`Special price removed: ${pct}% discount`)
@@ -736,7 +749,7 @@ export function darazSummary(result, output, options = {}) {
     `CartUp upload summary — ${todayISO()}`,
     `Rows: ${n(total)} in the Price file → ${s(uploaded.length, 'row')} uploaded (${s(products, 'product')}) · ${n(left)} left out`,
     `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
-    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–100% discount — SKU kept)`,
+    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–99% discount — SKU kept)`,
       r.spNotBelow && `${s(r.spNotBelow, 'special price')} not below the price (flagged)`])}`,
     `Image: ${join([options.imageKeys ? `${n(leftFor(/^(Images|Variant Image):/))} left out — no CartUp image key (${n(leftFor(/^Images:/))} for any product image, ${n(leftFor(/^Variant Image:/))} for the variant image)` : '0 left out',
       options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`, options.imageKeys && r.imagesMoved && `${s(r.imagesMoved, 'row')} with images moved up to fill gaps`,
@@ -748,7 +761,8 @@ export function darazSummary(result, output, options = {}) {
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
-    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color / Model = Same as picture, size = One Size)${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
+    result.variantMode === 'yes' ? 'Variants: Variations Combo not matched — the variant columns each category needs are marked "Yes"' : '',
+    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color = Not Specified, Model = Same as picture, size = One Size)${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,
     aiSummary(result.ai),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
@@ -913,7 +927,7 @@ async function buildTemplateFiles(templateFile, applied, invalidRows, lists, sum
   const colOf = new Map()
   for (const c of tpl.columns) if (c.key && OUR_COL[c.key] && !colOf.has(OUR_COL[c.key])) colOf.set(OUR_COL[c.key], c.col)
   const last = Math.max(...tpl.columns.map(c => colToNum(c.col)))
-  const reportCol = numToCol(last + 1), checkCol = numToCol(last + 2)
+  const reportCol = numToCol(last + 1), checkCol = numToCol(last + 2), comboCol = numToCol(last + 3)
   const rows = []
   applied.rows.forEach((r, i) => {
     if (applied.excluded?.has(i)) return
@@ -921,6 +935,7 @@ async function buildTemplateFiles(templateFile, applied, invalidRows, lists, sum
     for (const [c, col] of colOf) if (c !== 'Report' && c !== 'Check') values[col] = typed(c, r[c])
     values[reportCol] = r.Report ?? ''
     values[checkCol] = r.Check ?? ''
+    values[comboCol] = r['Variations Combo'] ?? ''   // the seller's original, as Daraz exported it
     rows.push({ values, parent: String(r['**Parent Sku'] ?? ''), source: { __row: i + 3 } })
   })
   if (!rows.length) throw new Error('No rows to upload — every row was left out')
@@ -938,7 +953,7 @@ async function buildTemplateFiles(templateFile, applied, invalidRows, lists, sum
     const names = reportTabs(applied, invalidRows, lists, summary).map(t => ({ name: t.name, widths: t.widths, wrap: t.wrap }))
     const bytes = await writeTemplate(tpl, chunks[k], {
       errors,
-      headers: { [reportCol]: 'Report', [checkCol]: 'Check' },
+      headers: { [reportCol]: 'Report', [checkCol]: 'Check', [comboCol]: 'Variations Combo' },
       sheets: names.map(t => ({ name: t.name, rows: tab(t.name), widths: t.widths, heights: t.wrap ? { 0: 15 * (summary.split('\n').length + 3) + 6 } : {} })),
     })
     files.push({ rows: chunks[k].length, bytes, errors: errors.length })
