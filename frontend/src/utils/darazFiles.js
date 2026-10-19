@@ -218,7 +218,7 @@ export function crossCheck(files, read) {
   if (ok('skuimg')) {
     const lost = minus(priceSkus, ids(read.skuimg, 'SellerSKU'))
     if (priceSkus.size && lost.size === priceSkus.size) out.push({ level: 'error', text: 'None of the Seller SKUs in the Price file are in the SKU Image file — is it from another export?' })
-    else if (lost.size) out.push({ level: 'warn', text: `${lost.size} Seller SKU${lost.size > 1 ? 's' : ''} without a row in the SKU Image file — the variant image falls back to Product Image 1 (colour variants without one go to "invalid")`, sample: sample(lost) })
+    else if (lost.size) out.push({ level: 'warn', text: `${lost.size} Seller SKU${lost.size > 1 ? 's' : ''} without a row in the SKU Image file — the variant image falls back to Product Image 1 (a colour variant needs one from the image key file, or it goes to "invalid")`, sample: sample(lost) })
     else out.push({ level: 'ok', text: 'SKU Image file covers all Seller SKUs' })
   }
   if (read.attr && ok('attr')) {

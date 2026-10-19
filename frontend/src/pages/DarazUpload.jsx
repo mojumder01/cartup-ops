@@ -3,10 +3,10 @@ import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { poolSummary, onAiChange, sessionStats, resetText, maskKey } from '../utils/aiPool'
 import {
   processDarazFiles, buildOutput, buildDarazWorkbook, templateLists, rematch, rowKey,
-  readTableFile, guessImageColumns, makeImageKeyMap, OUTPUT_COLS,
+  readTableFile, guessImageKeys, makeImageKeyMap, makeImageKeyColumns, OUTPUT_COLS,
 } from '../utils/processor'
 import { loadMemory, rememberDecisions, forgetMemory, valueGroups } from '../utils/variantReview'
-import { sheetIssues, buildChecklist } from '../utils/checks'
+import { sheetIssues, buildChecklist, IMAGE_COLS } from '../utils/checks'
 import { readDarazFile, crossCheck, DARAZ_FILES, REQUIRED_FILES } from '../utils/darazFiles'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
 import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
@@ -98,11 +98,14 @@ export default function DarazUpload() {
   const [aiRun, setAiRun]         = useState(null)     // AI calls of the latest run: { start, end }
   const [keyFile, setKeyFile]     = useState(null)
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
-  const [keyPick, setKeyPick]     = useState({ sheet: 0, link: '', key: '' })
+  // mode 'link': a Daraz link column + a key column · 'columns': keys per Seller SKU, one column per image
+  const [keyPick, setKeyPick]     = useState({ sheet: 0, mode: 'link', link: '', key: '', match: '', slots: {} })
 
   const imageKeys = useMemo(() => {
     const sh = keySheets?.[keyPick.sheet]
-    return sh && keyPick.link && keyPick.key ? makeImageKeyMap(sh.rows, keyPick.link, keyPick.key) : null
+    if (!sh) return null
+    if (keyPick.mode === 'columns') return keyPick.match ? makeImageKeyColumns(sh.rows, keyPick.match, keyPick.slots) : null
+    return keyPick.link && keyPick.key ? makeImageKeyMap(sh.rows, keyPick.link, keyPick.key) : null
   }, [keySheets, keyPick])
   const stockSet = stockMode === 'set' && stockValue !== '' ? stockValue : null
   const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, stock: { set: stockSet }, imageKeys, edits }), [spInclude, spEnd, stockSet, imageKeys, edits])
@@ -162,7 +165,7 @@ export default function DarazUpload() {
       const sheets = await readTableFile(f)
       if (!sheets.length) throw new Error('The image key file has no rows')
       setKeySheets(sheets)
-      setKeyPick({ sheet: 0, ...guessImageColumns(sheets[0]) })
+      setKeyPick({ sheet: 0, ...guessImageKeys(sheets[0]) })
     } catch (e) { setError(`Image key file: ${e.message}`) }
   }
 
@@ -240,6 +243,7 @@ export default function DarazUpload() {
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
     output.rules.lowWeight && `${output.rules.lowWeight} weights starting with 0.00 flagged`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
+    output.excluded.size && `${output.excluded.size} colour variants without a variant image left out`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
 
@@ -326,25 +330,61 @@ export default function DarazUpload() {
             <div style={{ flex:1, minWidth:260 }}>
               <FileInput label="Image key file (optional — when CartUp image keys are ready)" onChange={f => { setKeyFile(f); pickKeyFile(f) }} file={keyFile}
                 hint="Daraz image links are replaced by these keys; add it now or after processing" />
-              {keySheets && (
-                <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', fontSize:12, marginTop:-4 }}>
-                  {keySheets.length > 1 && <>
-                    <span>Sheet</span>
-                    <select value={keyPick.sheet} onChange={e => { const i = +e.target.value; setKeyPick({ sheet: i, ...guessImageColumns(keySheets[i]) }) }} style={sel}>
-                      {keySheets.map((s, i) => <option key={s.name} value={i}>{s.name}</option>)}
-                    </select>
-                  </>}
-                  <span>Daraz link column</span>
-                  <select value={keyPick.link} onChange={e => setKeyPick(k => ({ ...k, link: e.target.value }))} style={sel}>
-                    {keySheets[keyPick.sheet].columns.map(c => <option key={c}>{c}</option>)}
-                  </select>
-                  <span>Image key column</span>
-                  <select value={keyPick.key} onChange={e => setKeyPick(k => ({ ...k, key: e.target.value }))} style={sel}>
-                    {keySheets[keyPick.sheet].columns.map(c => <option key={c}>{c}</option>)}
-                  </select>
-                  <span style={{ color: imageKeys?.size ? '#15803d' : '#b45309' }}>{imageKeys?.size ? `${imageKeys.size.toLocaleString()} links paired` : 'no pairs — check the columns'}</span>
-                </div>
-              )}
+              {keySheets && (() => {
+                const columns = keySheets[keyPick.sheet].columns
+                const keyCol = c => /^__EMPTY/.test(c) ? `(no header ${c.replace(/^__EMPTY_?/, '') || '0'})` : c
+                const colOptions = columns.map(c => <option key={c} value={c}>{keyCol(c)}</option>)
+                const found = output && imageKeys?.forItem ? output.rules.keyRows : null
+                return (
+                  <div data-image-keys style={{ display:'flex', flexDirection:'column', gap:8, fontSize:12, marginTop:-4 }}>
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                      {keySheets.length > 1 && <>
+                        <span>Sheet</span>
+                        <select value={keyPick.sheet} onChange={e => { const i = +e.target.value; setKeyPick({ sheet: i, ...guessImageKeys(keySheets[i]) }) }} style={sel}>
+                          {keySheets.map((s, i) => <option key={s.name} value={i}>{s.name}</option>)}
+                        </select>
+                      </>}
+                      <div style={{ display:'flex', gap:3, background:'#eef2f7', borderRadius:8, padding:3 }}>
+                        {seg(keyPick.mode === 'columns', 'Keys per Seller SKU', () => setKeyPick(k => ({ ...k, mode: 'columns' })))}
+                        {seg(keyPick.mode === 'link', 'Daraz link → key', () => setKeyPick(k => ({ ...k, mode: 'link' })))}
+                      </div>
+                    </div>
+                    {keyPick.mode === 'columns' ? <>
+                      <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                        <span>Match rows by</span>
+                        <select aria-label="Match rows by" value={keyPick.match} onChange={e => setKeyPick(k => ({ ...k, match: e.target.value }))} style={sel}>
+                          <option value="">— choose —</option>{colOptions}
+                        </select>
+                        <span style={{ fontSize:11.5, color:'#94a3b8' }}>the Seller SKU column (Product ID gives every variant the same images)</span>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(190px, 1fr))', gap:'6px 12px' }}>
+                        {IMAGE_COLS.map(oc => (
+                          <label key={oc} style={{ display:'flex', flexDirection:'column', gap:2, fontWeight:600, color: oc === '*Variant Image' ? '#4f46e5' : '#475569' }}>
+                            {oc.replace(/^\*+/, '')}
+                            <select aria-label={`Key column for ${oc.replace(/^\*+/, '')}`} value={keyPick.slots[oc] || ''} onChange={e => setKeyPick(k => ({ ...k, slots: { ...k.slots, [oc]: e.target.value } }))} style={{ ...sel, maxWidth:'none', fontWeight:400 }}>
+                              <option value="">— not used —</option>{colOptions}
+                            </select>
+                          </label>
+                        ))}
+                      </div>
+                      <span style={{ color: imageKeys?.size ? '#15803d' : '#b45309' }}>
+                        {!keyPick.match ? 'choose the column to match rows by' : !imageKeys?.slots ? 'choose at least one image column' : !imageKeys.size ? 'no rows — check the match column'
+                          : `${imageKeys.size.toLocaleString()} SKUs in the file · ${imageKeys.slots} image column${imageKeys.slots === 1 ? '' : 's'} mapped`
+                            + (found == null ? '' : ` · ${found.toLocaleString()} of ${output.rows.length.toLocaleString()} rows found`)}
+                      </span>
+                      <span style={{ fontSize:11.5, color:'#94a3b8' }}>A key in the file replaces that image; an empty cell keeps the Daraz image. Unused columns stay as they are.</span>
+                    </> : (
+                      <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                        <span>Daraz link column</span>
+                        <select value={keyPick.link} onChange={e => setKeyPick(k => ({ ...k, link: e.target.value }))} style={sel}>{colOptions}</select>
+                        <span>Image key column</span>
+                        <select value={keyPick.key} onChange={e => setKeyPick(k => ({ ...k, key: e.target.value }))} style={sel}>{colOptions}</select>
+                        <span style={{ color: imageKeys?.size ? '#15803d' : '#b45309' }}>{imageKeys?.size ? `${imageKeys.size.toLocaleString()} links paired` : 'no pairs — check the columns'}</span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           </div>
         </div>
@@ -376,9 +416,9 @@ export default function DarazUpload() {
         {status === 'success' && output && (
           <div style={{ marginTop:16, border:'1px solid #e2e8f0', borderRadius:10, overflow:'hidden' }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 16px', background:'#dcfce7', color:'#166534', fontSize:13, fontWeight:600 }}>
-              <CheckCircle size={14} /> Processed — {rows.toLocaleString()} rows
+              <CheckCircle size={14} /> Processed — {(rows - output.excluded.size).toLocaleString()} rows
               <span style={{ fontWeight:500 }}>
-                {result.invalidRows.length ? ` · ${result.invalidRows.length.toLocaleString()} in "invalid" (missing Product ID, Seller SKU, name, price or image)` : ''}
+                {result.invalidRows.length + output.excluded.size ? ` · ${(result.invalidRows.length + output.excluded.size).toLocaleString()} in "invalid" (missing Product ID, Seller SKU, name, price or image)` : ''}
                 {result.duplicateSkus.length ? ` · ${result.duplicateSkus.length} repeated Seller SKU rows removed` : ''}
                 {result.skipped ? ` · ${result.skipped.toLocaleString()} inactive rows left out` : ''}
               </span>

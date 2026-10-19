@@ -180,7 +180,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       uniquePids[pid] = {
         pid,
         name,
-        highlights:  cleanHighlights(String(b['*Highlights'] || '')),
+        highlights:  cleanHighlights(String(b['*Highlights'] || b['Highlights'] || '')),
         description: cleanDescription(String(b['Main Description'] || '')),
       }
     }
@@ -320,7 +320,8 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     // ── Variant image logic ───────────────────────────────────────────────────
     // skuimg Images1 present → always use it
     // empty + no variant OR size-only → fall back to basic Image 1
-    // empty + color variant (with or without size) → must come from skuimg (missing = invalid)
+    // empty + color variant (with or without size) → must come from skuimg or an
+    // image key file; kept until the file is built, left out there if still empty
     const hasColorVariant = combo && applicable.includes('Color')
     const variantImage = skuImg || (hasColorVariant ? '' : img1)
 
@@ -331,7 +332,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     if (!name)         missing.push('Name missing')
     if (!price)        missing.push('Price missing')
     if (!img1)         missing.push('Image 1 missing')
-    if (!variantImage) missing.push('Variant Image missing')
+    if (!variantImage && missing.length) missing.push('Variant Image missing')
 
     if (missing.length > 0) {
       invalidRows.push({
@@ -422,7 +423,8 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
 
     const nameHow = !apiKey ? 'Name fixed (spelling rules)' : aiMissed.has(pid) ? 'Name fixed (spelling rules — AI unavailable)' : 'Name fixed by AI'
     items.push({ out, sku, parent: pid, name: fixedName, darazName: name, nameHow, combo, applicable, brandFromFile: !!brandFromFile,
-      category: cartupPath, reportNote, image: variantImage, productImage: img1, images: images.filter(Boolean) })
+      category: cartupPath, reportNote, image: variantImage, productImage: img1, images: images.filter(Boolean),
+      darazCat: cat, pendingVariant: !variantImage })
   }
 
   matchItems(items, lists)
@@ -503,8 +505,9 @@ export const rowKey = (item, i) => item.sku || `row ${i + 1}`
 export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const applied = applyDecisions(result, decisions, memory)
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {} } = options
-  const problems = []
-  const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0, edited: 0, specialPrices: 0 }
+  const problems = [], excluded = new Set(), leftOut = []
+  const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, lowWeight: 0, imageKeyed: 0, imageMissing: 0,
+    keyRows: 0, keyRowsMissing: 0, edited: 0, specialPrices: 0 }
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
@@ -552,8 +555,15 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       rules.specialPrices++
     }
 
-    // Image links → CartUp image keys, when a key file is loaded.
-    if (imageKeys) {
+    // Image links → CartUp image keys, when a key file is loaded: per Seller SKU
+    // (a column for each image), or link by link.
+    const keyRow = imageKeys?.forItem ? imageKeys.forItem(item) : null
+    if (imageKeys?.forItem) {
+      if (keyRow) {
+        rules.keyRows++
+        for (const [c, key] of Object.entries(keyRow)) if (out[c] !== key) { out[c] = key; rules.imageKeyed++ }
+      } else rules.keyRowsMissing++
+    } else if (imageKeys) {
       for (const c of IMAGE_COLS) {
         const key = String(out[c] ?? '').trim() && imageKeys.lookup(out[c])
         if (key) { out[c] = key; rules.imageKeyed++ }
@@ -570,9 +580,19 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
 
     // Flagged, not changed (after edits, so a fixed value isn't flagged).
     if (imageKeys) {
+      const why = imageKeys.forItem && !keyRow ? 'Seller SKU not in the image key file' : 'No image key for this link yet'
       for (const c of IMAGE_COLS) {
-        if (/^https?:\/\//i.test(String(out[c] ?? '').trim())) { flag(c, 'No image key for this link yet'); rules.imageMissing++ }
+        if (/^https?:\/\//i.test(String(out[c] ?? '').trim())) { flag(c, why); rules.imageMissing++ }
       }
+    }
+    // No variant image (a colour variant without one in the SKU Image file, and
+    // no key for it): left out of the upload, listed in "invalid".
+    if (!String(out['*Variant Image'] ?? '').trim()) {
+      flag('*Variant Image', 'No variant image — add it with an image key file or in the sheet, or the row goes to "invalid"')
+      excluded.add(i)
+      leftOut.push({ 'Product ID': out['**Parent Sku'], 'SellerSKU': out['**Seller SKU'], 'Product Name': out['**Name (English)'], 'catId': item.darazCat ?? '',
+        'Price': out['**Price(MRP)'], 'Image 1': out['**Product Image 1'], 'Variant Image': '', 'Quantity': out['**Current Stock Qty'], 'Status': out['status'],
+        'Report': 'Variant Image missing (colour variant — not in the SKU Image file or the image key file)' })
     }
     // Weight starting with 0.00 (0.001–0.009) or none at all: CartUp may show a delivery charge of 0.
     if (weightNeedsCheck(out['**Package Weight (kg)'])) {
@@ -590,13 +610,14 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     if (stockText !== '' && Number(stockText) === 0) rules.stockZero++
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
   })
-  return { ...applied, problems, rules }
+  // excluded: row indexes left out of the upload (leftOut: their "invalid" rows)
+  return { ...applied, problems, rules, excluded, leftOut }
 }
 
 // The output workbook for a processed run: decisions, rules and edits applied.
 export function buildDarazWorkbook(result, decisions = {}, memory = {}, options = {}) {
   const output = buildOutput(result, decisions, memory, options)
-  return { bytes: buildExcel(output, result.invalidRows, result.lists), output }
+  return { bytes: buildExcel(output, [...result.invalidRows, ...output.leftOut], result.lists), output }
 }
 
 // ── Image keys ────────────────────────────────────────────────────────────────
@@ -643,10 +664,42 @@ export function makeImageKeyMap(rows, linkCol, keyCol) {
   return { size: byId.size, lookup: v => byId.get(imageId(v)) ?? byFile.get(imageFile(v)) ?? null }
 }
 
+// Or the keys already per SKU: one row per Seller SKU with a column for each
+// image (Images 1…, Variant 1). slots: { output image column: key file column }.
+// Rows are found by Seller SKU, or by Product ID when that is the match column.
+export function makeImageKeyColumns(rows, matchCol, slots) {
+  const byValue = new Map()
+  const used = Object.entries(slots).filter(([, col]) => col)
+  for (const r of rows) {
+    const v = String(r[matchCol] ?? '').trim()
+    if (!v || byValue.has(v)) continue
+    const keys = {}
+    for (const [out, col] of used) { const k = String(r[col] ?? '').trim(); if (k) keys[out] = k }
+    byValue.set(v, keys)
+  }
+  return { size: used.length ? byValue.size : 0, slots: used.length,
+    forItem: it => used.length ? byValue.get(String(it.sku ?? '').trim()) ?? byValue.get(String(it.parent ?? '').trim()) ?? null : null }
+}
+
+// Which layout the key file has, and its columns. Keys per SKU when it has a
+// Seller SKU (or Product ID) column and image-named columns without web links.
+export function guessImageKeys(sheet) {
+  const { link, key } = guessImageColumns(sheet)
+  const cols = sheet.columns
+  const find = test => cols.find(c => test(String(c).trim()))
+  const match = find(c => /^\**\s*seller\s*_?sku$/i.test(c)) || find(c => /seller\s*_?sku/i.test(c)) || find(c => /shop\s*sku/i.test(c)) || find(c => /product\s*id/i.test(c)) || ''
+  const slots = Object.fromEntries(IMAGE_COLS.map((oc, n) => [oc, n === 8
+    ? find(c => /variant/i.test(c) && !/combo|name|sku/i.test(c)) || ''
+    : find(c => new RegExp(`^\\**\\s*(product\\s*)?images?\\s*${n + 1}$`, 'i').test(c)) || '']))
+  const urls = c => sheet.rows.filter(r => /^https?:\/\//i.test(String(r[c] ?? '').trim())).length > sheet.rows.length / 2
+  const mode = match && Object.values(slots).some(c => c && !urls(c)) && !urls(link) ? 'columns' : 'link'
+  return { mode, link, key, match, slots }
+}
+
 // applied: buildOutput(...) — final rows, change log, flagged values, values not on the lists.
 function buildExcel(applied, invalidRows = [], lists = null) {
   const wb = XLSX.utils.book_new()
-  const validRows = applied.rows
+  const validRows = applied.rows.filter((_, i) => !applied.excluded?.has(i))
 
   // ── Sheet 1: product (valid rows) ──────────────────────────────────────────
   const wsData = []

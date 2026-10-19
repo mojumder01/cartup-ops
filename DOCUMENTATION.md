@@ -61,7 +61,7 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 | SKU Image | ✅ | Variant images, seller SKU, variations |
 | Attribute | optional | Brands — without it every product is **No Brand** |
 | CartUp upload template | recommended | Its dropdown lists (Color, Size, Brand, Warranty…) — remembered in the browser after the first pick, shared with Shop Duplicate |
-| Image key file | optional | A sheet pairing Daraz image links with CartUp image keys — add it before or after processing (the keys often come later); pick its sheet, link column and key column (guessed automatically) |
+| Image key file | optional | CartUp image keys — add it before or after processing (the keys often come later). Two layouts, guessed automatically: **Keys per Seller SKU** (one row per SKU, a column per image — e.g. `SellerSKU`, `Images 1`…`Images 5`, `Variant 1`): pick the column to match rows by and, in **nine dropdowns**, which file column goes to Image 1–8 and Variant Image (or "not used"); or **Daraz link → key** (a link column and a key column) |
 
 **File check** (`utils/darazFiles.js`) — every file is read and checked the moment it is picked, so a wrong or incomplete file shows up before processing:
 - **Under each box:** rows, products, Seller SKUs (and how many are active) in green; problems in amber (rows without Product ID, Seller SKU, price or name; repeated Seller SKUs; products without Image 1; weights empty or starting with 0.00); errors in red — **the wrong file in a box** ("This looks like the Basic file — put it in the Basic box"), the **CartUp template in a Daraz box**, **missing columns**, an empty or unreadable file. The CartUp template box says how many dropdown lists it has.
@@ -73,7 +73,8 @@ Upload 4-5 Daraz files → AI cleans content + matches category → Download Car
 - **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
 - **Special price:** include or leave out. When included it runs **from the day the file is made to the end date you pick** (remembered while it is still ahead); a special price that is a **discount of 75% or more** is removed and logged. Nothing else is removed.
 - **Stock:** *As in file* (never above 99,999), or **the same stock for every row** — e.g. `0` when the seller wants to upload with no stock; every changed row is logged in **changes**
-- **Image keys:** every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key — links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`); links without a key are listed in **to check**
+- **Image keys:** *keys per Seller SKU* — each row is found by its Seller SKU (or Product ID when that is the match column; then every variant gets the same images) and each mapped column's key replaces that image; an empty cell keeps the Daraz image; the page shows how many SKUs the file has and how many rows were found. *Daraz link → key* — every Daraz image link (Product Image 1–8, Variant Image) found in the key file is replaced by its key; links match even with Daraz's size suffixes (`…abc.jpg_720x720q80.jpg_.webp`). Either way, links still without a key are listed in **to check** (with "Seller SKU not in the image key file" when the row wasn't found)
+- **Colour variants without a variant image** (none in the SKU Image file) are kept through the review, so an image key file (Variant Image column) or a hand edit can give them one; any still without one when the file is built go to **invalid** — check list item *Colour variants without a variant image*, sheet filter *No variant image (left out)*
 - Special price, stock and image keys apply when the file is built, so they can be changed after processing without running again
 
 **Step 2 — Click "Process & Download".** The system:
@@ -116,6 +117,7 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 | Required cells empty | fix | Sheet → Required — empty |
 | Close-spelling matches (plus how many were matched automatically in all) | check | Review → By value, matched automatically (riskiest first) |
 | Weight starts with 0.00 | check | Sheet → Weight to check |
+| Colour variants without a variant image | fix | Sheet → No variant image (left out) |
 | Image links without a CartUp key (with an image key file) | check | Sheet → Image link without a key |
 | Names not cleaned by AI (AI unavailable — limit used up…) | check | Sheet → Names not cleaned by AI |
 | Special price not below the price | check | Sheet → Special price not below the price |
@@ -131,7 +133,7 @@ The work runs in three stages (`processor.js`): read + AI (once, the slow part) 
 
 **Step 3 — Output:** `cartup_daraz_output.xlsx` — downloads at once when nothing needs a decision, otherwise from the review window ("Download file", also on the page). Sheets:
 - **product** — with the decisions applied; the Report column notes each row's changes, values not on the list, and identical variants
-- **invalid** — rows that can't be uploaded, with the reason: no Product ID, no Seller SKU, no name, no price, no Image 1, or a colour variant without a variant image
+- **invalid** — rows that can't be uploaded, with the reason: no Product ID, no Seller SKU, no name, no price, no Image 1, or a colour variant still without a variant image when the file is built
 - **changes** — every change, one row per Seller SKU and column: Seller SKU, Parent SKU, product, column, Daraz value, output value, what changed it (known equivalent, close spelling, numbered to keep variants apart, picked by hand, remembered pick, kept as new value, name fixed by AI, "#" replaced, stock set by the Stock option, stock capped, special price removed, warranty rule, edited by hand, duplicate Seller SKU removed)
 - **to check** — flagged but not changed: weights starting with 0.00, image links without a key, special prices not below the price
 - **new values** (with the template) — every value not on CartUp's lists, once each: column, value, status (*Add to the CartUp list — decided*, or *Not reviewed — shows #N/A until matched or added*), how many SKUs and products use it, the Seller SKUs, and the closest CartUp values
