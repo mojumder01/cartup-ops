@@ -9,7 +9,7 @@ import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { darazRows, cell } from './darazFiles'
-import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, applyDecisions } from './variantReview'
+import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, applyDecisions } from './variantReview'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -497,6 +497,10 @@ export function matchItems(items, lists, variantMode = 'match') {
     }
     // One size format per product; variants that would end up identical numbered apart (Multicolor-1, -2…).
     if (variantMode !== 'yes') {
+      // What the variants differ by; sizes in a category with no size column go in Color.
+      const kind = variantKind(group)
+      for (const it of group) it.variantBy = kind
+      sizesIntoColor(group, lists)
       harmonizeSizes(group, lists)
       separateCollisions(group, lists)
     }
@@ -676,8 +680,9 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     // A size put in the Color column (the category has no size column): worth a look.
     const sc = sizeColorBy.get(i)
     if (sc && !isDeleted && out[sc.col] === sc.value) {
-      flag(sc.col, `Size / variant in the Color column: ${sc.value} (Daraz: "${item.combo}") — this category has no size column, so it goes into Color instead of a number`, 'sizecolor')
-      notes.push(`In Color: ${sc.value} (Daraz "${item.combo}"; the category has only a Color column)`)
+      const why = sc.note || 'the category has only a Color column'
+      flag(sc.col, `In the Color column: ${sc.value} (Daraz: "${item.combo}") — ${why}`, 'sizecolor')
+      notes.push(`In Color: ${sc.value} — ${why} (Daraz "${item.combo}")`)
       rules.sizeColor++
     }
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
@@ -727,6 +732,16 @@ async function wrapCell(bytes, sheetName, ref) {
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
 
+// Products by what their variants differ by (for the summary).
+function variantKinds(items) {
+  const by = new Map()
+  for (const it of items) if (it.variantBy && !by.has(it.parent)) by.set(it.parent, it.variantBy)
+  if (!by.size) return ''
+  const n = k => [...by.values()].filter(v => v === k).length
+  return `Products with variants: ${[[n('colour'), 'by colour'], [n('size'), 'by size'], [n('colour+size'), 'by colour and size'], [n('other'), 'by something else']]
+    .filter(([c]) => c).map(([c, l]) => `${c.toLocaleString()} ${l}`).join(' · ')}`
+}
+
 // Which content the AI cleaned, for the summary and the page.
 export function aiSummary(ai) {
   if (!ai) return 'AI: off (spelling fix only)'
@@ -769,8 +784,9 @@ export function darazSummary(result, output, options = {}) {
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
+    variantKinds(result.items),
     result.variantMode === 'yes' ? 'Variants: Variations Combo not matched — the variant columns each category needs are marked "Yes"' : '',
-    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color = Not Specified, Model = Same as picture, size = One Size)${r.sizeColor ? ` · ${n(r.sizeColor)} with the size in the Color column (Grey-L… — no size column in the category)` : ''}${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
+    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color = Not Specified, Model = Same as picture, size = One Size)${r.sizeColor ? ` · ${n(r.sizeColor)} with the size in the Color column (L, Grey-L… — the category has no size column)` : ''}${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,
     aiSummary(result.ai),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',

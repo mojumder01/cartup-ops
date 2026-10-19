@@ -211,6 +211,74 @@ function sizeIntoColor(g, col, items, lists) {
   return left
 }
 
+// The product as a whole, the way a person reads it: what do its variants
+// differ by — colour, size, or both — and which columns does the category
+// have? When it has Color but no size column and the sizes differ:
+//   only the size differs  → the size alone in Color ("L", "Large", "M (Left)")
+//   colour and size differ → both in Color ("Grey-L", "Black Medium")
+// in CartUp's list spelling, and only when every SKU with a size gets a value
+// and no two SKUs end up alike; otherwise it is left to the variant-collision
+// step (which tries the same per SKU, then numbers what is still alike).
+const SIZE_COLS = ['Shoe Size', 'Clothing Size', 'Bedding Size', 'Size']
+export function sizesIntoColor(items, lists) {
+  const list = lists?.[headerKey('Color')]
+  const app = items[0]?.applicable || []
+  if (!list || items.length < 2 || !app.includes('Color') || SIZE_COLS.some(c => app.includes(c))) return null
+  const cellOf = it => it.cells.find(c => c.col === 'Color')
+  const sizeOf = it => it.unused.find(p => valueKind(p) === 'size' || SIZE_HEAD.test(p.trim()))
+  const sizes = items.map(sizeOf)
+  if (new Set(sizes.filter(Boolean).map(x => x.toLowerCase())).size < 2) return null   // the size doesn't tell variants apart
+  const colourOf = it => { const c = cellOf(it); return c ? String(c.auto ?? c.raw) : '' }
+  const colourVaries = new Set(items.map(it => colourOf(it).toLowerCase())).size > 1
+  const hit = name => { const h = list.match(name); return h && ['exact', 'format', 'alias'].includes(h.how) ? h.value : null }
+  const words = part => {
+    const whole = part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').trim(), head = SIZE_HEAD.exec(part.trim())?.[2]
+    return [whole, SIZE_WORD[whole.toUpperCase()], head, SIZE_WORD[head?.toUpperCase()]].filter((w, k, a) => w && a.indexOf(w) === k)
+  }
+  // Only the size differs: the size alone (else size with the colour); both differ: size with the colour.
+  for (const withColour of colourVaries ? [true] : [false, true]) {
+    const picks = items.map((it, k) => {
+      if (!sizes[k]) return null
+      const base = colourOf(it)
+      return words(sizes[k]).flatMap(w => withColour && base ? [`${base}-${w}`, `${base} ${w}`] : [w]).map(hit).find(Boolean) || null
+    })
+    if (items.some((it, k) => sizes[k] && !picks[k])) continue
+    const values = items.map((it, k) => (picks[k] || colourOf(it)).toLowerCase())
+    if (new Set(values).size < items.length) continue
+    items.forEach((it, k) => {
+      if (!picks[k]) return
+      let c = cellOf(it)
+      if (!c) { c = makeCell('Color', picks[k], lists); it.cells.push(c) }
+      c.auto = picks[k]; c.how = 'sizecolor'
+      c.note = withColour && colourVaries ? `colour and size "${sizes[k]}" in the Color column — the variants differ by both and the category has no size column`
+        : withColour ? `size "${sizes[k]}" with the colour in the Color column — the category has no size column`
+        : `size "${sizes[k]}" in the Color column — the variants differ only by size and the category has no size column`
+      it.unused = it.unused.filter(x => x !== sizes[k])
+    })
+    return colourVaries ? 'colour+size' : 'size'
+  }
+  return null
+}
+
+// What a product's variants differ by, from its Variations Combo values:
+// 'colour', 'size', 'colour+size', 'other' — or '' for a single SKU / no combo.
+export function variantKind(items) {
+  if (items.length < 2) return ''
+  const rows = items.map(it => splitCombo(it.combo))
+  if (rows.every(r => !r.length)) return ''
+  let colour = false, size = false, other = false
+  const width = Math.max(...rows.map(r => r.length))
+  for (let i = 0; i < width; i++) {
+    const vals = rows.map(r => (r[i] || '').toLowerCase())
+    if (new Set(vals).size < 2) continue
+    const kinds = rows.map(r => r[i] && (valueKind(r[i]) === 'size' || SIZE_HEAD.test(r[i].trim()) ? 'size' : valueKind(r[i]))).filter(Boolean)
+    if (kinds.filter(k => k === 'size').length >= kinds.length / 2) size = true
+    else if (kinds.filter(k => k === 'color').length >= kinds.length / 2) colour = true
+    else other = true
+  }
+  return colour && size ? 'colour+size' : size ? 'size' : colour ? 'colour' : other ? 'other' : ''
+}
+
 // ── Decisions ─────────────────────────────────────────────────────────────────
 // { [key]: { value } | { keep: true } } — keep = leave the Daraz value as a new
 // value for CartUp's list. Narrowest scope wins.
@@ -390,7 +458,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
       out[cell.col] = st.value
       if (st.noWarranty) noWarranty = true
       if (st.state === 'auto' && st.how === 'numbered') numbered.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
-      if (st.state === 'auto' && st.how === 'sizecolor') sizeColor.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
+      if (st.state === 'auto' && st.how === 'sizecolor') sizeColor.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw, note: st.note || '' })
       if (cell.source === 'mark') { marked.push(colLabel(cell.col)); continue }
       if (!cell.listed) continue
       stats.checked++
