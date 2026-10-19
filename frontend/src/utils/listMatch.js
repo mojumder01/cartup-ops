@@ -5,7 +5,7 @@
 //   exact   — the entry itself (VLOOKUP ignores case, so case-only differences count)
 //   format  — same text apart from spacing / punctuation ("Type-B" = "Type B");
 //             decimal points and + are kept, so "2.5mm" never becomes "25mm"
-//   alias   — a known equivalent: EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size,
+//   alias   — a known equivalent: EU:40 → 40 (EU), 43-45 → 43-45 (EU), XXL → 2XL, Free Size → One Size,
 //             King → King Size, 6 Months → 6 month, Local seller warranty → Seller Warranty…
 //   similar — the same words in another order, or a typo or two — only when one
 //             entry is clearly closest and every number in it is the same
@@ -62,10 +62,30 @@ const UNITS = {
   mg: 'Miligrams', milligram: 'Miligrams', milligrams: 'Miligrams', km: 'K.M.', dozen: 'Dozen', dozens: 'Dozen', doz: 'Dozen',
 }
 
+// A size range — "37-39", "EU 37-39", "37~39 (EU)", "37 to 39", "1-5 / years",
+// "24-26 cm" — as { lo, hi, sys, unit }, or null. A range is one value: an
+// insole, heel cushion, sock or free-size shoe that fits every size in it.
+const RANGE = new RegExp(`^(?:(${SYSTEMS})\\s*[:\\-]?\\s*)?(\\d+(?:\\.\\d+)?)\\s*(?:-|–|~|to)\\s*(\\d+(?:\\.\\d+)?)\\s*(?:\\(?\\s*(${SYSTEMS})\\s*\\)?)?\\s*(years?|yrs?|months?|cm|mm)?$`, 'i')
+export function parseRange(value) {
+  const m = RANGE.exec(String(value ?? '').trim().replace(/\s*\/\s*(?=(years?|yrs?|months?)$)/i, ' '))
+  if (!m || +m[2] >= +m[3]) return null
+  const u = (m[5] || '').toLowerCase()
+  return { lo: +m[2], hi: +m[3], sys: (m[1] || m[4] || '').toUpperCase(), unit: /^y/.test(u) ? 'years' : /^mo/.test(u) ? 'months' : u }
+}
+// Ranges that measure the same thing: the same unit, and no two different size systems.
+export const sameRangeKind = (a, b) => a.unit === b.unit && (!a.sys || !b.sys || a.sys === b.sys)
+
 function sizeAliases(v, kind) {
   const out = []
   const bare = v.replace(/^(int|international|intl)\s*[:\-.]\s*/, '')
   if (bare !== v) out.push(bare)
+  // 37-39, 37~39, EU 37-39 → 37-39, 37-39 (EU) — a 15–50 shoe range is European
+  const r = parseRange(bare)
+  if (r && !r.unit) {
+    out.push(`${r.lo}-${r.hi}`)
+    if (r.sys) out.push(`${r.lo}-${r.hi} (${r.sys})`, `${r.sys} ${r.lo}-${r.hi}`)
+    else if (kind === 'shoeSize' && r.lo >= 15 && r.hi <= 50) out.push(`${r.lo}-${r.hi} (EU)`)
+  }
   // EU:40, EU 40, 40 EU, 40(EU) → 40 (EU), EU:40, 40
   let m = new RegExp(`^(${SYSTEMS})\\s*[:\\-]?\\s*(\\d+(?:\\.\\d+)?)$`).exec(bare)
   let sys, num
@@ -192,11 +212,21 @@ export function listMatcher(rows, kind = 'other') {
   // Shared words count only when they have letters — a shared "1" means nothing.
   const words = s => tokens(s).filter(t => /[a-z]{2}/.test(t))
   const allEntries = () => (entries ||= [...exact.keys()].map(name => ({ name, lower: name.toLowerCase(), sq: squash(name), toks: words(name) })))
+  // The list's ranges: whole ("35-39 (EU)", "1-2 Years") or a size's
+  // measurement in brackets ("M(28-30)", whole: false).
+  let rangeList = null
+  const ranges = () => (rangeList ||= allEntries().flatMap(e => {
+    const r = parseRange(e.name)
+    if (r) return [{ name: e.name, ...r, whole: true }]
+    const m = /\(\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*\)/.exec(e.name)
+    return m && +m[1] < +m[2] ? [{ name: e.name, lo: +m[1], hi: +m[2], sys: '', unit: '', whole: false }] : []
+  }))
 
   const cache = new Map()
   return {
     kind,
     size: exact.size,
+    ranges,
     // Closest entries to a value no rule matched safely — shared words,
     // one containing the other, or a few typos — best first.
     suggest(input, limit = 6) {
@@ -206,6 +236,16 @@ export function listMatcher(rows, kind = 'other') {
       const found = new Map()
       const add = (name, score) => { if (score > (found.get(name) ?? 0)) found.set(name, score) }
       for (const c of aliases(v, kind)) { const f = find(c); if (f) add(f.value, 0.97) }
+      // A range: the same range as the list spells it, then the narrowest
+      // ranges around it — never one size out of it.
+      const r = parseRange(v)
+      if (r) {
+        for (const e of ranges()) {
+          if (!sameRangeKind(r, e)) continue
+          if (e.lo === r.lo && e.hi === r.hi) add(e.name, 0.96)
+          else if (e.whole && e.lo <= r.lo && e.hi >= r.hi) add(e.name, 0.9 - 0.02 * Math.min(10, (e.hi - e.lo) - (r.hi - r.lo)))
+        }
+      }
       for (const e of allEntries()) {
         let s = 0
         if (vt.size) {

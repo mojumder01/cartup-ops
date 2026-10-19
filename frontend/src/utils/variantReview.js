@@ -10,7 +10,7 @@
 // Seller SKU and column, and the values that aren't on CartUp's lists yet
 // (Daraz sellers name variants freely; CartUp can add them to its lists).
 
-import { valueKind, MATCH_LABEL } from './listMatch'
+import { valueKind, MATCH_LABEL, parseRange, sameRangeKind, columnKind } from './listMatch'
 
 // Columns a Variations Combo part can go to: colour, then the size types in
 // the order the category rules prefer them.
@@ -185,49 +185,82 @@ const WORD_ALIAS = {
 const AGE = /^\d+(\.\d+)?\s*(-\s*\d+(\.\d+)?)?\s*\/?\s*(years?|yrs?|months?)$/i
 const isSizePart = p => valueKind(p) === 'size' || SIZE_HEAD.test(p.trim()) || AGE.test(p.trim()) || /^(universe?l|spl|special|ch|child|kids?|ad|adult)$/i.test(p.trim())
 const uniq = a => a.filter((w, k) => w && a.findIndex(x => x && x.toLowerCase() === w.toLowerCase()) === k)
+const cleanPart = part => part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').replace(/\s*\/\s*(years?|months?)/i, ' $1').replace(/\s+/g, ' ').trim()
+const bitsOf = part => cleanPart(part).split(/\s*[\/()]\s*/).filter(Boolean)
+const headOf = part => SIZE_HEAD.exec(part.trim())?.[2]
+const ANY_SHORT = { bit: () => true, head: true }
 // The names to try for a part, best first: the whole part ("M/Left" → M (Left)),
-// its known names, then just its size ("M(30-40)" → M); with the colour first
-// when asked ("Grey-L", "Grey L").
-function nameTries(part, base, withColour) {
-  const whole = part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').replace(/\s*\/\s*(years?|months?)/i, ' $1').replace(/\s+/g, ' ').trim()
-  const head = SIZE_HEAD.exec(part.trim())?.[2]
+// its known names, then — when `short` allows — a word of it on its own or
+// just its size ("M(30-40)" → M); with the colour first when asked ("Grey-L", "Grey L").
+function nameTries(part, base, withColour, short = ANY_SHORT) {
+  const whole = cleanPart(part)
+  const head = headOf(part)
   const alias = w => [w, SIZE_WORD[w.toUpperCase()], ...(WORD_ALIAS[w.toLowerCase()] || [])]
   // A compound part ("CH/Left", "M(30-40)"): as "A (B)", then each word on its own.
-  const bits = whole.split(/\s*[\/()]\s*/).filter(Boolean)
-  const compound = bits.length > 1 ? [...alias(bits[0]).filter(Boolean).map(a => `${a} (${bits.slice(1).join(' ')})`), ...bits.flatMap(alias)] : []
+  const bits = bitsOf(part)
+  const compound = bits.length > 1 ? [...alias(bits[0]).filter(Boolean).map(a => `${a} (${bits.slice(1).join(' ')})`), ...bits.flatMap((b, i) => short.bit(i) ? alias(b) : [])] : []
   const wholes = uniq([...alias(whole), ...compound])
-  const heads = head && head.toLowerCase() !== whole.toLowerCase() ? uniq([head, SIZE_WORD[head.toUpperCase()]]) : []
+  const heads = short.head && head && head.toLowerCase() !== whole.toLowerCase() ? uniq([head, SIZE_WORD[head.toUpperCase()]]) : []
   const coloured = ws => withColour && base ? ws.flatMap(w => [`${base}-${w}`, `${base} ${w}`]) : []
   return uniq([...coloured(wholes), ...wholes, ...coloured(heads), ...heads])
 }
-// One value per SKU from its own list of tries, no two alike and none already
-// taken (used). Values that differ only in spacing or punctuation ("Grey-XL",
-// "Grey XL") count as alike. SKUs that clash all move on to their next try;
-// any left without a value then take their best try that is still free.
-// → value or null per SKU.
+// What a value says, for telling SKUs apart: the SKU's colour, then the rest by
+// meaning — "Grey-L", "Grey Large" and "L" for a grey SKU all say "grey, L";
+// Small = S, Child = Kids, Universal = Free Size.
 const sameKey = v => String(v).toLowerCase().replace(/[^a-z0-9]/g, '')
-function resolveNames(tries, used, hit) {
+const MEANING = [[/\b(extra small|x-small)\b/g, 'xs'], [/\b(extra large|x-large)\b/g, 'xl'], [/\bsmall\b/g, 's'], [/\bmedium\b/g, 'm'], [/\blarge\b/g, 'l'],
+  [/\b(universe?l|free size|free|one size)\b/g, 'onesize'], [/\b(ch|child|children|kids?)\b/g, 'kids'], [/\b(ad|adult)\b/g, 'adult'],
+  [/\b(spl|special)\b/g, 'special'], [/\b(mail|male|men)\b/g, 'male'], [/\b(female|famale|women)\b/g, 'female']]
+const meaning = v => sameKey(MEANING.reduce((s, [re, w]) => s.replace(re, w), String(v).toLowerCase()))
+function sayKey(v, base) {
+  const s = String(v).trim(), b = String(base || '').trim()
+  const rest = b && s.toLowerCase().startsWith(b.toLowerCase()) && s.length > b.length ? s.slice(b.length).replace(/^[\s\-_]+/, '') : s
+  return `${sameKey(b)}|${meaning(rest)}`
+}
+// Which shortened forms still tell a group's SKUs apart: one word of a
+// compound part ("M/Left", "M/Right" → Left, Right) or just the size
+// ("M(30-40)" → M) — only when it is different for every SKU, so a dropped
+// word never hides a difference: "M(20-30)" / "M(30-40)" are two variants
+// (compression 20-30 / 30-40 mmHg), and "M" for one and "Medium" for the
+// other would pass them off as two sizes.
+function shortForms(parts, bases = []) {
+  const ks = parts.map((p, k) => p ? k : -1).filter(k => k >= 0)
+  const distinct = piece => {
+    const keys = ks.map(k => { const x = piece(parts[k]); return x ? `${sameKey(bases[k] || '')}|${meaning(x)}` : null })
+    return keys.every(Boolean) && new Set(keys).size === keys.length
+  }
+  const bit = new Map()
+  return { bit: i => { if (!bit.has(i)) bit.set(i, distinct(p => bitsOf(p)[i])); return bit.get(i) }, head: distinct(headOf) }
+}
+// One value per SKU from its own list of tries, no two alike and none already
+// taken (used). Alike: the same apart from spacing or punctuation ("Grey-XL",
+// "Grey XL"), or saying the same for SKUs of one colour (bases) — "S" /
+// "Small", "Grey-L" / "L". SKUs that clash all move on to their next try; any
+// left without a value then take their best try that is still free.
+// → value or null per SKU.
+function resolveNames(tries, used, hit, bases = []) {
   const usedKeys = new Set([...used].map(sameKey))
   const opts = tries.map(t => t ? uniq(t.map(hit).filter(Boolean)).filter(v => !usedKeys.has(sameKey(v))) : [])
   const at = opts.map(() => 0)
+  const keys = (x, k) => [sameKey(x), sayKey(x, bases[k])]
   const settle = () => {
     const v = opts.map((o, k) => o[at[k]] ?? null), count = new Map()
-    for (const x of v) if (x) count.set(sameKey(x), (count.get(sameKey(x)) || 0) + 1)
-    return { v, clash: x => !!x && count.get(sameKey(x)) > 1 }
+    v.forEach((x, k) => { if (x) for (const key of keys(x, k)) count.set(key, (count.get(key) || 0) + 1) })
+    return { v, clash: (x, k) => !!x && keys(x, k).some(key => count.get(key) > 1) }
   }
   for (let round = 0; round < 16; round++) {
     const { v, clash } = settle()
     let moved = false
-    v.forEach((x, k) => { if (clash(x)) { at[k]++; moved = true } })
+    v.forEach((x, k) => { if (clash(x, k)) { at[k]++; moved = true } })
     if (!moved) break
   }
   const { v, clash } = settle()
-  const out = v.map(x => clash(x) ? null : x)
-  const taken = new Set(out.filter(Boolean).map(sameKey))
+  const out = v.map((x, k) => clash(x, k) ? null : x)
+  const taken = new Set(out.flatMap((x, k) => x ? keys(x, k) : []))
   out.forEach((x, k) => {
     if (x) return
-    const free = opts[k].find(o => !taken.has(sameKey(o)))
-    if (free) { out[k] = free; taken.add(sameKey(free)) }
+    const free = opts[k].find(o => !keys(o, k).some(key => taken.has(key)))
+    if (free) { out[k] = free; for (const key of keys(free, k)) taken.add(key) }
   })
   return out
 }
@@ -251,7 +284,8 @@ function sizeIntoColor(g, col, items, lists) {
   const used = new Set(items.filter(it => !g.includes(it)).map(it => cellOf(it)).filter(Boolean).map(c => String(c.auto ?? c.raw).toLowerCase()))
   const differs = p => g.some(o => !o.unused.some(x => x.toLowerCase() === p.toLowerCase()))
   const parts = g.map(it => it.unused.find(p => isSizePart(p) && differs(p)) || it.unused.find(differs) || null)
-  const picks = resolveNames(parts.map(p => p && nameTries(p, base, true)), used, listHit(list))
+  const short = shortForms(parts)
+  const picks = resolveNames(parts.map(p => p && nameTries(p, base, true, short)), used, listHit(list), g.map(() => base))
   const left = []
   g.forEach((it, k) => {
     if (!picks[k]) { left.push(it); return }
@@ -281,7 +315,9 @@ export function sizesIntoColor(items, lists) {
   for (const withColour of colourVaries ? [true] : [false, true]) {
     // SKUs without a size keep their colour — no SKU may take that value.
     const used = new Set(items.filter((it, k) => !sizes[k]).map(it => colourOf(it).toLowerCase()).filter(Boolean))
-    const picks = resolveNames(sizes.map((x, k) => x && nameTries(x, colourOf(items[k]), withColour)), used, hit)
+    const bases = items.map(colourOf)
+    const short = shortForms(sizes, withColour ? bases : [])
+    const picks = resolveNames(sizes.map((x, k) => x && nameTries(x, bases[k], withColour, short)), used, hit, bases)
     if (items.some((it, k) => sizes[k] && !picks[k])) continue
     items.forEach((it, k) => {
       if (!picks[k]) return
@@ -299,7 +335,8 @@ export function sizesIntoColor(items, lists) {
 // SKU of a product at once — each a full set of values, no two alike —
 // so a product whose variants don't match is fixed with one click (and the
 // same fix can go to every similar product).
-//   id: 'size' · 'colour+size' · 'part:<i>' · 'range' · 'numbered' · 'new'
+//   id: 'size' · 'colour+size' · 'part:<i>' · 'part:colour' · 'range' ·
+//       'range-wider' · 'insole' · 'numbered' · 'new'
 //   values: [{ sku, value, onList }] — onList false = a new value for CartUp to add
 // items: one product's SKUs; col: the variant column (Color, Size…).
 export function productFixes(items, col, lists) {
@@ -324,28 +361,62 @@ export function productFixes(items, col, lists) {
   const tellsApart = i => parts.every(p => p[i]) && new Set(parts.map(p => p[i].toLowerCase().replace(/\s+/g, ''))).size === parts.length
   const sizePos = differing.find(i => tellsApart(i) && parts.every(p => isSizePart(p[i])))
   if (sizePos !== undefined) {
-    const sizes = parts.map(p => p[sizePos])
-    add('size', 'The size', `e.g. "${sizes[0]}" → ${col}`, resolveNames(sizes.map(x => nameTries(x, '', false)), new Set(), hit))
-    if (colourAt !== undefined) add('colour+size', 'Colour and size', `e.g. "${parts[0][colourAt]}, ${sizes[0]}"`, resolveNames(sizes.map((x, k) => nameTries(x, colourOf(k), true).filter(n => sameKey(n).startsWith(sameKey(colourOf(k))) && sameKey(n) !== sameKey(colourOf(k)))), new Set(), hit))
+    const sizes = parts.map(p => p[sizePos]), colours = parts.map((_, k) => colourOf(k))
+    add('size', 'The size', `e.g. "${sizes[0]}" → ${col}`, resolveNames(sizes.map(x => nameTries(x, '', false, shortForms(sizes))), new Set(), hit))
+    if (colourAt !== undefined) add('colour+size', 'Colour and size', `e.g. "${parts[0][colourAt]}, ${sizes[0]}"`, resolveNames(sizes.map((x, k) => nameTries(x, colours[k], true, shortForms(sizes, colours)).filter(n => sameKey(n).startsWith(sameKey(colours[k])) && sameKey(n) !== sameKey(colours[k]))), new Set(), hit, colours))
   }
   for (const i of differing) {
     if (i === sizePos || i === colourAt || !tellsApart(i)) continue
-    add(`part:${i}`, `Part ${i + 1} of the combo`, `e.g. "${parts[0][i] || '—'}"`, resolveNames(parts.map(p => p[i] ? nameTries(p[i], '', false) : null), new Set(), hit))
+    const at = parts.map(p => p[i] || null)
+    add(`part:${i}`, `Part ${i + 1} of the combo`, `e.g. "${parts[0][i] || '—'}"`, resolveNames(at.map(x => x && nameTries(x, '', false, shortForms(at))), new Set(), hit))
   }
   if (colourAt !== undefined && tellsApart(colourAt)) add('part:colour', 'The colour', `e.g. "${parts[0][colourAt]}"`, resolveNames(parts.map((p, k) => [colourOf(k)]), new Set(), hit))
-  // A range ("37-39"): its first size as the list has it.
+  // A range ("37-39", "1-5 years") is one value — an insole, heel cushion, sock
+  // or free-size shoe fits every size in it — so it is never cut to one size.
   const cur = items.map(it => { const c = it.cells.find(x => x.col === col); return String(c.auto ?? c.raw) })
-  if (cur.every(v => /^\s*\d+(\.\d+)?\s*-\s*\d+/.test(v))) add('range', 'First size of each range', `e.g. "${cur[0]}" → ${cur[0].split('-')[0].trim()}`, resolveNames(cur.map(v => [`${v.split('-')[0].trim()} (EU)`, v.split('-')[0].trim()]), new Set(), hit))
+  const rs = items.map((it, k) => [it.cells.find(x => x.col === col).raw, ...parts[k]].map(parseRange).find(Boolean))
+  const sizeColumn = col === 'Color' && SIZE_COLS.some(c => items[0].applicable?.includes(c))   // the range goes there, not in Color
+  if (!sizeColumn && rs.every(Boolean) && new Set(rs.map(r => `${r.lo}-${r.hi}${r.unit}`)).size === rs.length) {
+    const shoe = columnKind(col) === 'shoeSize'
+    const styled = r => `${r.lo}-${r.hi}${r.unit === 'years' ? ' Years' : r.unit === 'months' ? ' Months' : r.unit ? ` ${r.unit.toUpperCase()}` : r.sys ? ` (${r.sys})` : shoe && r.lo >= 15 && r.hi <= 50 ? ' (EU)' : ''}`
+    // The range as the list has it ("37-39 (EU)", "M(37-39)"); else a new value in CartUp's style.
+    const same = r => list.ranges().filter(e => e.lo === r.lo && e.hi === r.hi && sameRangeKind(r, e)).sort((a, b) => b.whole - a.whole).map(e => e.name)
+    const whole = resolveNames(rs.map(r => [styled(r), `${r.lo}-${r.hi}`, ...same(r)]), new Set(), hit).map((v, k) => v || styled(rs[k]))
+    add('range', 'The whole range', `e.g. "${rs[0].lo}-${rs[0].hi}" → ${whole[0]}: what the seller sells fits every size in it (insoles, heel cushions, socks, free-size shoes)`, whole)
+    // CartUp's narrowest range around it (37-39 → 35-39 (EU)), for ranges not on the list.
+    const around = r => list.ranges().filter(e => e.whole && sameRangeKind(r, e) && e.lo <= r.lo && e.hi >= r.hi && (e.hi - e.lo) - (r.hi - r.lo) <= 4)
+      .sort((a, b) => (a.hi - a.lo) - (b.hi - b.lo) || a.name.length - b.name.length).map(e => e.name)
+    const wider = resolveNames(rs.map((r, k) => hit(whole[k]) ? [whole[k]] : around(r)), new Set(), hit).map((v, k) => v || whole[k])
+    const d = wider.findIndex((v, k) => v !== whole[k])
+    if (d >= 0) add('range-wider', 'CartUp\'s range around it', `e.g. "${rs[d].lo}-${rs[d].hi}" → ${wider[d]}: on CartUp's list, but wider than the seller's — check the size chart`, wider)
+    // The seller's size chart in the text ("37-39: 24 cm") → the insole length, as CartUp lists it (24 CM).
+    if (shoe) {
+      const text = [items[0].name, items[0].out?.['Highlights(English)'], items[0].out?.['Description (English)']].join(' ').replace(/<[^>]+>/g, ' ')
+      const num = n => String(n).replace('.', '\\.')
+      const cm = r => {
+        const pair = `${num(r.lo)}\\s*(?:-|–|~|to|/)\\s*${num(r.hi)}`
+        const m = new RegExp(`\\b${pair}\\b[^\\d]{0,30}?(\\d+(?:\\.\\d+)?)\\s*(cm|mm)\\b`, 'i').exec(text) || new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(cm|mm)\\b[^\\d]{0,15}?\\b${pair}\\b`, 'i').exec(text)
+        const n = m && (m[2].toLowerCase() === 'mm' ? +m[1] / 10 : +m[1])
+        return n >= 8 && n <= 35 ? n : null
+      }
+      const lens = rs.map(cm)
+      if (lens.every(Boolean)) add('insole', 'Insole length (seller\'s size chart)', `e.g. "${rs[0].lo}-${rs[0].hi}" = ${lens[0]} cm in the description`, lens.map(n => hit(`${n} CM`) || hit(`${n}cm`) || `${n} CM`))
+    }
+  }
   // The list's own numbered entries (Grey-1, Grey-2…).
   const base = colourOf(0) || cur[0]
   const numbered = items.map((_, k) => { const h = list.match(`${base}-${k + 1}`); return h && sameKey(h.value) === sameKey(`${base}-${k + 1}`) ? h.value : null })
   add('numbered', `Numbered (${base}-1, ${base}-2…)`, 'the list\'s numbered entries — says nothing about the variant', numbered)
   // As written — new values for CartUp to add ("Grey SPL", "EU 42 S").
-  const written = parts.map((p, k) => uniq([colourAt !== undefined && !differing.includes(colourAt) ? colourOf(k) : '', ...differing.map(i => (p[i] || '').replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').replace(/:/g, ' '))]).join(' ').replace(/\s+/g, ' ').trim())
+  const tidy = p => p.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').replace(/:/g, ' ').replace(/^(\d?x{0,4}[sml]|xs|\d?xl)(?=$|[\s/(\-,])/i, s => s.toUpperCase())
+  const written = parts.map((p, k) => uniq([colourAt !== undefined && !differing.includes(colourAt) ? colourOf(k) : '', ...differing.map(i => tidy(p[i] || ''))]).join(' ').replace(/\s+/g, ' ').trim())
   add('new', 'As the seller wrote it', 'new values — CartUp adds them to its list (#N/A until then)', written.map(w => hit(w) || w))
-  // Best first: on CartUp's list and saying what the variant is; then the
-  // list's numbering (on the list, says nothing); then new values.
-  const rank = p => p.newValues ? 2 + p.newValues / 1000 : p.id === 'numbered' ? 1 : 0
+  // Best first: on CartUp's list and saying what the variant is; the whole
+  // range (what the seller sells, even as new values), the insole length and
+  // the list's wider range; then the list's numbering (on the list, says
+  // nothing); then new values.
+  const RANK = { range: 0.3, insole: 0.4, 'range-wider': 0.6 }
+  const rank = p => p.id in RANK ? RANK[p.id] + p.newValues / 1000 : p.newValues ? 2 + p.newValues / 1000 : p.id === 'numbered' ? 1 : 0
   return plans.sort((a, b) => rank(a) - rank(b))
 }
 
