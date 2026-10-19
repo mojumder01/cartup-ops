@@ -48,6 +48,11 @@ export const OUTPUT_COLS = [
 ]
 // Template header key → our column.
 const OUR_COL = Object.fromEntries(OUTPUT_COLS.map(c => [TEMPLATE_KEY[headerKey(c)] ?? headerKey(c), c]))
+// Our columns by the template's sections (for the sheet view): [{ name, cols }].
+export const COLUMN_SECTIONS = [
+  ...TEMPLATE_LAYOUT.filter(([name]) => name !== 'Extra').map(([name, heads]) => ({ name, cols: heads.map(h => OUR_COL[headerKey(h)]).filter(Boolean) })),
+  { name: 'Extra', cols: ['Cartup Category Path', 'Variations Combo', 'status'] },
+]
 
 // Daraz HTML → only the allowed tags, without their attributes (Daraz writes
 // <li style="…">, <ul class="…">); every other tag goes, its text stays.
@@ -500,19 +505,24 @@ export const rowKey = (item, i) => item.sku || `row ${i + 1}`
 
 // Stage 3 — the final rows: review decisions, then the house rules, then hand
 // edits from the sheet view (the last word). Every change goes to the log.
-// options: { specialPrice: { include, start, end }, stock: { set: number | null }, imageKeys (makeImageKeyMap), edits: { [rowKey]: { [col]: value } } }
+// options: { specialPrice: { include, start, end }, stock: { set: number | null }, imageKeys (makeImageKeyMap), edits: { [rowKey]: { [col]: value } },
+//            deleted: Set of row keys deleted in the sheet view (left out, listed in "invalid") }
 export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const applied = applyDecisions(result, decisions, memory)
-  const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {} } = options
-  const problems = [], excluded = new Set(), leftOut = []
+  const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null } = options
+  const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, edited: 0, specialPrices: 0 }
+    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, imagesMoved: 0, edited: 0, specialPrices: 0 }
+  const numberedBy = new Map()
+  for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
     const log = (column, from, to, change) => applied.changes.push({ sku: item.sku, parent: item.parent, name: item.name, column, from: String(from ?? ''), to: String(to ?? ''), change, detail: '' })
+    // A row deleted in the sheet view is left out and not flagged.
+    const isDeleted = !!deleted?.has(rowKey(item, i))
     // type (optional): the sheet's problem type for this flag (see checks.js ISSUE_TYPES)
-    const flag = (column, problem, type) => { problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem, type }); applied.attention.add(i) }
+    const flag = (column, problem, type) => { if (isDeleted) return; problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem, type }); applied.attention.add(i) }
     const notes = []
 
     for (const [c, v] of Object.entries(item.fixed || {})) out[c] = v
@@ -584,16 +594,23 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     }
 
     // With a key file the images are the file's: a Daraz link still without a
-    // key (after edits, so a pasted key counts) is not uploaded.
+    // key (after edits, so a pasted key counts) is not uploaded — logged in
+    // changes, not flagged. The product images left move up to fill the gaps
+    // (Image 1 is the first one with a key).
     if (imageKeys) {
       const why = imageKeys.forItem && !keyRow ? 'Seller SKU not in the image key file' : 'No CartUp image key for this link'
       for (const c of IMAGE_COLS) {
         const link = String(out[c] ?? '').trim()
         if (!/^https?:\/\//i.test(link)) continue
-        flag(c, `${why} — image not uploaded`)
         log(colLabel(c), link, '', `${why} — image not uploaded`)
         out[c] = ''
         rules.imageMissing++
+      }
+      const productCols = IMAGE_COLS.slice(0, 8)
+      const kept = productCols.map(c => String(out[c] ?? '').trim()).filter(Boolean)
+      if (kept.length && kept.some((v, k) => v !== String(out[productCols[k]] ?? '').trim())) {
+        productCols.forEach((c, k) => { out[c] = kept[k] ?? '' })
+        rules.imagesMoved++
       }
       // Not a colour variant: the variant image may be Image 1, as in stage 1.
       const colour = item.combo && item.applicable?.includes('Color')
@@ -606,7 +623,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     const reasons = []
     const noImg1 = !String(out['**Product Image 1'] ?? '').trim(), noVariant = !String(out['*Variant Image'] ?? '').trim()
     if (imageKeys) {
-      if (noImg1) { flag('**Product Image 1', 'No CartUp image key for Image 1 — row left out ("invalid")', 'leftout'); reasons.push('Image 1: no CartUp image key'); rules.leftNoImage++ }
+      if (noImg1) { flag('**Product Image 1', 'No CartUp image key for any product image — row left out ("invalid")', 'leftout'); reasons.push('Images: no CartUp image key'); rules.leftNoImage++ }
       if (noVariant) { flag('*Variant Image', 'No CartUp image key for the Variant Image — row left out ("invalid")', 'leftout'); reasons.push('Variant Image: no CartUp image key'); rules.leftNoVariant++ }
     } else {
       if (noImg1) { flag('**Product Image 1', 'Image 1 missing (product not in the Basic file) — add it', 'noimage'); notes.push('Image 1 missing — add it') }
@@ -617,6 +634,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       reasons.push('Package weight empty')
       rules.leftNoWeight++
     }
+    if (isDeleted) { reasons.splice(0, reasons.length, 'Deleted by hand (sheet view)'); rules.deleted++; deletedRows.add(i) }
     if (reasons.length) {
       excluded.add(i)
       notes.push(`Left out: ${reasons.join(', ')}`)
@@ -632,13 +650,23 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     }
     const stockText = String(out['**Current Stock Qty'] ?? '').trim()
     if (stockText !== '' && Number(stockText) === 0) rules.stockZero++
+    // Variants told apart only by a number (Multicolor-1, -2…): the seller's
+    // variants differ by something CartUp has no column for — flagged to check.
+    for (const nb of numberedBy.get(i) || []) {
+      if (isDeleted || out[nb.col] !== nb.value) continue
+      const lost = item.unused?.length ? `they differ by "${item.unused.join(', ')}", which has no CartUp column` : `"${item.combo}"`
+      flag(nb.col, `${colLabel(nb.col)} numbered to keep the variants apart: ${nb.value} (Daraz: ${nb.raw}; ${lost}) — check it, or pick a real value`, 'numbered')
+      notes.push(`Check: ${colLabel(nb.col)} = ${nb.value} only to keep variants apart (${lost})`)
+      rules.numbered++
+    }
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
     // Check = YES: the row needs a person's look (a flag, a value set by rule,
     // no category, left out) — the reason is in Report.
-    out['Check'] = applied.attention.has(i) || applied.filledRows?.has(i) || !String(out['**Category Id'] ?? '').trim() || excluded.has(i) ? 'YES' : ''
+    if (isDeleted) applied.attention.delete(i)
+    out['Check'] = isDeleted ? '' : applied.attention.has(i) || applied.filledRows?.has(i) || !String(out['**Category Id'] ?? '').trim() || excluded.has(i) ? 'YES' : ''
   })
   // excluded: row indexes left out of the upload (leftOut: their "invalid" rows)
-  return { ...applied, problems, rules, excluded, leftOut }
+  return { ...applied, problems, rules, excluded, leftOut, deletedRows }
 }
 
 // The output for a processed run: decisions, rules and edits applied. With the
@@ -710,17 +738,17 @@ export function darazSummary(result, output, options = {}) {
     `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
     `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–100% discount — SKU kept)`,
       r.spNotBelow && `${s(r.spNotBelow, 'special price')} not below the price (flagged)`])}`,
-    `Image: ${join([options.imageKeys ? `${n(leftFor(/Image/))} left out — no CartUp image key (${n(leftFor(/^Image 1/))} Image 1, ${n(leftFor(/^Variant Image/))} variant image)` : '0 left out',
-      options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`,
+    `Image: ${join([options.imageKeys ? `${n(leftFor(/^(Images|Variant Image):/))} left out — no CartUp image key (${n(leftFor(/^Images:/))} for any product image, ${n(leftFor(/^Variant Image:/))} for the variant image)` : '0 left out',
+      options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`, options.imageKeys && r.imagesMoved && `${s(r.imagesMoved, 'row')} with images moved up to fill gaps`,
       options.imageKeys?.forItem && r.keyRowsMissing && `${s(r.keyRowsMissing, 'Seller SKU')} not in the key file`,
       !options.imageKeys && 'no image key file (Daraz links)',
       !options.imageKeys && output.problems.filter(p => p.type === 'noimage').length && `${n(output.problems.filter(p => p.type === 'noimage').length)} images missing (rows kept — flagged)`])}`,
     `Weight: ${n(leftFor(/weight/i))} left out (no package weight)`,
     `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at 99,999`, `${n(r.stockZero)} with 0 stock`])}`,
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
-      `${n(result.duplicateSkus.length)} repeated Seller SKU`])}`,
+      `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
-    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color / Model = Same as picture, size = One Size)`,
+    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color / Model = Same as picture, size = One Size)${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,
     aiSummary(result.ai),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',

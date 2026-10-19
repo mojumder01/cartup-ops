@@ -12,9 +12,9 @@ export const ISSUE_TYPES = {
   list:     { label: 'Not on CartUp list (#N/A)', level: 'error' },
   category: { label: 'No category', level: 'error' },
   required: { label: 'Required — empty', level: 'error' },
+  numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
   noimage:  { label: 'Image missing (row kept)', level: 'warn' },
-  image:    { label: 'Image without a CartUp key (not uploaded)', level: 'warn' },
   spremoved:{ label: 'Special price removed (75%+ discount)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
   defaults: { label: 'Set by rule (Same as picture / One Size)', level: 'warn' },
@@ -29,6 +29,7 @@ export function sheetIssues(output, columns, lists, items = null) {
   const flagged = new Map(output.problems.map(p => [`${p.row}|${p.column}`, p]))
   const set = (k, type, text) => m.set(k, { level: ISSUE_TYPES[type].level, type, text })
   output.rows.forEach((r, i) => {
+    if (output.deletedRows?.has(i)) return   // deleted in the sheet view: not in the upload
     for (const c of columns) {
       const v = String(r[c] ?? '').trim()
       const list = lists?.[headerKey(c)]
@@ -38,7 +39,7 @@ export function sheetIssues(output, columns, lists, items = null) {
       else if (c === '**Category Id' && !v) set(k, 'category', 'No CartUp category — add the Category Id')
       else if (c.startsWith('**') && !v) set(k, 'required', 'Required — empty')
       else if (v && list && list.match(v)?.how !== 'exact') set(k, 'list', `Not on CartUp's ${colLabel(c)} list — shows #N/A`)
-      else if (f) set(k, IMAGE_COLS.includes(c) ? 'image' : c === 'Special Price' ? 'price' : 'flag', f.problem)
+      else if (f) set(k, c === 'Special Price' ? 'price' : 'flag', f.problem)
       else if (filled?.has(`${i}|${c}`)) set(k, 'defaults', 'Not given — set by rule because the category needs it; check it')
     }
   })
@@ -81,9 +82,12 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   add({ id: 'required', level: 'fix', count: byType.required || 0, unit: 'cell',
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',
     open: { sheet: 'required' } })
+  if (byType.numbered) add({ id: 'numbered', level: 'fix', count: byType.numbered, unit: 'SKU',
+    title: 'Variants told apart only by a number', why: 'Multicolor-1, -2…: the seller\'s variants differ by something CartUp has no column for (e.g. "Vitamin C", "tea tree") — check each, or pick a real value',
+    open: { sheet: 'numbered' } })
   add({ id: 'leftout', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
     title: 'Rows left out of the upload', why: imageKeys
-      ? 'No package weight, or no CartUp image key for Image 1 / the Variant Image — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet'
+      ? 'No package weight, no product image with a CartUp key, or no key for the Variant Image — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet'
       : 'No package weight — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet',
     open: { sheet: 'leftout' } })
   if (byType.noimage) add({ id: 'noimage', level: 'check', count: byType.noimage, unit: 'image',
@@ -102,11 +106,6 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
     title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',
     open: { sheet: 'price' } })
-  if (imageKeys) add({ id: 'image', level: 'check', count: byType.image || 0, unit: 'image',
-    title: 'Images without a CartUp key', why: (imageKeys.forItem && output.rules.keyRowsMissing
-      ? `${output.rules.keyRowsMissing.toLocaleString()} Seller SKU${output.rules.keyRowsMissing === 1 ? ' is' : 's are'} not in the image key file — `
-      : 'Not in the image key file — ') + 'those images are not uploaded (a row without Image 1 or a variant image is left out)',
-    open: { sheet: 'image' } })
   if (result.ai?.missed) {
     const m = result.ai.message || ''
     const reason = /limit is used/i.test(m) ? "today's Gemini limit was used up" : /at their limit/i.test(m) ? 'every key was at its limit' : m.slice(0, 80) || 'no answer'

@@ -266,7 +266,7 @@ export async function loadTemplate(data) {
   }
   for (const m of workbookXml.matchAll(/<definedName\b([^>]*)>([\s\S]*?)<\/definedName>/g)) {
     const a = parseAttrs(m[1])
-    if (a.name && a.localSheetId === undefined && !a.name.startsWith('_xlnm.')) names.set(a.name.toLowerCase(), xmlUnescape(m[2]))
+    if (a.name && a.localSheetId === undefined && !a.name.startsWith('_xlnm.')) names.set(a.name.toLowerCase(), xmlUnescape(m[2]).replace(/^\s*=/, ""))
   }
 
   // Visible product sheet: the header row is the one holding "Seller SKU"
@@ -304,7 +304,8 @@ export async function loadTemplate(data) {
         continue
       }
       const fa = parseAttrs(fm[1])
-      let text = fm[2] ? xmlUnescape(fm[2]) : ''
+      // Some tools write the formula with Excel's leading "=" (=IF(…)); Excel itself doesn't.
+      let text = fm[2] ? xmlUnescape(fm[2]).replace(/^\s*=/, '') : ''
       if (fa.t === 'shared' && fa.si !== undefined) {
         if (text) shared.set(fa.si, { text, r: cell.row, c: colToNum(cell.col) })
         else if (!found.has(cell.col) && shared.has(fa.si)) {

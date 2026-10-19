@@ -289,9 +289,9 @@ export function valueGroups(result, decisions, memory) {
     if (!c.listed || c.source !== 'daraz') continue
     const key = decisionKey.all(c)
     let g = m.get(key)
-    if (!g) m.set(key, g = { key, col: c.col, raw: c.raw, cell: c, item: it, parents: new Set(), skus: 0, open: 0, kept: 0, changed: 0, values: new Map(), how: null, conflict: '' })
+    if (!g) m.set(key, g = { key, col: c.col, raw: c.raw, cell: c, item: it, parents: new Set(), skus: 0, skuList: [], open: 0, kept: 0, changed: 0, values: new Map(), how: null, conflict: '' })
     const st = cellState(it, c, decisions, memory, result.lists)
-    g.parents.add(it.parent); g.skus++
+    g.parents.add(it.parent); g.skus++; g.skuList.push(it.sku)
     if (st.state === 'open') { g.open++; g.conflict ||= st.conflict || '' }
     else if (st.state === 'kept') g.kept++
     else if (st.value !== c.raw) g.changed++
@@ -313,6 +313,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   const stats = { checked: 0, auto: 0, remembered: 0, picked: 0, kept: 0, open: 0, openValues: 0, openParents: 0, dupes: 0 }
   const attention = new Set()   // row indexes that still need a person
   const filledRows = new Set()  // rows with a variant value set by rule (Same as picture, One Size)
+  const numbered = []           // variant values numbered apart (Multicolor-1…): { row, col, value, raw }
   const openValues = new Set(), openParents = new Set()
   const byParent = new Map()
   for (const item of result.items) {
@@ -335,6 +336,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
       const st = cellState(item, cell, decisions, memory, result.lists)
       out[cell.col] = st.value
       if (st.noWarranty) noWarranty = true
+      if (st.state === 'auto' && st.how === 'numbered') numbered.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
       if (!cell.listed) continue
       stats.checked++
       if (st.state in stats) stats[st.state]++
@@ -384,5 +386,5 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, numbered }
 }

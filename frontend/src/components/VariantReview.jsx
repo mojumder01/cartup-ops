@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { reviewGroups, valueGroups, decisionKey, headerKey, colLabel, colGroup, splitCombo, RISK, COMBO_TARGETS } from '../utils/variantReview'
 import { MATCH_LABEL } from '../utils/listMatch'
+import CopyButton from './CopyButton'
 import { X, Search, Check, Plus, RotateCcw, ChevronRight, ChevronLeft, AlertTriangle, ImageOff, Download, Tag, ShieldOff, Filter, Layers, Rows3 } from 'lucide-react'
 
 // Review window for Daraz Upload: the dropdown values (Color, Size, Brand,
@@ -267,7 +268,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12.5 }}>
                 <thead>
                   <tr style={{ background:'#f8fafc' }}>
-                    {['Column', 'Seller value', 'Products', 'SKUs', 'Now', ''].map((h, i) => <th key={i} style={{ textAlign:'left', padding:'8px 10px', color:'#64748b', fontWeight:600, borderBottom:'1px solid #e2e8f0', whiteSpace:'nowrap' }}>{h}</th>)}
+                    {['Column', 'Seller value', 'Seller SKU', 'Products', 'SKUs', 'Now', ''].map((h, i) => <th key={i} style={{ textAlign:'left', padding:'8px 10px', color:'#64748b', fontWeight:600, borderBottom:'1px solid #e2e8f0', whiteSpace:'nowrap' }}>{h}</th>)}
                   </tr>
                 </thead>
                 <tbody>
@@ -279,6 +280,13 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                       <tr key={v.key} style={{ borderBottom: editingThis ? 'none' : '1px solid #f1f5f9', background: editingThis ? '#fafaff' : '#fff' }}>
                         <td style={{ padding:'7px 10px', color:'#64748b', whiteSpace:'nowrap' }}>{colLabel(v.col)}</td>
                         <td style={{ padding:'7px 10px', fontWeight:600 }} title={v.conflict || ''}>{v.raw}{v.conflict && <AlertTriangle size={11} color='#b45309' style={{ marginLeft:5, verticalAlign:'-1px' }} />}</td>
+                        <td style={{ padding:'5px 10px', whiteSpace:'nowrap' }}>
+                          <span style={{ display:'inline-flex', alignItems:'center', gap:5 }}>
+                            <span style={{ fontFamily:'monospace', fontSize:11.5, color:'#334155', maxWidth:210, overflow:'hidden', textOverflow:'ellipsis' }} title={v.skuList.join('\n')}>{v.skuList[0]}</span>
+                            {v.skuList.length > 1 && <span style={{ fontSize:11, color:'#64748b' }}>+{v.skuList.length - 1}</span>}
+                            <CopyButton text={v.skuList.join('\n')} title={v.skuList.length > 1 ? `Copy the ${v.skuList.length} Seller SKUs (one per line)` : 'Copy the Seller SKU'} />
+                          </span>
+                        </td>
                         <td style={{ padding:'7px 10px' }}>{v.parents.size}</td>
                         <td style={{ padding:'7px 10px' }}>{v.skus}</td>
                         <td style={{ padding:'5px 10px' }}>
@@ -303,7 +311,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                       </tr>,
                       editingThis && (
                         <tr key={`${v.key}-edit`} style={{ borderBottom:'1px solid #f1f5f9', background:'#fafaff' }}>
-                          <td colSpan={6} style={{ padding:'4px 10px 12px' }}>
+                          <td colSpan={7} style={{ padding:'4px 10px 12px' }}>
                             <div style={{ fontSize:12, color:'#475569', marginBottom:6 }}>CartUp's {colLabel(v.col)} value for <b>"{v.raw}"</b> — every SKU with it, remembered:</div>
                             {sugg.length > 0 && (
                               <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:8 }}>
@@ -368,7 +376,11 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                 <Thumb src={group.skus[0]?.item.productImage} size={64} onOpen={setZoom} />
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontWeight:700, fontSize:14.5 }}>{group.name}</div>
-                  <div style={{ fontSize:12, color:'#64748b', marginTop:2 }}>Parent SKU <span style={{ fontFamily:'monospace', fontWeight:600, color:'#334155' }}>{group.parent}</span> · {group.skus.length} SKU{group.skus.length > 1 ? 's' : ''}{group.category ? ` · ${group.category}` : ''}</div>
+                  <div style={{ fontSize:12, color:'#64748b', marginTop:2, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+                    Parent SKU <span style={{ fontFamily:'monospace', fontWeight:600, color:'#334155' }}>{group.parent}</span><CopyButton text={group.parent} title="Copy the Parent SKU" />
+                    · {group.skus.length} SKU{group.skus.length > 1 ? 's' : ''}<CopyButton text={group.skus.map(s => s.sku).join('\n')} label="Copy SKUs" title="Copy every Seller SKU of this product (one per line)" />
+                    {group.category ? <span>· {group.category}</span> : ''}
+                  </div>
                 </div>
                 <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                   <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:'#475569', cursor:'pointer', marginRight:6 }}>
@@ -406,7 +418,7 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
                     {group.skus.map(s => (
                       <tr key={s.sku} style={{ borderBottom:'1px solid #f1f5f9', background: q && s.sku.toLowerCase().includes(q) ? '#fefce8' : undefined }}>
                         <td style={{ padding:'6px 10px', width: big ? 110 : 44 }}><Thumb src={s.item.image} size={big ? 110 : 44} onOpen={setZoom} /></td>
-                        <td style={{ padding:'6px 10px', fontFamily:'monospace', fontSize:12 }}>{s.sku}</td>
+                        <td style={{ padding:'6px 10px', fontFamily:'monospace', fontSize:12 }}><span style={{ display:'inline-flex', alignItems:'center', gap:6 }}>{s.sku}<CopyButton text={s.sku} title="Copy the Seller SKU" /></span></td>
                         <td style={{ padding:'6px 10px', color:'#64748b' }}>{splitCombo(s.combo).join(' · ') || '—'}</td>
                         {group.cols.map(c => {
                           const v = s.cells[c]

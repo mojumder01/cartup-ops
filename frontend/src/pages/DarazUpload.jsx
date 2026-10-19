@@ -83,6 +83,7 @@ export default function DarazUpload() {
   const [decisions, setDecisions] = useState({})
   const [memory, setMemory]   = useState(loadMemory)
   const [edits, setEdits]     = useState({})
+  const [deleted, setDeleted] = useState(() => new Set())   // row keys deleted in the sheet view
   const [reviewing, setReviewing] = useState(null)   // where the review window opens: { view, state, col } | null
   const [sheetOpen, setSheetOpen] = useState(null)   // the sheet view's filter | null
   const [rechecking, setRechecking] = useState('')
@@ -115,7 +116,7 @@ export default function DarazUpload() {
     return keyPick.link && keyPick.key ? makeImageKeyMap(sh.rows, keyPick.link, keyPick.key) : null
   }, [keySheets, keyPick])
   const stockSet = stockMode === 'set' && stockValue !== '' ? stockValue : null
-  const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, stock: { set: stockSet }, imageKeys, edits }), [spInclude, spEnd, stockSet, imageKeys, edits])
+  const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, stock: { set: stockSet }, imageKeys, edits, deleted }), [spInclude, spEnd, stockSet, imageKeys, edits, deleted])
 
   // Live output for the current decisions, options and edits.
   const output = useMemo(() => result && buildOutput(result, decisions, memory, options), [result, decisions, memory, options])
@@ -187,7 +188,7 @@ export default function DarazUpload() {
     }
     if (crossErrors.length && !window.confirm(`The file check found a problem:\n\n${crossErrors.map(c => '• ' + c.text).join('\n')}\n\nProcess anyway?`)) return
     if (result && !window.confirm('Process the files again? This runs the AI again (uses requests from today\'s limit) and starts the review over.')) return
-    setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({})
+    setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({}); setDeleted(new Set())
     setAiRun({ start: sessionStats(), end: null })
     try {
       const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly, aiFields })
@@ -576,7 +577,7 @@ export default function DarazUpload() {
         )}
         {sheetOpen && output && (
           <SheetEditor output={output} items={result.items} columns={SHEET_COLS} lists={result.lists} issues={issues} initialFilter={sheetOpen}
-            keyOf={i => rowKey(result.items[i], i)} edits={edits} setEdits={setEdits}
+            keyOf={i => rowKey(result.items[i], i)} edits={edits} setEdits={setEdits} deleted={deleted} setDeleted={setDeleted}
             onDownload={() => download()} onClose={() => setSheetOpen(null)} />
         )}
         {error && (
