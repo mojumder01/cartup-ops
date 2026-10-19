@@ -133,6 +133,10 @@ export function separateCollisions(items, lists) {
     // one matching merged), else the first variant column they all have.
     const shared = COMBO_TARGETS.filter(t => g.every(it => cellOf(it, t)))
     const col = shared.find(t => new Set(g.map(it => cellOf(it, t).raw.toLowerCase())).size > 1) ?? shared[0]
+    // Sizes into Color first; one SKU left alike keeps its plain value.
+    const rest = sizeIntoColor(g, col, items, lists)
+    if (rest.length < 2) continue
+    if (rest.length < g.length) { g.splice(0, g.length, ...rest) }
     const list = col && lists?.[headerKey(col)]
     if (list) {
       const base = current(cellOf(g[0], col))
@@ -160,6 +164,51 @@ export function separateCollisions(items, lists) {
       }
     }
   }
+}
+
+// A size with no column of its own: the category has Color but no size
+// column, so variants that differ only by size ("Grey, L", "Grey, XL") would
+// all be "Grey". The size goes into Color instead of a number — "Grey-L" /
+// "Grey L" / "Grey Large" when CartUp's Color list has it, else the size as
+// the list spells it ("L", "Large"). Compound sizes ("M/Right", "S(20-30)")
+// are tried whole, then by their size alone. Each SKU on its own: never a
+// value another SKU of the product has. Returns the SKUs still alike (one of
+// them can keep the plain colour; two or more are numbered).
+const SIZE_WORD = { S: 'Small', M: 'Medium', L: 'Large', XS: 'Extra Small' }
+const SIZE_HEAD = /^(int(?:ernational|l)?\s*[:\-.]\s*)?(\d?x{0,4}[sml]|xs|\d?xl|free size|one size)(?=$|[\s/(\-,])/i
+function sizeIntoColor(g, col, items, lists) {
+  const list = col === 'Color' && lists?.[headerKey('Color')]
+  if (!list) return g
+  const cellOf = it => it.cells.find(c => c.col === 'Color')
+  const base = cellOf(g[0]).auto ?? cellOf(g[0]).raw
+  const used = new Set(items.filter(it => !g.includes(it)).map(it => cellOf(it)).filter(Boolean).map(c => String(c.auto ?? c.raw).toLowerCase()))
+  const hit = name => { const h = list.match(name); return h && ['exact', 'format', 'alias'].includes(h.how) ? h.value : null }
+  // The size part of a SKU (else the first part that tells the SKUs apart —
+  // Left / Right, Long / Short) and the names to try for it, best first.
+  const differs = p => g.some(o => !o.unused.some(x => x.toLowerCase() === p.toLowerCase()))
+  const tries = it => {
+    const part = it.unused.find(p => valueKind(p) === 'size' || SIZE_HEAD.test(p.trim())) || it.unused.find(differs)
+    if (!part) return null
+    const whole = part.replace(/^(int|international|intl)\s*[:\-.]\s*/i, '').trim()
+    const head = SIZE_HEAD.exec(part.trim())?.[2]
+    const words = [whole, SIZE_WORD[whole.toUpperCase()], head, SIZE_WORD[head?.toUpperCase()]].filter((w, k, a) => w && a.indexOf(w) === k)
+    return { part, names: [...words.flatMap(w => [`${base}-${w}`, `${base} ${w}`]), ...words] }
+  }
+  const picks = g.map(it => { const t = tries(it); if (!t) return null; const v = t.names.map(hit).find(Boolean); return v ? { value: v, part: t.part } : null })
+  // Only values no other SKU of the product ends up with.
+  const count = new Map()
+  for (const p of picks) if (p) count.set(p.value.toLowerCase(), (count.get(p.value.toLowerCase()) || 0) + 1)
+  const left = []
+  g.forEach((it, k) => {
+    const p = picks[k]
+    if (!p || count.get(p.value.toLowerCase()) > 1 || used.has(p.value.toLowerCase())) { left.push(it); return }
+    const c = cellOf(it)
+    c.auto = p.value; c.how = 'sizecolor'
+    c.note = `"${p.part}" in the Color column — the category has no column for it`
+    it.unused = it.unused.filter(x => x !== p.part)
+    used.add(p.value.toLowerCase())
+  })
+  return left
 }
 
 // ── Decisions ─────────────────────────────────────────────────────────────────
@@ -219,6 +268,7 @@ function fromDecision(d, cell, scope) {
 const SCOPE_LABEL = { sku: 'this SKU', parent: 'this product', all: 'every SKU with this value', memory: 'remembered from an earlier run' }
 function changeLabel(st) {
   if (st.state === 'auto' && st.how === 'numbered') return 'Numbered to keep the product\'s variants apart'
+  if (st.state === 'auto' && st.how === 'sizecolor') return 'Size put in the Color column (the category has no size column)'
   if (st.state === 'auto' && st.how === 'rule') return st.note
   if (st.state === 'auto') return st.how === 'exact' ? 'Matched to the list\'s spelling' : MATCH_LABEL[st.how]
   if (st.state === 'picked' && st.noWarranty) return `Set to No Warranty by hand (${SCOPE_LABEL[st.scope]})`
@@ -278,7 +328,7 @@ export function reviewGroups(result, decisions, memory) {
 // Which kind of column a value belongs to, for filters and the check list.
 export const colGroup = col => col === '**Brand' ? 'brand' : /^Warranty/.test(colLabel(col)) ? 'warranty' : COMBO_TARGETS.includes(col) ? 'variant' : 'other'
 // How much an automatic change is worth a look — fuzzy spelling first.
-export const RISK = { similar: 3, alias: 2, rule: 2, numbered: 1, format: 1, exact: 0 }
+export const RISK = { similar: 3, alias: 2, rule: 2, sizecolor: 2, numbered: 1, format: 1, exact: 0 }
 
 // ── By value ──────────────────────────────────────────────────────────────────
 // Every distinct seller value per column, across all products, with what it
@@ -316,6 +366,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   const attention = new Set()   // row indexes that still need a person
   const filledRows = new Set()  // rows with a variant value set by rule (Same as picture, One Size)
   const numbered = []           // variant values numbered apart (Multicolor-1…): { row, col, value, raw }
+  const sizeColor = []          // sizes put in the Color column (Grey-L…): { row, col, value, raw }
   const openValues = new Set(), openParents = new Set()
   const byParent = new Map()
   for (const item of result.items) {
@@ -339,6 +390,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
       out[cell.col] = st.value
       if (st.noWarranty) noWarranty = true
       if (st.state === 'auto' && st.how === 'numbered') numbered.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
+      if (st.state === 'auto' && st.how === 'sizecolor') sizeColor.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
       if (cell.source === 'mark') { marked.push(colLabel(cell.col)); continue }
       if (!cell.listed) continue
       stats.checked++
@@ -390,5 +442,5 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, numbered }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, numbered, sizeColor }
 }

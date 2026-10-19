@@ -24,7 +24,7 @@ const STATE_STYLE = {
   ok:         { background:'#fff', color:'#334155', border:'1px solid #e2e8f0' },
 }
 const STATE_NOTE = { open: 'not on list', auto: 'auto', remembered: 'remembered', picked: 'picked', kept: 'new value' }
-const HOW_NOTE = { ...MATCH_LABEL, numbered: 'Numbered (variants apart)', rule: 'Warranty rule', exact: 'List spelling' }
+const HOW_NOTE = { ...MATCH_LABEL, numbered: 'Numbered (variants apart)', sizecolor: 'Size in Color (no size column)', rule: 'Warranty rule', exact: 'List spelling' }
 
 // Column filter: 'all', a group ('g:variant' | 'g:brand' | 'g:warranty' | 'g:other') or one column ('c:Color').
 const colMatches = (f, col) => f === 'all' || (f.startsWith('g:') ? colGroup(col) === f.slice(2) : col === f.slice(2))

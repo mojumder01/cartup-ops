@@ -18,6 +18,7 @@ export const ISSUE_TYPES = {
   spremoved:{ label: 'Special price removed (75–99% discount)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
   defaults: { label: 'Set by rule (Not Specified / One Size)', level: 'warn' },
+  sizecolor:{ label: 'Size / variant in the Color column (Grey-L…)', level: 'warn' },
   marked:   { label: 'Marked "Yes" (combo not matched)', level: 'warn' },
   flag:     { label: 'Other flags', level: 'warn' },
 }
@@ -103,6 +104,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Close-spelling matches', why: 'Matched by similar spelling — a quick glance confirms them',
       open: { review: { view: 'values', state: 'changed', col: 'all' } } })
   }
+  if (byType.sizecolor) add({ id: 'sizecolor', level: 'check', count: byType.sizecolor, unit: 'SKU',
+    title: 'Size put in the Color column', why: 'The category has Color but no size column — variants that differ by size (S, M, L…) or side (Left / Right) get Grey-L, L, M (Left)… in Color instead of Grey-1, Grey-2; a quick look confirms them',
+    open: { sheet: 'sizecolor' } })
   if (byType.marked) add({ id: 'marked', level: 'check', count: byType.marked, unit: 'value',
     title: 'Variant columns marked "Yes"', why: 'Variations Combo option "Mark Yes": the columns the category needs say Yes — "Yes" isn\'t on CartUp\'s lists, so the hidden sheet shows #N/A for them',
     open: { sheet: 'marked' } })

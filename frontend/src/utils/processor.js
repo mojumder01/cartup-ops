@@ -525,9 +525,10 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null } = options
   const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, imagesMoved: 0, edited: 0, specialPrices: 0 }
-  const numberedBy = new Map()
+    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, imagesMoved: 0, edited: 0, specialPrices: 0 }
+  const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
+  for (const sc of applied.sizeColor || []) sizeColorBy.set(sc.row, sc)
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
@@ -672,6 +673,13 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       notes.push(`Check: ${colLabel(nb.col)} = ${nb.value} only to keep variants apart (${lost})`)
       rules.numbered++
     }
+    // A size put in the Color column (the category has no size column): worth a look.
+    const sc = sizeColorBy.get(i)
+    if (sc && !isDeleted && out[sc.col] === sc.value) {
+      flag(sc.col, `Size / variant in the Color column: ${sc.value} (Daraz: "${item.combo}") — this category has no size column, so it goes into Color instead of a number`, 'sizecolor')
+      notes.push(`In Color: ${sc.value} (Daraz "${item.combo}"; the category has only a Color column)`)
+      rules.sizeColor++
+    }
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
     // Check = YES: the row needs a person's look (a flag, a value set by rule,
     // no category, left out) — the reason is in Report.
@@ -762,7 +770,7 @@ export function darazSummary(result, output, options = {}) {
       `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
     result.variantMode === 'yes' ? 'Variants: Variations Combo not matched — the variant columns each category needs are marked "Yes"' : '',
-    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color = Not Specified, Model = Same as picture, size = One Size)${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
+    `Variants: ${n(output.filledRows?.size || 0)} rows got a value set by rule (Color = Not Specified, Model = Same as picture, size = One Size)${r.sizeColor ? ` · ${n(r.sizeColor)} with the size in the Color column (Grey-L… — no size column in the category)` : ''}${r.numbered ? ` · ${n(r.numbered)} told apart only by a number (Multicolor-1…) — check` : ''}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,
     aiSummary(result.ai),
     r.edited ? `Edited by hand: ${s(r.edited, 'cell')}` : '',
