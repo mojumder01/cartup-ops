@@ -135,6 +135,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
       title: 'Kept as new values', why: 'In the "new values" sheet — CartUp adds them to its lists, or they show #N/A',
       open: { review: { view: 'values', state: 'kept', col: 'all' } } })
   }
+  if (output.aiPickRows?.size) add({ id: 'aipick', level: 'info', count: output.aiPickRows.size, unit: 'SKU',
+    title: 'Values the AI picked', why: 'The rules couldn\'t finish these (not on CartUp\'s list, numbered, or alike) — the AI picked the closest value on CartUp\'s list, made of the seller\'s own words (L/XL → XL); Report and the change log say which',
+    open: { review: { view: 'products', state: 'changed', col: 'g:variant' } } })
   if (output.rules.stockZero) add({ id: 'stock0', level: 'info', count: output.rules.stockZero, unit: 'row',
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })

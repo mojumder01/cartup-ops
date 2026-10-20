@@ -337,7 +337,7 @@ export default function DarazUpload() {
               {aiFields.name && aiFields.highlights && aiFields.description ? 'Gemini fixes spelling and grammar in all three'
                 : !aiFields.name && !aiFields.highlights && !aiFields.description ? 'all off — no AI requests: names get the spelling rules, highlights and description come from the Basic file as they are'
                 : `unticked — ${['name', 'highlights', 'description'].filter(k => !aiFields[k]).map(k => k === 'name' ? 'name: spelling rules only' : `${k}: from the Basic file as it is`).join(' · ')}`}
-              {' · '}{aiFields.combo ? 'Variations Combo: Gemini says which part is the colour and which the size (labels only — values always from CartUp\'s lists; a label that contradicts a part, like "XL" as a colour, is dropped)' : 'Variations Combo: rules only'}
+              {' · '}{aiFields.combo ? 'Variations Combo: Gemini says which part is the colour and which the size, and where the rules can\'t finish (L/XL, 1-5 years, Black-1…) picks the closest value on CartUp\'s list — only from the list, only the seller\'s own words, every pick checked' : 'Variations Combo: rules only'}
               {result?.ai && ['name', 'highlights', 'description', 'combo'].some(k => (result.ai.fields?.[k] ?? true) !== aiFields[k]) ? ' · applies when you process again' : ''}
             </span>
           </div>

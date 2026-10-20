@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
 import MAPPINGS from './mappings.json'
-import { processProductsBatch, readVariantCombos, localFixName, runConcurrent } from './gemini'
+import { processProductsBatch, readVariantCombos, pickVariantValues, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
 import { loadTemplate, writeTemplate, chunkRows, zipFiles } from './shopDuplicate'
 import { colToNum, numToCol } from './xlsxFormula'
@@ -9,7 +9,7 @@ import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { darazRows, cell } from './darazFiles'
-import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, applyDecisions } from './variantReview'
+import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, troubleCells, aiCandidates, applyAIPicks, applyDecisions } from './variantReview'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -429,6 +429,13 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   // ── Step 5: AI reads each product's Variations Combo — labels only ─────────
   const combo = apiKey && aiFields.combo && variantMode === 'match' ? await readCombos(items, onProgress) : null
   matchItems(items, lists, variantMode)
+  // ── Step 6: what the rules couldn't finish — the AI picks the closest CartUp value
+  if (combo && lists) {
+    combo.picks = await pickCombos(items, lists, onProgress)
+    if (combo.picks.answered) matchItems(items, lists, variantMode)   // the picks are applied as the rules run
+    combo.picks.skus = items.filter(it => it.cells.some(c => c.how === 'ai')).length
+    combo.picks.products = new Set(items.filter(it => it.cells.some(c => c.how === 'ai')).map(it => it.parent)).size
+  }
   return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo } : null }
 }
 
@@ -461,6 +468,48 @@ async function readCombos(items, onProgress) {
     if (roles) stats.read++
     else if (slips.length) stats.slips++
     else stats.missed++
+  }
+  return stats
+}
+
+// Products the rules couldn't finish (a variant value not on CartUp's list,
+// variants numbered apart or alike): the AI picks, per cell, the closest value
+// from candidates taken from CartUp's list (aiCandidates). Each pick is kept as
+// it.aiPicks and checked again whenever the rules run (applyAIPicks).
+// → { asked, answered, message } (products), skus / products picked filled in after.
+const PICK_BATCH = 10
+async function pickCombos(items, lists, onProgress) {
+  const products = []
+  for (const [pid, g] of groupBy(items, it => it.parent)) {
+    const trouble = troubleCells(g)
+    if (!trouble.size) continue
+    const cols = [...new Set([...trouble.values()].flatMap(s => [...s]))]
+    const candidates = Object.fromEntries(cols.map(c => [c, aiCandidates(g, c, lists)]).filter(([, vs]) => vs.length))
+    if (!Object.keys(candidates).length) continue
+    products.push({ pid, items: g, name: g[0].name, category: g[0].category || `Daraz category ${g[0].darazCat}`,
+      columns: COMBO_TARGETS.filter(c => g[0].applicable.includes(c)), candidates,
+      skus: g.map(it => ({ sku: it.sku, combo: it.combo, now: Object.fromEntries(it.cells.filter(c => COMBO_TARGETS.includes(c.col)).map(c => [c.col, c.auto ?? c.raw])),
+        pick: [...(trouble.get(it.sku) || [])].filter(c => candidates[c]) })) })
+  }
+  const stats = { asked: products.length, answered: 0, message: '' }
+  const batches = []
+  for (let i = 0; i < products.length; i += PICK_BATCH) batches.push(products.slice(i, i + PICK_BATCH))
+  const answers = {}
+  await runConcurrent(batches.map((batch, bi) => async () => {
+    onProgress(`AI picking the closest CartUp values — products ${bi * PICK_BATCH + 1}–${Math.min((bi + 1) * PICK_BATCH, products.length)} of ${products.length}...`)
+    Object.assign(answers, await pickVariantValues(batch, message => { stats.message = message }))
+  }))
+  for (const p of products) {
+    const picks = answers[p.pid]
+    if (!picks || typeof picks !== 'object') continue
+    stats.answered++
+    for (const it of p.items) {
+      const mine = picks[it.sku], ask = p.skus.find(s => s.sku === it.sku).pick
+      if (!mine || typeof mine !== 'object') continue
+      // Only cells asked for, and only a candidate given for that column.
+      const keep = Object.entries(mine).filter(([c, v]) => ask.includes(c) && typeof v === 'string' && p.candidates[c].some(x => x.toLowerCase() === v.trim().toLowerCase()))
+      if (keep.length) it.aiPicks = Object.fromEntries(keep.map(([c, v]) => [c, v.trim()]))
+    }
   }
   return stats
 }
@@ -543,6 +592,7 @@ export function matchItems(items, lists, variantMode = 'match') {
       harmonizeSizes(group, lists)
       separateCollisions(group, lists)
       compareWithAI(group)
+      applyAIPicks(group, lists)
     }
   }
   return items
@@ -816,9 +866,10 @@ export function aiSummary(ai) {
 export function comboSummary(c) {
   if (!c) return ''
   if (!c.asked) return 'AI (Variations Combo): nothing to ask — every part is plain (Not Specified, L, EU:42…)'
-  return `AI (Variations Combo): ${c.read.toLocaleString()} of ${c.asked.toLocaleString()} products read (labels only — values always from CartUp's lists)`
+  return `AI (Variations Combo): ${c.read.toLocaleString()} of ${c.asked.toLocaleString()} products read (which part is the colour, the size…)`
     + (c.slips ? ` · ${c.slips.toLocaleString()} reading${c.slips === 1 ? '' : 's'} dropped (contradicted the parts — rules used)` : '')
     + (c.missed ? ` · ${c.missed.toLocaleString()} not answered (rules used${c.message ? `: ${c.message.slice(0, 60)}` : ''})` : '')
+    + (c.picks?.asked ? ` · closest CartUp value picked for ${c.picks.skus.toLocaleString()} SKUs in ${c.picks.products.toLocaleString()} of the ${c.picks.asked.toLocaleString()} products the rules couldn't finish` : '')
 }
 
 // The run in a few lines (one cell of the "summary" sheet, or copied from the
@@ -860,6 +911,7 @@ export function darazSummary(result, output, options = {}) {
     })(),
     `Variants set: ${join([`${n(output.ruleRows?.size || 0)} by rule (Color = Not Specified when the combo is empty or has no colour, Model = Same as picture, size = One Size)${output.filledRows?.size ? ` — ${n(output.filledRows.size)} to check (part of the combo unused)` : ''}`,
       r.sizeColor && `${n(r.sizeColor)} with the size in the Color column (L, Grey-L… — the category has no size column; ${n(r.sizeColorSure)} sure, ${n(r.sizeColor - r.sizeColorSure)} to check)`,
+      output.aiPickRows?.size && `${n(output.aiPickRows.size)} picked by the AI — the closest value on CartUp's list (Report says which)`,
       r.numbered && `${n(r.numbered)} told apart only by a number (Multicolor-1…) — check`,
       r.aiDisagree && `${n(r.aiDisagree)} read differently by the AI — check`])}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,

@@ -257,7 +257,7 @@ function nameTries(part, base, withColour, short = ANY_SHORT) {
 // Small = S, Child = Kids, Universal = Free Size.
 const sameKey = v => String(v).toLowerCase().replace(/[^a-z0-9]/g, '')
 const MEANING = [[/\b(extra small|x-small)\b/g, 'xs'], [/\b(extra large|x-large)\b/g, 'xl'], [/\bsmall\b/g, 's'], [/\bmedium\b/g, 'm'], [/\blarge\b/g, 'l'],
-  [/\b(universe?l|free size|free|one size)\b/g, 'onesize'], [/\b(ch|child|children|kids?)\b/g, 'kids'], [/\b(ad|adult)\b/g, 'adult'],
+  [/\b(univers[ae]?l|free size|free|one size)\b/g, 'onesize'], [/\b(ch|child|children|kids?)\b/g, 'kids'], [/\b(ad|adult)\b/g, 'adult'],
   [/\b(spl|special)\b/g, 'special'], [/\b(mail|male|men)\b/g, 'male'], [/\b(female|famale|women)\b/g, 'female']]
 const meaning = v => sameKey(MEANING.reduce((s, [re, w]) => s.replace(re, w), String(v).toLowerCase()))
 function sayKey(v, base) {
@@ -510,6 +510,110 @@ function plainSize(part) {
   return bits.length > 1 && plainKind(bits[0]) === 'size' && bits.slice(1).every(b => /^(left|right|long|short|regular)$/i.test(b))
 }
 
+// ── The AI's pick of the closest CartUp value ─────────────────────────────────
+// What the rules can't finish — a variant value not on CartUp's list, variants
+// numbered apart (Black-1…), or alike — the AI settles like a person would: for
+// each such cell it picks one value from candidates taken from CartUp's own
+// list. A pick is used only when it is one of those candidates, is made of the
+// seller's own words and numbers (grounded), and leaves every SKU different.
+
+// The cells the rules couldn't finish: Map sku → Set of columns.
+export function troubleCells(items) {
+  const out = new Map(), add = (it, col) => { if (!out.has(it.sku)) out.set(it.sku, new Set()); out.get(it.sku).add(col) }
+  const variantCells = it => it.cells.filter(c => COMBO_TARGETS.includes(c.col) && c.source !== 'mark')
+  for (const it of items) {
+    for (const c of variantCells(it)) if (c.auto === null || c.how === 'numbered') add(it, c.col)
+    for (const d of it.aiDisagree || []) add(it, d.col)
+  }
+  const alike = new Map()
+  for (const it of items) {
+    if (!variantCells(it).length) continue
+    const k = variantTuple(it.cells, c => c.auto ?? c.raw)
+    if (!alike.has(k)) alike.set(k, [])
+    alike.get(k).push(it)
+  }
+  for (const g of alike.values()) if (g.length > 1) for (const it of g) for (const c of variantCells(it)) add(it, c.col)
+  return out
+}
+
+// A value made of the seller's own words: every word of it is in the SKU's
+// Variations Combo (Small = S, Universal = Universel, XXL = 2XL), and every
+// number too — or, for a range, it overlaps the combo's range (37-39 →
+// 35-39 (EU) yes; → 37 (EU) no: a range is never cut to one size).
+const GENERIC = new Set(['size', 'sizes', 'colour', 'color', 'eu', 'uk', 'us', 'int', 'the', 'and', 'of', 'with'])
+function words(s) {
+  const t = MEANING.reduce((x, [re, w]) => x.replace(re, w), String(s).toLowerCase())
+    .replace(/\b(x{2,6})([sl])\b/g, (_, xs, e) => `${xs.length}x${e}`)   // XXL = 2XL
+    .replace(/\b(\d)\s+x([sl])\b/g, '$1x$2')                             // "2 XL" = 2XL
+    .replace(/(\d)([a-wyz])/g, '$1 $2').replace(/([a-wyz])(\d)/g, '$1 $2') // 500ml = 500 ml (2XL stays)
+  return t.split(/[^a-z0-9.]+/).map(w => w.replace(/^\.+|\.+$/g, '')).filter(w => w && !GENERIC.has(w))
+}
+const isNum = w => /^\d+(\.\d+)?$/.test(w)
+export function grounded(value, parts) {
+  const have = new Set(parts.flatMap(words)), vw = words(value)
+  if (!vw.length || vw.some(w => !isNum(w) && !have.has(w))) return false
+  const nums = vw.filter(isNum).map(Number)
+  if (!nums.length) return true
+  const vr = parseRange(cleanPart(value))
+  const ranges = parts.map(p => parseRange(cleanPart(p))).filter(Boolean)
+  if (ranges.length) return !!vr && ranges.some(r => r.unit === vr.unit && r.lo <= vr.hi && vr.lo <= r.hi)
+  const pn = new Set(parts.flatMap(words).filter(isNum).map(Number))
+  return nums.every(n => pn.has(n))
+}
+
+// Candidates for one variant column of a product: the CartUp list's entries
+// for its parts — the part itself, with its colour (Black-XL), each word of a
+// compound (L/XL → L, XL), known names (Small), close spellings and the list's
+// ranges around a range — only those made of the seller's own words.
+export function aiCandidates(items, col, lists) {
+  const list = lists?.[headerKey(col)]
+  if (!list) return []
+  const out = [], add = v => { if (v && !out.some(x => x.toLowerCase() === v.toLowerCase())) out.push(v) }
+  const hit = listHit(list)
+  for (const it of items) {
+    const parts = splitCombo(it.combo)
+    const colour = parts.find(p => plainKind(p) === 'colour' || valueKind(p) === 'color') || ''
+    for (const p of parts) {
+      add(list.match(p)?.value)
+      for (const t of nameTries(p, p === colour ? '' : colour, true)) add(hit(t))
+      for (const b of uniq([...bitsOf(p), headOf(p)])) { add(list.match(b)?.value); for (const t of nameTries(b, '', false)) add(hit(t)) }
+      for (const s of list.suggest(p, 8)) add(s)
+      const r = parseRange(cleanPart(p))
+      if (r) list.ranges().filter(e => e.whole && sameRangeKind(r, e) && e.lo <= r.hi && r.lo <= e.hi)
+        .sort((a, b) => Math.abs(a.lo - r.lo) + Math.abs(a.hi - r.hi) - Math.abs(b.lo - r.lo) - Math.abs(b.hi - r.hi)).slice(0, 6).forEach(e => add(e.name))
+    }
+  }
+  return out.filter(v => items.some(it => grounded(v, splitCombo(it.combo)))).slice(0, 40)
+}
+
+// The AI's picks (it.aiPicks: { col: value }, kept from stage 1) on the cells
+// the rules couldn't finish — each re-checked against the current lists — when
+// the product's SKUs still all differ (by meaning: S = Small) with them.
+export function applyAIPicks(items, lists) {
+  if (!items.some(it => it.aiPicks)) return
+  const trouble = troubleCells(items), chosen = []
+  for (const it of items) {
+    for (const [col, v] of Object.entries(it.aiPicks || {})) {
+      const cell = it.cells.find(c => c.col === col), hit = lists?.[headerKey(col)]?.match(v)
+      if (!cell || !trouble.get(it.sku)?.has(col) || hit?.how !== 'exact' || !grounded(hit.value, splitCombo(it.combo))) continue
+      chosen.push({ it, cell, value: hit.value })
+    }
+  }
+  if (!chosen.length) return
+  const valueOf = (it, c) => chosen.find(x => x.it === it && x.cell === c)?.value ?? (c.auto ?? c.raw)
+  const keys = items.filter(it => it.cells.some(c => COMBO_TARGETS.includes(c.col) && c.source !== 'mark'))
+    .map(it => COMBO_TARGETS.map(t => { const c = it.cells.find(c => c.col === t); return c ? sayKey(valueOf(it, c), '') : '' }).join('|'))
+  if (new Set(keys).size < keys.length) return   // still alike — a person decides
+  for (const { it, cell, value } of chosen) {
+    Object.assign(cell, { auto: value, how: 'ai', conflict: '', note: `the closest value on CartUp's list, picked by the AI (Daraz "${it.combo}")` })
+    // A column the AI read differently is settled by its own pick.
+    if (it.aiDisagree?.length) {
+      it.aiDisagree = it.aiDisagree.filter(d => d.col !== cell.col)
+      if (!it.aiDisagree.length) it.aiRead = 'confirmed'
+    }
+  }
+}
+
 // What a product's variants differ by, from its Variations Combo values:
 // 'colour', 'size', 'colour+size', 'other' — or '' for a single SKU / no combo.
 export function variantKind(items) {
@@ -588,6 +692,7 @@ const SCOPE_LABEL = { sku: 'this SKU', parent: 'this product', all: 'every SKU w
 function changeLabel(st) {
   if (st.state === 'auto' && st.how === 'numbered') return 'Numbered to keep the product\'s variants apart'
   if (st.state === 'auto' && st.how === 'sizecolor') return 'Size put in the Color column (the category has no size column)'
+  if (st.state === 'auto' && st.how === 'ai') return 'AI picked the closest value on CartUp\'s list'
   if (st.state === 'auto' && st.how === 'rule') return st.note
   if (st.state === 'auto') return st.how === 'exact' ? 'Matched to the list\'s spelling' : MATCH_LABEL[st.how]
   if (st.state === 'picked' && st.noWarranty) return `Set to No Warranty by hand (${SCOPE_LABEL[st.scope]})`
@@ -647,7 +752,7 @@ export function reviewGroups(result, decisions, memory) {
 // Which kind of column a value belongs to, for filters and the check list.
 export const colGroup = col => col === '**Brand' ? 'brand' : /^Warranty/.test(colLabel(col)) ? 'warranty' : COMBO_TARGETS.includes(col) ? 'variant' : 'other'
 // How much an automatic change is worth a look — fuzzy spelling first.
-export const RISK = { similar: 3, alias: 2, rule: 2, sizecolor: 2, numbered: 1, format: 1, exact: 0 }
+export const RISK = { similar: 3, ai: 2, alias: 2, rule: 2, sizecolor: 2, numbered: 1, format: 1, exact: 0 }
 
 // ── By value ──────────────────────────────────────────────────────────────────
 // Every distinct seller value per column, across all products, with what it
@@ -686,6 +791,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   const filledRows = new Set()  // rows with a variant value set by rule (Not Specified, One Size) worth a look
   const ruleRows = new Set()    // every row with a variant value set by rule
   const variantLook = new Set() // rows whose variant values need a person (buildOutput adds its flags)
+  const aiPickRows = new Set()  // rows with a value the AI picked (closest on CartUp's list)
   const numbered = []           // variant values numbered apart (Multicolor-1…): { row, col, value, raw }
   const sizeColor = []          // sizes put in the Color column (Grey-L…): { row, col, value, raw }
   const openValues = new Set(), openParents = new Set()
@@ -704,12 +810,13 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
 
   result.items.forEach((item, rowIndex) => {
     const out = { ...item.out }
-    const changed = [], fresh = [], filled = [], marked = []
+    const changed = [], fresh = [], filled = [], marked = [], picked = []
     let noWarranty = false
     for (const cell of item.cells) {
       const st = cellState(item, cell, decisions, memory, result.lists)
       out[cell.col] = st.value
       if (st.noWarranty) noWarranty = true
+      if (st.state === 'auto' && st.how === 'ai') picked.push(`${colLabel(cell.col)} = ${st.value}`)
       if (st.state === 'auto' && st.how === 'numbered') numbered.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw })
       if (st.state === 'auto' && st.how === 'sizecolor') sizeColor.push({ row: rowIndex, col: cell.col, value: st.value, raw: cell.raw, note: st.note || '', sure: !!cell.sure })
       if (cell.source === 'mark') { marked.push(colLabel(cell.col)); continue }
@@ -756,6 +863,7 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
     if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex); variantLook.add(rowIndex) }
     if (item.unused.length) notes.push(`Not used from Variations Combo: ${item.unused.join(', ')}`)
     if (item.aiRead === 'slip') notes.push(`AI reading of Variations Combo dropped (${item.aiSlips.join('; ')}) — the rules decided`)
+    if (picked.length) { notes.push(`AI picked the closest CartUp value: ${picked.join(', ')} (Daraz "${item.combo}")`); aiPickRows.add(rowIndex) }
     out['Report'] = notes.filter(Boolean).join(' | ')
     // A value set by rule needs a look only when something in the combo went
     // unused (it might have been the value) and the AI didn't confirm the reading;
@@ -769,5 +877,5 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, ruleRows, variantLook, numbered, sizeColor }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, ruleRows, variantLook, aiPickRows, numbered, sizeColor }
 }

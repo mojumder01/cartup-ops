@@ -278,6 +278,44 @@ Return ONLY a JSON array, no markdown: [{"id":"<id>","labels":{"<part>":"<label>
   }
 }
 
+// ── Variant values the rules couldn't finish: the closest CartUp value ───────
+// products: [{ pid, name, category, columns, skus: [{ sku, combo, now: { col: value }, pick: [col] }], candidates: { col: [values] } }]
+// → { pid: { sku: { col: value } } } — the caller keeps only candidates that
+// are on CartUp's list, made of the seller's own words, and leave every SKU
+// different (see applyAIPicks in variantReview.js).
+export async function pickVariantValues(products, onError) {
+  if (!products.length) return {}
+  const block = products.map((p, i) => [
+    `Product ${i + 1} (id "${p.pid}") — ${p.name}`,
+    `  Category: ${p.category} · its variant columns: ${p.columns.join(', ')}`,
+    ...p.skus.map(s => `  SKU ${JSON.stringify(s.sku)}: Variations Combo ${JSON.stringify(s.combo)} · now ${Object.entries(s.now).map(([c, v]) => `${c} = ${JSON.stringify(v)}`).join(', ') || '—'}${s.pick.length ? ` · PICK: ${s.pick.join(', ')}` : ''}`),
+    ...Object.entries(p.candidates).map(([c, vs]) => `  Candidates for ${c}: ${JSON.stringify(vs)}`),
+  ].join('\n')).join('\n\n')
+  const prompt = `You are a careful catalogue editor. CartUp accepts variant values (Color, Size…) only from its own lists. For the products below, the rules could not finish some cells — a value not on CartUp's list, variants numbered apart (Black-1, Black-2), or variants that would be identical.
+For every cell marked PICK, choose ONE value from that column's candidates: the one closest to what the seller wrote in the SKU's Variations Combo.
+STRICT RULES:
+- Only candidate values, copied exactly. Never invent, combine or edit a value.
+- Keep to the seller's words: never a colour, size, number or word that is not in that SKU's combo. "L/XL" → "XL" or "L" is fine; a range "37-39" → a range such as "35-39 (EU)", never one size like "37".
+- After your picks, all SKUs of a product must be different from each other.
+- If no candidate fits a cell, answer "" for it — a person decides then; a wrong value is worse than none.
+${block}
+Return ONLY a JSON array, no markdown: [{"id":"<product id>","picks":{"<sku>":{"<column>":"<value>"}}},...]`
+  try {
+    const parsed = jsonArray(await callAI(prompt, { maxOutputTokens: 8192, temperature: 0 }))
+    const ids = new Set(products.map(p => p.pid)), out = {}
+    for (const x of parsed) {
+      const pid = String(x?.id ?? x?.pid ?? '')
+      if (ids.has(pid) && x.picks && typeof x.picks === 'object' && !Array.isArray(x.picks)) out[pid] = x.picks
+    }
+    const missing = products.filter(p => !out[p.pid])
+    if (missing.length) onError?.('The AI answer left some products out', missing.map(p => p.pid))
+    return out
+  } catch (e) {
+    onError?.(e.message || 'Unknown error', products.map(p => p.pid))
+    return {}
+  }
+}
+
 // ── Single product (used by manualProcessor) ──────────────────────────────────
 export async function processProductAI(name, highlights, description, apiKey) {
   const localName = localFixName(name || '')
