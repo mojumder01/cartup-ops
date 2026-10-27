@@ -1,8 +1,10 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 
 export default function Production() {
+  // Daraz Upload has a side panel (file preview, process steps) on wide screens.
+  const wide = useLocation().pathname.startsWith('/production/daraz')
   return (
-    <div style={{ padding:'32px 36px', maxWidth:860 }}>
+    <div style={{ padding:'32px 36px', maxWidth: wide ? 'none' : 860 }}>
       {/* Header */}
       <div style={{ marginBottom:24 }}>
         <h1 style={{ fontSize:20, fontWeight:700, color:'#1a202c' }}>Production — Upload</h1>

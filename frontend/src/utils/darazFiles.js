@@ -8,25 +8,32 @@ import * as XLSX from 'xlsx'
 
 // What each box expects. `need`: columns the processing reads (a file without
 // them can't be used); `price`: one of these is the price; `marks`: columns
-// that tell this kind of file apart from the others.
+// that tell this kind of file apart from the others; `use`: every column the
+// processing reads (the file preview highlights them).
 export const DARAZ_FILES = {
   price: {
     label: 'Price / Stock', need: ['Product ID', 'SellerSKU', '*Product Name(English)'], price: ['*Price', '**Price(MRP)', 'Price'],
     marks: ['*Price', '*Quantity', 'SpecialPrice', 'catId', 'status', '*Product Name(English)'],
+    use: ['Product ID', 'SellerSKU', 'catId', '*Product Name(English)', 'Variations Combo', 'status', '*Price', '**Price(MRP)', 'Price', '*Quantity',
+      'SpecialPrice', 'Special Price', 'SpecialPrice Start', 'Special Price Start Date', 'SpecialPrice End', 'Special Price End Date'],
   },
   basic: {
     label: 'Basic', need: ['Product ID', '*Product Images1'],
     marks: ['*Highlights', 'Main Description', '*Product Images1', 'Product Images2', 'Warranty Policy', '*Warranty Type'],
+    use: ['Product ID', '*Product Images1', ...[2, 3, 4, 5, 6, 7, 8].map(n => `Product Images${n}`), '*Highlights', 'Highlights', 'Main Description',
+      'Warranty Policy', '*Warranty Type', 'Warranty Type', 'Warranty'],
   },
   weight: {
     label: 'Weight', need: ['Product ID', '*Package Weight (kg)'],
     marks: ['*Package Weight (kg)', '*Package Length (cm)', '*Package Width (cm)', '*Package Height (cm)'],
+    use: ['Product ID', 'SellerSKU', '*Package Weight (kg)', '*Package Length (cm)', '*Package Width (cm)', '*Package Height (cm)'],
   },
   skuimg: {
     label: 'SKU Image', need: ['SellerSKU', 'Images1'],
     marks: ['Images1', 'Images2', 'Images3'],
+    use: ['SellerSKU', 'Images1'],
   },
-  attr: { label: 'Attribute', need: ['Product ID'], marks: [] },
+  attr: { label: 'Attribute', need: ['Product ID'], marks: [], use: ['Product ID', 'Brand', 'ISBN/ISSN'] },
 }
 export const REQUIRED_FILES = ['price', 'basic', 'weight', 'skuimg']
 

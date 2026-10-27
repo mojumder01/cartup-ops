@@ -123,7 +123,7 @@ export function templateLists(file) {
     listsCache.set(file, (async () => {
       const tpl = await loadTemplate(await file.arrayBuffer())
       const lists = {}
-      for (const c of tpl.columns) if (c.lookup) lists[headerKey(c.header)] = listMatcher(c.lookup.rows, columnKind(c.header))
+      for (const c of tpl.columns) if (c.lookup) lists[headerKey(c.header)] = Object.assign(listMatcher(c.lookup.rows, columnKind(c.header)), { label: colLabel(c.header) })
       return lists
     })().catch(e => { listsCache.delete(file); throw e }))
   }
@@ -144,7 +144,11 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   // size…) — never a value; see readCombos.
   const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false, combo: options.aiFields?.combo !== false }
   const aiName = aiFields.name, aiContent = aiFields.name || aiFields.highlights || aiFields.description
-  onProgress('Reading files...')
+  // onProgress(text, step): text for the progress line (or null); step for the
+  // page's live view — { step, done, total, last: [what was just done], note
+  // (when it ends), end, skip: why it doesn't run }. Steps: read, content,
+  // rows, combo, match, prepare, pick, apply.
+  onProgress('Reading files...', { step: 'read' })
 
   const [allPriceRows, basicRows, freightRows, skuimgRows] = await Promise.all([
     darazRows(files.price, 'price'),
@@ -170,6 +174,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       if (pid && isbn && !isbnDict[pid]) isbnDict[pid] = isbn
     }
   }
+  onProgress(null, { step: 'read', end: true, note: `${allPriceRows.length.toLocaleString()} price rows · ${basicRows.length.toLocaleString()} products in Basic${lists ? ` · ${Object.keys(lists).length} CartUp lists` : ''}` })
 
   // Build lookup dicts
   const basicDict = {}
@@ -225,16 +230,21 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
     }
     const total_batches = batches.length
     let done = 0
+    onProgress(null, { step: 'content', done, total: pidList.length })
     const tasks = batches.map((batch, bi) => async () => {
       onProgress(`AI processing products ${bi * BATCH_SIZE + 1}–${Math.min((bi + 1) * BATCH_SIZE, pidList.length)} of ${pidList.length}... (batch ${bi + 1}/${total_batches})`)
       const result = await processProductsBatch(batch, apiKey, aiFailed, aiFields)
       Object.assign(aiCache, result)
       done += batch.length
+      const last = batch.filter(p => result[p.pid]).slice(0, 2).map(p => { const n = result[p.pid].name; return n && n !== p.name ? `${p.name} → ${n}` : `✓ ${p.name}` })
+      onProgress(null, { step: 'content', done, total: pidList.length, last })
     })
     await runConcurrent(tasks)
+    onProgress(null, { step: 'content', end: true, note: `${(pidList.length - aiMissed.size).toLocaleString()} products by the AI${aiMissed.size ? ` · ${aiMissed.size.toLocaleString()} with the spelling rules only (AI unavailable)` : ''}` })
   } else {
     // No AI — local fix + basic fallback
     for (const p of pidList) aiCache[p.pid] = localContent(p)
+    onProgress(null, { step: 'content', skip: !apiKey ? 'no Gemini key ticked' : 'Name, Highlights and Description unticked' })
   }
   // Products the AI missed (or answered with an empty field) get the same fallback.
   for (const p of pidList) {
@@ -274,6 +284,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   const items = []
   const invalidRows = []
   const total = rowsToBuild.length
+  onProgress(null, { step: 'rows', done: 0, total })
 
   for (let i = 0; i < rowsToBuild.length; i++) {
     const row = rowsToBuild[i]
@@ -426,20 +437,29 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
       darazCat: cat, pendingVariant: !variantImage })
   }
 
+  onProgress(null, { step: 'rows', done: total, total, end: true,
+    note: `${items.length.toLocaleString()} rows${invalidRows.length ? ` · ${invalidRows.length.toLocaleString()} invalid` : ''}${duplicateSkus.length ? ` · ${duplicateSkus.length.toLocaleString()} repeated Seller SKUs removed` : ''}` })
+
   const variantMode = options.variantMode === 'yes' ? 'yes' : 'match'
   // ── Step 5: AI reads each product's Variations Combo — labels only ─────────
-  const combo = apiKey && aiFields.combo && variantMode === 'match' ? await readCombos(items, onProgress) : null
-  onProgress('Matching values to CartUp\'s lists...')
+  const comboOff = !apiKey ? 'no Gemini key ticked' : !aiFields.combo ? 'Variations Combo unticked' : variantMode !== 'match' ? 'variant columns marked "Yes"' : ''
+  const combo = comboOff ? null : await readCombos(items, onProgress)
+  if (comboOff) onProgress(null, { step: 'combo', skip: comboOff })
+  onProgress('Matching values to CartUp\'s lists...', { step: 'match' })
   await new Promise(r => setTimeout(r, 0))
   matchItems(items, lists, variantMode)
+  onProgress(null, { step: 'match', end: true, note: lists ? `checked against ${Object.keys(lists).length} CartUp lists` : 'no CartUp template — values not checked' })
   // ── Step 6: what the rules couldn't finish — the AI picks the closest CartUp value
   if (combo && lists) {
     combo.picks = await pickCombos(items, lists, onProgress)
-    onProgress('Applying the AI\'s picks...')
+    onProgress('Applying the AI\'s picks...', { step: 'apply' })
     await new Promise(r => setTimeout(r, 0))
     if (combo.picks.answered) matchItems(items, lists, variantMode)   // the picks are applied as the rules run
     combo.picks.skus = items.filter(it => it.cells.some(c => c.how === 'ai')).length
     combo.picks.products = new Set(items.filter(it => it.cells.some(c => c.how === 'ai')).map(it => it.parent)).size
+    onProgress(null, { step: 'apply', end: true, note: `${combo.picks.skus.toLocaleString()} SKUs in ${combo.picks.products.toLocaleString()} products set by the AI's picks` })
+  } else {
+    for (const id of ['prepare', 'pick', 'apply']) onProgress(null, { step: id, skip: comboOff || 'no CartUp template' })
   }
   return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo } : null }
 }
@@ -463,9 +483,18 @@ async function readCombos(items, onProgress) {
   const batches = []
   for (let i = 0; i < products.length; i += COMBO_BATCH) batches.push(products.slice(i, i + COMBO_BATCH))
   const answers = {}
+  let done = 0
+  onProgress(null, { step: 'combo', done, total: products.length })
   await runConcurrent(batches.map((batch, bi) => async () => {
     onProgress(`AI reading Variations Combo — products ${bi * COMBO_BATCH + 1}–${Math.min((bi + 1) * COMBO_BATCH, products.length)} of ${products.length}...`)
-    Object.assign(answers, await readVariantCombos(batch, message => { stats.message = message }))
+    const got = await readVariantCombos(batch, message => { stats.message = message })
+    Object.assign(answers, got)
+    done += batch.length
+    const last = batch.filter(p => got[p.pid]).slice(0, 2).map(p => {
+      const label = Object.fromEntries(Object.entries(got[p.pid]).map(([part, l]) => [part.trim().toLowerCase(), l]))
+      return `${JSON.stringify(p.combos[0])} → ${splitCombo(p.combos[0]).map(part => `${part} = ${label[part.toLowerCase()] ?? '?'}`).join(' · ')}`
+    })
+    onProgress(null, { step: 'combo', done, total: products.length, last })
   }))
   for (const p of products) {
     const { roles, slips } = checkLabels(p.parts, answers[p.pid])
@@ -474,6 +503,9 @@ async function readCombos(items, onProgress) {
     else if (slips.length) stats.slips++
     else stats.missed++
   }
+  const plain = new Set(items.map(it => it.parent)).size - products.length
+  onProgress(null, { step: 'combo', end: true,
+    note: `${stats.read.toLocaleString()} of ${products.length.toLocaleString()} products read${stats.slips ? ` · ${stats.slips} readings dropped (didn't fit)` : ''}${stats.missed ? ` · ${stats.missed} not answered` : ''}${plain ? ` · ${plain.toLocaleString()} plain (L, EU:42, none…) — no AI needed` : ''}` })
   return stats
 }
 
@@ -487,7 +519,7 @@ async function pickCombos(items, lists, onProgress) {
   const products = [], groups = [...groupBy(items, it => it.parent)]
   for (let i = 0; i < groups.length; i++) {
     // A big shop takes a while: say how far, and let the page breathe.
-    if (i % 50 === 0) { onProgress(`Preparing what the rules couldn't finish — product ${i + 1} of ${groups.length}...`); await new Promise(r => setTimeout(r, 0)) }
+    if (i % 50 === 0) { onProgress(`Preparing what the rules couldn't finish — product ${i + 1} of ${groups.length}...`, { step: 'prepare', done: i, total: groups.length }); await new Promise(r => setTimeout(r, 0)) }
     const [pid, g] = groups[i]
     const trouble = troubleCells(g)
     if (!trouble.size) continue
@@ -499,13 +531,22 @@ async function pickCombos(items, lists, onProgress) {
       skus: g.map(it => ({ sku: it.sku, combo: it.combo, now: Object.fromEntries(it.cells.filter(c => COMBO_TARGETS.includes(c.col)).map(c => [c.col, c.auto ?? c.raw])),
         pick: [...(trouble.get(it.sku) || [])].filter(c => candidates[c]) })) })
   }
+  onProgress(null, { step: 'prepare', done: groups.length, total: groups.length, end: true,
+    note: products.length ? `${products.length.toLocaleString()} products for the AI to finish` : 'the rules finished every product' })
   const stats = { asked: products.length, answered: 0, message: '' }
   const batches = []
   for (let i = 0; i < products.length; i += PICK_BATCH) batches.push(products.slice(i, i + PICK_BATCH))
   const answers = {}
+  let done = 0
+  onProgress(null, { step: 'pick', done, total: products.length })
   await runConcurrent(batches.map((batch, bi) => async () => {
     onProgress(`AI picking the closest CartUp values — products ${bi * PICK_BATCH + 1}–${Math.min((bi + 1) * PICK_BATCH, products.length)} of ${products.length}...`)
-    Object.assign(answers, await pickVariantValues(batch, message => { stats.message = message }))
+    const got = await pickVariantValues(batch, message => { stats.message = message })
+    Object.assign(answers, got)
+    done += batch.length
+    const last = batch.flatMap(p => Object.entries(got[p.pid] || {}).flatMap(([sku, cols]) => Object.entries(cols && typeof cols === 'object' ? cols : {})
+      .map(([col, v]) => `${sku} · ${col}: ${JSON.stringify(p.skus.find(s => s.sku === sku)?.now[col] ?? '')} → ${JSON.stringify(v)}`))).slice(0, 2)
+    onProgress(null, { step: 'pick', done, total: products.length, last })
   }))
   for (const p of products) {
     const picks = answers[p.pid]
@@ -519,6 +560,7 @@ async function pickCombos(items, lists, onProgress) {
       if (keep.length) it.aiPicks = Object.fromEntries(keep.map(([c, v]) => [c, v.trim()]))
     }
   }
+  onProgress(null, { step: 'pick', end: true, note: products.length ? `${stats.answered.toLocaleString()} of ${products.length.toLocaleString()} products answered` : 'nothing left to pick' })
   return stats
 }
 

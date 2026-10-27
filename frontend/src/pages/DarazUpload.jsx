@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { poolSummary, onAiChange, sessionStats, resetText, maskKey } from '../utils/aiPool'
 import {
@@ -13,12 +13,14 @@ import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import VariantReview from '../components/VariantReview'
 import { buildAttributeList, saveFile } from '../utils/attributeList'
 import SheetEditor from '../components/SheetEditor'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw } from 'lucide-react'
+import FilePreview from '../components/FilePreview'
+import ProcessSteps from '../components/ProcessSteps'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw, Eye, Activity } from 'lucide-react'
 
 // A file box. file: the picked File; current: text shown when nothing is
 // picked here (a remembered file); check: what the file check found
 // ({ issues, stats, sheet } or { lists }); checking: being read.
-function FileInput({ label, required, onChange, file, current, hint, check, checking, accept = '.xlsx,.xls,.csv' }) {
+function FileInput({ label, required, onChange, file, current, hint, check, checking, onPreview, previewing, accept = '.xlsx,.xls,.csv' }) {
   const fileName = file?.name || current
   const errors = check?.issues?.filter(i => i.level === 'error') || []
   const warns = check?.issues?.filter(i => i.level === 'warn') || []
@@ -37,14 +39,22 @@ function FileInput({ label, required, onChange, file, current, hint, check, chec
   const color = bad ? '#dc2626' : fileName ? '#16a34a' : '#94a3b8'
   return (
     <div style={{ marginBottom: 12 }} data-file-box={label}>
-      <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#718096', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.4px' }}>
-        {label} {required && <span style={{ color:'#dc2626' }}>*</span>}
-      </label>
+      <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
+        <label style={{ fontSize:12, fontWeight:600, color:'#718096', textTransform:'uppercase', letterSpacing:'0.4px' }}>
+          {label} {required && <span style={{ color:'#dc2626' }}>*</span>}
+        </label>
+        {onPreview && fileName && (
+          <button data-preview-open onClick={onPreview} title="Show its rows in the panel on the right"
+            style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:4, border:'none', background: previewing ? '#eef2ff' : 'transparent', color:'#4f46e5', borderRadius:6, padding:'1px 7px', fontSize:11.5, fontWeight:600, cursor:'pointer' }}>
+            <Eye size={12} /> {previewing ? 'Showing' : 'Preview'}
+          </button>
+        )}
+      </div>
       {hint && <div style={{ fontSize:11, color:'#94a3b8', marginTop:-2, marginBottom:6 }}>{hint}</div>}
       <label className="file-drop" style={{
         display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
         border:`1.5px dashed ${bad ? '#fca5a5' : fileName ? '#16a34a' : '#e2e8f0'}`,
-        borderRadius:8, cursor:'pointer',
+        borderRadius:8, cursor:'pointer', boxShadow: previewing ? '0 0 0 3px #c7d2fe' : 'none',
         background: bad ? '#fef2f2' : fileName ? '#dcfce7' : '#fafafa',
       }}>
         <input type="file" accept={accept} style={{ display:'none' }}
@@ -69,6 +79,9 @@ function FileInput({ label, required, onChange, file, current, hint, check, chec
 
 const SHEET_COLS = OUTPUT_COLS.filter(c => c !== 'Report' && c !== 'Check')
 const NO_KEY_PICK = { sheet: 0, mode: 'link', link: '', key: '', match: '', slots: {} }
+const keyCol = c => /^__EMPTY/.test(c) ? `(no header ${c.replace(/^__EMPTY_?/, '') || '0'})` : c
+// The side panel's file tabs (the image key file is "keys").
+const PREVIEW_TABS = [['price', 'Price'], ['basic', 'Basic'], ['weight', 'Weight'], ['skuimg', 'SKU Image'], ['attr', 'Attribute'], ['template', 'Template']]
 const BATCH = 5   // products per AI request (processor.js)
 
 export default function DarazUpload() {
@@ -112,6 +125,22 @@ export default function DarazUpload() {
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   // mode 'link': a Daraz link column + a key column · 'columns': keys per Seller SKU, one column per image
   const [keyPick, setKeyPick]     = useState(NO_KEY_PICK)
+  // The side panel: 'process' (the steps) or a file's preview; the run's steps as reported.
+  const [panel, setPanel]         = useState('process')
+  const [steps, setSteps]         = useState({})
+  const [runTime, setRunTime]     = useState(null)     // { start, end }
+  // On wide screens the panel fills the window below its top (it sticks there as the page scrolls).
+  const sideRef = useRef(null)
+  useEffect(() => {
+    const wide = window.matchMedia('(min-width: 1500px)')
+    const fit = () => {
+      const el = sideRef.current
+      if (el) el.style.height = wide.matches ? `${Math.max(420, window.innerHeight - Math.max(el.getBoundingClientRect().top, 0) - 16)}px` : ''
+    }
+    fit()
+    document.addEventListener('scroll', fit, true); window.addEventListener('resize', fit)
+    return () => { document.removeEventListener('scroll', fit, true); window.removeEventListener('resize', fit) }
+  }, [])
 
   const imageKeys = useMemo(() => {
     const sh = keySheets?.[keyPick.sheet]
@@ -173,6 +202,7 @@ export default function DarazUpload() {
     setFiles(p => ({ ...p, [key]: f })); setStatus(''); setError(''); setResult(null)
     if (key === 'template') saveTemplate(f)
     checkFile(key, f)
+    setPanel(key)
   }
   // A check belongs to the file now in its box (a slower, older check is ignored).
   const checkOf = kind => fileChecks[kind]?.file === files[kind] ? fileChecks[kind] : null
@@ -187,6 +217,7 @@ export default function DarazUpload() {
       if (!sheets.length) throw new Error('The image key file has no rows')
       setKeySheets(sheets)
       setKeyPick({ sheet: 0, ...guessImageKeys(sheets[0]) })
+      setPanel('keys')
     } catch (e) { setError(`Image key file: ${e.message}`) }
   }
 
@@ -204,17 +235,36 @@ export default function DarazUpload() {
     const dec = {}, ed = {}, del = new Set()
     setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions(dec); setEdits(ed); setDeleted(del)
     setAiRun({ start: sessionStats(), end: null })
+    setSteps({}); setRunTime({ start: Date.now(), end: null }); setPanel('process')
     try {
-      const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly, aiFields, variantMode })
+      const res = await processDarazFiles(files, apiKey, onStep, { activeOnly, aiFields, variantMode })
       setAiRun(r => r && { ...r, end: sessionStats() })
+      setRunTime(t => t && { ...t, end: Date.now() })
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
       const out = buildOutput(res, dec, memory, { ...options, edits: ed, deleted: del })
       if (out.stats.open || out.stats.dupes) setReviewing(reviewStart(valueGroups(res, dec, memory), out.stats.dupes))
       else download(res, dec, ed, del)
     } catch(e) {
+      setRunTime(t => t && { ...t, end: Date.now() })
       setStatus('error'); setError(e.message); setProgress('')
     }
+  }
+  // The processor's progress: the line under the button, and the step it is on
+  // (a step that starts ends the one before, if it didn't say).
+  const onStep = (msg, info) => {
+    if (msg) setProgress(msg)
+    if (!info?.step) return
+    setSteps(prev => {
+      const now = Date.now(), cur = prev[info.step], next = { ...prev }
+      if (info.skip) { next[info.step] = { status: 'skip', reason: info.skip }; return next }
+      if (!info.end) for (const [id, st] of Object.entries(next)) if (id !== info.step && st.status === 'active') next[id] = { ...st, status: 'done', end: now }
+      const base = cur && cur.status !== 'skip' ? cur : { start: now, last: [] }
+      next[info.step] = { ...base, status: info.end ? 'done' : 'active', end: info.end ? now : undefined,
+        done: info.done ?? base.done, total: info.total ?? base.total, note: info.note ?? base.note,
+        last: info.last?.length ? [...info.last, ...base.last].slice(0, 6) : base.last }
+      return next
+    })
   }
 
   // A newer template (values added to CartUp's lists) — checked again without re-running.
@@ -258,6 +308,7 @@ export default function DarazUpload() {
     setKeyFile(null); setKeySheets(null); setKeyPick(NO_KEY_PICK)
     setResult(null); setStatus(''); setProgress(''); setError(''); setDecisions({}); setEdits({}); setDeleted(new Set())
     setReviewing(null); setSheetOpen(null); setLastFile(null); setAiRun(null)
+    setSteps({}); setRunTime(null); setPanel('process')
   }
 
   // Values kept as new, for CartUp to add: exported in its Attribute List format.
@@ -271,6 +322,33 @@ export default function DarazUpload() {
   const aiNow = aiRun && (aiRun.end || sessionStats())
   const aiUse = aiNow && { calls: aiNow.calls - aiRun.start.calls, failed: aiNow.failed - aiRun.start.failed, tokens: aiNow.tokens - aiRun.start.tokens,
     key: aiNow.key, keyNo: pool.keys.find(k => k.key === aiNow.key)?.n, model: pool.models.find(m => m.id === aiNow.model)?.label || aiNow.model }
+
+  // The side panel: the process tab, a tab per picked file; the dot is its file check.
+  const panelTabs = [['process', status === 'processing' ? 'Running…' : 'Process'], ...PREVIEW_TABS.filter(([k]) => files[k]), ...(keySheets ? [['keys', 'Image keys']] : [])]
+  const shownPanel = panelTabs.some(([id]) => id === panel) ? panel : 'process'
+  const tabColor = k => {
+    if (k === 'keys') return '#16a34a'
+    if (checking[k] && checking[k] === files[k]) return '#94a3b8'
+    const issues = checkOf(k)?.issues || []
+    return issues.some(i => i.level === 'error') ? '#dc2626' : issues.some(i => i.level === 'warn') ? '#d97706' : '#16a34a'
+  }
+  // Steps that won't run with the chosen options (the processor gives the same reasons).
+  const comboOff = !apiKey ? 'no Gemini key ticked' : !aiFields.combo ? 'Variations Combo unticked' : variantMode !== 'match' ? 'variant columns marked "Yes"' : ''
+  const plan = {
+    content: !apiKey ? 'no Gemini key ticked' : !(aiFields.name || aiFields.highlights || aiFields.description) ? 'Name, Highlights and Description unticked' : '',
+    combo: comboOff,
+    ...Object.fromEntries(['prepare', 'pick', 'apply'].map(id => [id, comboOff || (files.template ? '' : 'no CartUp template')])),
+  }
+  const showRun = ['processing', 'success', 'error'].includes(status) && !!runTime
+  // The image key file's columns in use, for its preview.
+  const keyMarks = {}
+  if (keyPick.mode === 'columns') {
+    if (keyPick.match) keyMarks[keyPick.match] = 'match rows by'
+    for (const [oc, col] of Object.entries(keyPick.slots)) if (col) keyMarks[col] = [keyMarks[col], oc.replace(/^\*+/, '')].filter(Boolean).join(', ')
+  } else {
+    if (keyPick.link) keyMarks[keyPick.link] = 'Daraz link'
+    if (keyPick.key) keyMarks[keyPick.key] = 'image key'
+  }
 
   const card = { background:'#fff', border:'1px solid #e2e8f0', borderRadius:14, padding:28, boxShadow:'0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.04)' }
   const seg = (on, label, click) => (
@@ -306,7 +384,8 @@ export default function DarazUpload() {
         <p style={{ color:'#718096', fontSize:13 }}>Upload 4–5 Daraz export files → CartUp template format with AI assistance.</p>
       </div>
 
-      <div style={card}>
+      <div className="daraz-layout">
+      <div className="daraz-main" style={card}>
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
           <div style={{ width:36, height:36, borderRadius:8, background:'#eef2ff', display:'flex', alignItems:'center', justifyContent:'center' }}>
             <Upload size={18} color='#4f46e5' />
@@ -324,11 +403,14 @@ export default function DarazUpload() {
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 20px' }}>
           {[['price', 'Price / Stock file'], ['basic', 'Basic file'], ['weight', 'Weight file'], ['skuimg', 'SKU Image file']].map(([k, label]) => (
-            <FileInput key={k} label={label} required onChange={pick(k)} file={files[k]} check={checkOf(k)} checking={!!checking[k] && checking[k] === files[k]} />
+            <FileInput key={k} label={label} required onChange={pick(k)} file={files[k]} check={checkOf(k)} checking={!!checking[k] && checking[k] === files[k]}
+              onPreview={() => setPanel(k)} previewing={shownPanel === k} />
           ))}
           <FileInput label="Attribute file (optional)" onChange={pick('attr')} file={files.attr} check={checkOf('attr')} checking={!!checking.attr && checking.attr === files.attr}
+            onPreview={() => setPanel('attr')} previewing={shownPanel === 'attr'}
             hint="Brands come from here — without it every product is No Brand" />
           <FileInput label="CartUp upload template (recommended)" onChange={pick('template')} accept=".xlsx"
+            onPreview={() => setPanel('template')} previewing={shownPanel === 'template'}
             file={files.template && files.template !== saved?.file ? files.template : null} current={saved && savedLabel(saved)}
             check={checkOf('template')} checking={!!checking.template && checking.template === files.template}
             hint="Color, Size, Brand, Warranty… are checked against its dropdown lists — remembered for next time" />
@@ -415,10 +497,10 @@ export default function DarazUpload() {
             <span style={{ ...lbl, paddingTop:8 }}>Image keys</span>
             <div style={{ flex:1, minWidth:260 }}>
               <FileInput label="Image key file (optional — when CartUp image keys are ready)" onChange={f => { setKeyFile(f); pickKeyFile(f) }} file={keyFile}
+                onPreview={keySheets ? () => setPanel('keys') : null} previewing={shownPanel === 'keys'}
                 hint="Daraz image links are replaced by these keys; add it now or after processing" />
               {keySheets && (() => {
                 const columns = keySheets[keyPick.sheet].columns
-                const keyCol = c => /^__EMPTY/.test(c) ? `(no header ${c.replace(/^__EMPTY_?/, '') || '0'})` : c
                 const colOptions = columns.map(c => <option key={c} value={c}>{keyCol(c)}</option>)
                 const found = output && imageKeys?.forItem ? output.rules.keyRows : null
                 return (
@@ -672,7 +754,37 @@ export default function DarazUpload() {
         </button>
       </div>
 
-      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
+      {/* Beside the card (below it on narrow screens): the steps, or a picked file's rows */}
+      <aside ref={sideRef} className="daraz-side" data-side-panel style={{ ...card, padding:0, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        <div data-panel-tabs style={{ display:'flex', gap:2, padding:'6px 8px 0', borderBottom:'1px solid #e2e8f0', overflowX:'auto', flexShrink:0 }}>
+          {panelTabs.map(([id, label]) => {
+            const on = shownPanel === id
+            return (
+              <button key={id} data-panel-tab={id} onClick={() => setPanel(id)} style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 11px', border:'none', borderBottom:`2px solid ${on ? '#4f46e5' : 'transparent'}`,
+                background:'none', fontSize:12, fontWeight:600, color: on ? '#4f46e5' : '#64748b', cursor:'pointer', whiteSpace:'nowrap', marginBottom:-1 }}>
+                {id === 'process'
+                  ? status === 'processing' ? <Loader size={12} style={{ animation:'spin 1s linear infinite' }} /> : <Activity size={12} />
+                  : <span style={{ width:7, height:7, borderRadius:'50%', background: tabColor(id) }} />}
+                {label}
+              </button>
+            )
+          })}
+        </div>
+        {shownPanel === 'process'
+          ? <ProcessSteps steps={showRun ? steps : {}} plan={plan} run={showRun ? runTime : null} state={showRun ? status : ''} error={error} ai={aiUse} />
+          : <FilePreview key={shownPanel} kind={shownPanel} file={shownPanel === 'keys' ? keyFile : files[shownPanel]} check={shownPanel === 'keys' ? null : checkOf(shownPanel)}
+              checking={shownPanel !== 'keys' && !!checking[shownPanel] && checking[shownPanel] === files[shownPanel]}
+              keySheet={keySheets?.[keyPick.sheet]} keyMarks={keyMarks} keyHeader={keyCol} />}
+      </aside>
+      </div>
+
+      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        .daraz-layout { display:grid; grid-template-columns:minmax(0, 1fr); gap:20px; max-width:790px }
+        .daraz-side { height:560px }
+        @media (min-width: 1500px) {
+          .daraz-layout { grid-template-columns:minmax(0, 790px) minmax(400px, 1fr); max-width:none }
+          .daraz-side { position:sticky; top:16px; height:calc(100vh - 90px); align-self:start }
+        }`}</style>
     </div>
   )
 }
