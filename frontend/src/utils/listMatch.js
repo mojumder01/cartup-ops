@@ -262,7 +262,9 @@ export function listMatcher(rows, kind = 'other') {
         }
         if (s >= 0.4) add(e.name, s)
       }
-      return [...found].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([name]) => name)
+      // A range is never offered one size of it ("37-39" → not "37 (EU)").
+      const oneSize = name => r && !parseRange(name) && (squash(name).match(/\d+(\.\d+)?/g) || []).length === 1
+      return [...found].filter(([name]) => !oneSize(name)).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([name]) => name)
     },
     // Type-ahead: entries containing the text, the ones starting with it first.
     search(text, limit = 30) {

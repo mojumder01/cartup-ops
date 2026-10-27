@@ -67,8 +67,8 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (result.template) {
     const variant = open('variant'), brand = open('brand'), warranty = open('warranty'), other = open('other')
     add({ id: 'variant', level: 'fix', count: variant.length, unit: 'value', extra: variant.length ? skus(variant) : '',
-      title: 'Variant values not on CartUp lists', why: 'Color, Size… that would show #N/A — pick a match or keep as a new value',
-      open: { review: { view: 'values', state: 'open', col: 'g:variant' } } })
+      title: 'Variant values not on CartUp lists', why: 'Color, Size… that would show #N/A — each shown in its product with the other variants: pick a match, use a quick fix, or keep as a new value',
+      open: { review: { view: 'products', state: 'open', col: 'g:variant' } } })
     add({ id: 'brand', level: 'fix', count: brand.length, unit: 'brand', extra: brand.length ? skus(brand) : '',
       title: 'Brands not on CartUp list', why: 'Pick the right brand, use No Brand, or keep as a new brand for CartUp to add',
       open: { review: { view: 'values', state: 'open', col: 'g:brand' } } })

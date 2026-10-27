@@ -5,7 +5,7 @@ import {
   processDarazFiles, buildOutput, buildDarazWorkbook, darazSummary, aiSummary, comboSummary, templateLists, rematch, rowKey,
   readTableFile, guessImageKeys, makeImageKeyMap, makeImageKeyColumns, OUTPUT_COLS,
 } from '../utils/processor'
-import { loadMemory, rememberDecisions, forgetMemory, valueGroups } from '../utils/variantReview'
+import { loadMemory, rememberDecisions, forgetMemory, valueGroups, colGroup } from '../utils/variantReview'
 import { sheetIssues, buildChecklist, IMAGE_COLS } from '../utils/checks'
 import { readDarazFile, crossCheck, DARAZ_FILES, REQUIRED_FILES } from '../utils/darazFiles'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
@@ -130,6 +130,11 @@ export default function DarazUpload() {
   const toFix = checks.filter(c => c.level === 'fix' && c.count).length
   const toCheck = checks.filter(c => c.level === 'check' && c.count).length
   const openCheck = c => c.open?.review ? setReviewing(c.open.review) : c.open?.sheet && setSheetOpen(c.open.sheet)
+  // Where the review window opens: variants not matched (or alike) in their
+  // product cards, next to the product's other variants; only brand /
+  // warranty / other values left open → by value.
+  const reviewStart = (vals, dupes) => vals.some(v => v.status === 'open' && colGroup(v.col) === 'variant') || dupes || !vals.some(v => v.status === 'open')
+    ? { view: 'products', state: 'attention', col: 'all' } : { view: 'values', state: 'open', col: 'all' }
 
   // Each file is checked as soon as it is picked (the template: are its dropdown lists readable?).
   const checkFile = (kind, f) => {
@@ -201,7 +206,7 @@ export default function DarazUpload() {
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
       const out = buildOutput(res, {}, memory, options)
-      if (out.stats.open || out.stats.dupes) setReviewing(out.stats.open ? { view: 'values', state: 'open', col: 'all' } : { view: 'products', state: 'dupes', col: 'all' })
+      if (out.stats.open || out.stats.dupes) setReviewing(reviewStart(valueGroups(res, {}, memory), out.stats.dupes))
       else download(res, {}, {})
     } catch(e) {
       setStatus('error'); setError(e.message); setProgress('')
@@ -537,7 +542,7 @@ export default function DarazUpload() {
 
               <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                 {result.template && (
-                  <button onClick={() => setReviewing({ view: stats.open ? 'values' : 'products', state: stats.open ? 'open' : 'attention', col: 'all' })} style={btn(true)}>
+                  <button onClick={() => setReviewing(reviewStart(values, stats.dupes))} style={btn(true)}>
                     <Layers size={14} /> Check &amp; match values{stats.open ? ` (${stats.openValues} open)` : ''}
                   </button>
                 )}
