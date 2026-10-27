@@ -14,6 +14,7 @@ import * as XLSX from 'xlsx'
 import { applyReplacements } from './wordReplacements'
 import { utf8 } from './zipText'
 import { houseRules } from './catalog'
+import { nameRules, removeNameClaims, blockedBy, blockText } from './nameRules'
 import { listMatcher, columnKind, MATCH_LABEL } from './listMatch'
 import {
   tokenize, parse, fillDown, moveRef, refText, evaluate, finalValue,
@@ -651,7 +652,7 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
   const warnings = [], fixes = []
   const spRule = rules.specialPrice
   // House rules as the team has them (Settings → Rules & defaults).
-  const { stockCap, discountLimit, hashTo } = houseRules()
+  const { stockCap, discountLimit, hashTo } = houseRules(), names = nameRules()
   const stockSet = rules.stock?.set == null || rules.stock.set === '' ? null : Math.min(stockCap, Math.max(0, Math.round(Number(rules.stock.set) || 0)))
   const wtCol = tpl.columns.find(c => c.key === 'warrantytype'), wpCol = tpl.columns.find(c => c.key === 'warrantyperiod')
   const warn = (src, field, message) => warnings.push({ row: src.__row, sku: src.sellersku ?? '', field, message })
@@ -671,7 +672,15 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
     return matchers.get(col.col)
   }
 
+  const blocked = []
   const rows = unique.map((src, i) => {
+    // A product the team doesn't upload ("Medicine", "99 Taka Deal" — Data &
+    // Rules → name rules): not copied, listed in the report.
+    const block = blockedBy(src.nameenglish, names) || blockedBy(src.namebengali, names)
+    if (block) {
+      blocked.push({ row: src.__row, sku: String(src.sellersku ?? '').trim(), parent: String(src.parentsku ?? '').trim(), name: String(src.nameenglish ?? '').trim(), why: blockText(block), phrase: block.phrase })
+      return null
+    }
     const values = {}
     if (skus[i].unchanged.length) warn(src, skus[i].unchanged.join(' & '), 'No replace rule matched — the old seller code is kept')
     for (const c of skus[i].clashes) warn(src, c.field, c.message)
@@ -715,6 +724,14 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
       if ((key === 'nameenglish' || key === 'namebengali') && /#/.test(v) && hashTo !== '#') {
         if (key === 'nameenglish') change(col.header.replace(/^\*+/, ''), v, v.replace(/#/g, hashTo), `"#" replaced with "${hashTo}"`)
         v = v.replace(/#/g, hashTo)
+      }
+      // Claim words the team cuts out of names ("100% Original" — Data & Rules → name rules).
+      if ((key === 'nameenglish' || key === 'namebengali') && typeof v === 'string' && v) {
+        const claims = removeNameClaims(v, names)
+        if (claims.removed.length) {
+          if (key === 'nameenglish') change(col.header.replace(/^\*+/, ''), v, claims.name, `${claims.removed.map(w => `"${w}"`).join(', ')} removed (team name rule)`)
+          v = claims.name
+        }
       }
       if (key === 'currentstockqty' && stockSet !== null) {
         if (String(v) !== String(stockSet)) change('Current Stock Qty', v === '' ? '(empty)' : v, stockSet, `Stock set to ${stockSet} for every row (option)`)
@@ -761,7 +778,7 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
       warn(src, 'Special Price', 'Special price is not lower than MRP')
     }
     return { values, parent: String(src.parentsku ?? '').trim(), source: src }
-  })
+  }).filter(Boolean)
 
   warnings.sort((a, b) => a.row - b.row)
   const removed = duplicates.map(({ row, kept }) => ({
@@ -772,7 +789,7 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
     keptRow: kept.__row,
     difference: rowDifference(kept, row, exportRows.headers),
   }))
-  return { rows, warnings, fixes, duplicates: removed, totalRead: exportRows.length }
+  return { rows, warnings, fixes, duplicates: removed, blocked, totalRead: exportRows.length }
 }
 
 // Variants of one product must land in the same file, so split by parent SKU.
@@ -1021,7 +1038,7 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
   const T = v => ({ v, s: 'title' }), H = v => ({ v, s: 'head' }), B = v => ({ v, s: 'bold' })
   const now = new Date(), p2 = n => String(n).padStart(2, '0')
   const stamp = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`
-  const { duplicates, warnings, fixes } = built
+  const { duplicates, warnings, fixes, blocked = [] } = built
   return [
     [T('Shop Duplicate — Report')],
     [],
@@ -1031,6 +1048,7 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
     [B('New seller SKU'), skuText(sku)],
     [B('Rows read'), built.totalRead],
     [B('Duplicates removed'), duplicates.length],
+    blocked.length > 0 && [B('Not copied — name rule'), blocked.length],
     [B('Rows written'), built.rows.length],
     [B('Products'), new Set(built.rows.map(r => r.parent)).size],
     parts > 1 && [B('This file'), `Part ${part} of ${parts} — ${partRows.toLocaleString()} rows`],
@@ -1055,6 +1073,13 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
     ['The first row of each Seller SKU was kept; these later rows with the same Seller SKU were left out.'],
     [H('Export Row'), H('Seller SKU (export)'), H('Parent SKU'), H('Product Name'), H('Kept Row'), H('Difference from kept row')],
     ...(duplicates.length ? duplicates.map(d => [d.row, d.sku, d.parent, d.name, d.keptRow, d.difference]) : [['None']]),
+    ...(blocked.length ? [
+      [],
+      [T(`Not copied — name rule (${blocked.length})`)],
+      ['The name has words the team doesn\'t upload (Data & Rules → Rules & defaults → product name rules).'],
+      [H('Export Row'), H('Seller SKU (export)'), H('Parent SKU'), H('Product Name'), H('Why')],
+      ...blocked.map(b => [b.row, b.sku, b.parent, b.name, b.why]),
+    ] : []),
     [],
     [T(`Warnings (${warnings.length})`)],
     [H('Export Row'), H('Seller SKU (export)'), H('Field'), H('Issue')],
@@ -1093,6 +1118,7 @@ export async function duplicateShop({ exportData, templateData, sku, specialPric
     report: {
       totalRead: built.totalRead,
       duplicates: built.duplicates,
+      blocked: built.blocked,
       written: built.rows.length,
       products: new Set(built.rows.map(r => r.parent)).size,
       capacity: tpl.capacity,

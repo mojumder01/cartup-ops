@@ -3,6 +3,7 @@ import { onTeamSettings, teamState, teamMeta, refreshTeamSettings, saveTeamSetti
 import { DEFAULT_RULES, cartupCategories, categoryAttributes, darazCategories, houseRules } from '../utils/catalog'
 import { readSheets, parseAttributes, parseDarazMap, parseCartupCategories, diffMaps, sameSet, downloadAttributes, downloadDarazMap, downloadCartupCategories } from '../utils/teamData'
 import { getReplacements } from '../utils/wordReplacements'
+import { nameRules, removeNameClaims, blockedBy, blockText } from '../utils/nameRules'
 import { Tags, ArrowRightLeft, FolderTree, Scale, Download, Upload, History, RotateCcw, Search, Save, X, Plus, Trash2, Loader, CheckCircle, AlertTriangle, CloudOff, Database, RefreshCw } from 'lucide-react'
 
 // Data & Rules: the category data and house rules every page works with,
@@ -369,8 +370,49 @@ function CartupSection({ team }) {
   )
 }
 
+// A list of phrases: one chip each (× takes it out), a box to add more.
+function PhraseList({ name, value, onChange, placeholder, color }) {
+  const [text, setText] = useState('')
+  const addText = () => {
+    const more = text.split(/[\n;]+/).map(t => t.trim()).filter(t => t && !value.some(v => v.toLowerCase() === t.toLowerCase()))
+    if (more.length) onChange([...value, ...more])
+    setText('')
+  }
+  return (
+    <div data-phrases={name}>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:6 }}>
+        {value.map(p => (
+          <span key={p} style={{ display:'inline-flex', alignItems:'center', gap:4, padding:'3px 6px 3px 10px', borderRadius:20, fontSize:12, background:color.bg, color:color.fg, border:`1px solid ${color.border}` }}>
+            {p}<button title="Take it out" onClick={() => onChange(value.filter(v => v !== p))} style={{ border:'none', background:'none', cursor:'pointer', color:color.fg, padding:0, display:'flex' }}><X size={12} /></button>
+          </span>
+        ))}
+        {!value.length && <span style={{ fontSize:12, color:'#94a3b8' }}>None</span>}
+      </div>
+      <div style={{ display:'flex', gap:8, marginTop:6 }}>
+        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && addText()} placeholder={placeholder} style={{ ...input, width:320 }} />
+        <button onClick={addText} disabled={!text.trim()} style={btn(false)}><Plus size={13} /> Add</button>
+      </div>
+    </div>
+  )
+}
+
+// Tries a name against the rules being edited.
+function NameTry({ remove, block }) {
+  const [name, setName] = useState('')
+  const rules = useMemo(() => nameRules({ nameRemove: remove, nameBlock: block }), [remove, block])
+  const b = name.trim() && blockedBy(name, rules), c = name.trim() && !b && removeNameClaims(name, rules)
+  return (
+    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginTop:10 }}>
+      <input data-name-try value={name} onChange={e => setName(e.target.value)} placeholder="Try a name — e.g. Ear Buds (100% Original)" style={{ ...input, width:320 }} />
+      {name.trim() && <span data-name-result style={{ fontSize:12.5, color: b ? '#b91c1c' : c?.removed.length ? '#4f46e5' : '#15803d' }}>
+        {b ? blockText(b) : c?.removed.length ? <>→ <b>{c.name}</b> ({c.removed.map(w => `"${w}"`).join(', ')} removed)</> : 'No rule matches — uploaded as it is'}
+      </span>}
+    </div>
+  )
+}
+
 function RulesSection({ team }) {
-  const fresh = () => ({ ...houseRules(), wordReplacements: getReplacements().map(r => ({ ...r })) })
+  const fresh = () => { const h = houseRules(); return { ...h, wordReplacements: getReplacements().map(r => ({ ...r })), nameRemove: [...(h.nameRemove || [])], nameBlock: [...(h.nameBlock || [])] } }
   const [form, setForm] = useState(fresh)
   const [dirty, setDirty] = useState(false)
   useEffect(() => { if (!dirty) setForm(fresh()) }, [team.meta.rules?.version])
@@ -382,10 +424,14 @@ function RulesSection({ team }) {
     ...['discountLimit', 'stockCap', 'hashTo'].filter(k => String(form[k]) !== String(cur[k])).map(k => `${{ discountLimit: 'Special price removed at a discount of', stockCap: 'Stock cap', hashTo: '"#" in names becomes' }[k]} ${form[k]} (was ${cur[k]})`),
     ...(JSON.stringify(form.wordReplacements.filter(r => r.find)) !== JSON.stringify(cur.wordReplacements) ? ['Word replacements changed'] : []),
     ...((form.partsToName !== false) !== (cur.partsToName !== false) ? [`Combo parts with no column → name: ${form.partsToName !== false ? 'on' : 'off'}`] : []),
+    ...[['nameRemove', 'Cut out of names'], ['nameBlock', 'Products not uploaded']].flatMap(([k, what]) => {
+      const added = form[k].filter(p => !cur[k].includes(p)), gone = cur[k].filter(p => !form[k].includes(p))
+      return added.length || gone.length ? [`${what}: ${[...added.map(p => `+ "${p}"`), ...gone.map(p => `− "${p}"`)].join(', ')}`] : []
+    }),
   ] : []
   const compose = () => ({ fillDefaults: form.fillDefaults, discountLimit: Math.min(100, Math.max(1, Number(form.discountLimit) || DEFAULT_RULES.discountLimit)),
     stockCap: Math.max(0, Math.round(Number(form.stockCap) || DEFAULT_RULES.stockCap)), hashTo: String(form.hashTo ?? '-'), wordReplacements: form.wordReplacements.filter(r => r.find.trim()),
-    partsToName: form.partsToName !== false })
+    partsToName: form.partsToName !== false, nameRemove: form.nameRemove, nameBlock: form.nameBlock })
   const label = { fontSize:12, fontWeight:600, color:'#475569' }
   return (
     <>
@@ -411,6 +457,16 @@ function RulesSection({ team }) {
           <label style={label}>Remove a special price at a discount of<br /><input data-rule="discountLimit" type="number" min={1} max={100} value={form.discountLimit} onChange={e => setF('discountLimit', e.target.value)} style={{ ...input, width:80, marginTop:3 }} /> % or more</label>
           <label style={label}>Stock never above<br /><input data-rule="stockCap" type="number" min={0} value={form.stockCap} onChange={e => setF('stockCap', e.target.value)} style={{ ...input, width:110, marginTop:3 }} /></label>
           <label style={label}>"#" in names becomes<br /><input data-rule="hashTo" value={form.hashTo} maxLength={3} onChange={e => setF('hashTo', e.target.value)} style={{ ...input, width:60, marginTop:3 }} /> <span style={{ fontWeight:400, color:'#94a3b8' }}>("#" keeps it)</span></label>
+        </div>
+        <div data-name-rules style={{ border:'1px solid #e2e8f0', borderRadius:10, padding:'12px 14px' }}>
+          <div style={{ ...label, fontSize:13, color:'#1a202c' }}>Product name rules — Daraz Upload, Manual Upload, Shop Duplicate</div>
+          <div style={{ fontSize:11.5, color:'#94a3b8', marginTop:2 }}>Whole words, capitals ignored, a plural "s" too; "Mystery Box" also finds "Mystery-Box" and "MysteryBox". <b>{'{n}'}</b> stands for any amount — "{'{n}'} taka deal" finds "99 Taka Deal", "1,299 taka deal", "৳99 taka deal".</div>
+          <div style={{ marginTop:10, ...label }}>Cut out of the name — the product is uploaded</div>
+          <PhraseList name="nameRemove" value={form.nameRemove} onChange={v => setF('nameRemove', v)} placeholder='Add words — e.g. 100% Pure' color={{ bg:'#eef2ff', fg:'#4338ca', border:'#c7d2fe' }} />
+          <div style={{ fontSize:11.5, color:'#94a3b8', marginTop:4 }}>"Original" alone is not on the list: it is part of many real names ("Original Star Zippo Lighter", "FADEOUT ORIGINAL") — add it if the team wants</div>
+          <div style={{ marginTop:12, ...label }}>The product is not uploaded — left out and reported (Daraz: the "invalid" sheet; change the name in the sheet to keep one)</div>
+          <PhraseList name="nameBlock" value={form.nameBlock} onChange={v => setF('nameBlock', v)} placeholder='Add words — e.g. {n} tk offer, Surprise Box' color={{ bg:'#fef2f2', fg:'#b91c1c', border:'#fecaca' }} />
+          <NameTry remove={form.nameRemove} block={form.nameBlock} />
         </div>
         <div>
           <div style={label}>Word replacements — in names, highlights and descriptions (never inside links or HTML tags; capitals kept)</div>

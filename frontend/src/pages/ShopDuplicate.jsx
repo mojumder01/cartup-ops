@@ -339,7 +339,7 @@ export default function ShopDuplicate() {
           · Warranty Type ID → its name (e.g. 3 → No Warranty)<br/>
           · Brand, Color, Size, Warranty… matched to the template's lists — spelling / format differences fixed (EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size); anything still unmatched (#N/A) is listed<br/>
           · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank · a {house.discountLimit}%+ discount or one not below the price is removed<br/>
-          · Stock over {house.stockCap.toLocaleString()} → {house.stockCap.toLocaleString()} · "#" in names → "{house.hashTo}" · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight starting with 0.00 (0.001–0.009) flagged<br/>
+          · Stock over {house.stockCap.toLocaleString()} → {house.stockCap.toLocaleString()} · "#" in names → "{house.hashTo}" · name rules (Data &amp; Rules): {(house.nameRemove || []).slice(0, 2).map(w => `"${w}"`).join(', ')}… cut out of names, products named {(house.nameBlock || []).slice(0, 3).map(w => `"${w.replace('{n}', '99')}"`).join(', ')}… not copied · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight starting with 0.00 (0.001–0.009) flagged<br/>
           · Word Replacements from Profile applied to names, highlights &amp; descriptions (e.g. daraz → cartup)<br/>
           · Hidden ID sheet is computed for you — no need to open in Excel first
         </div>
@@ -451,7 +451,7 @@ export default function ShopDuplicate() {
           {report.fixes.length > 0 && (
             <div style={{ marginTop:16 }}>
               <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
-                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, special prices, stock option / cap, "#" in names, warranty) — check any that look wrong
+                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, special prices, stock option / cap, "#" and claim words in names, warranty) — check any that look wrong
               </div>
               <MiniTable rows={report.fixes} columns={[
                 { label:'Row', get: f => f.row, style: () => ({ color:'#94a3b8' }) },
@@ -459,6 +459,20 @@ export default function ShopDuplicate() {
                 { label:'Column', get: f => f.field },
                 { label:'Export value → written as', get: f => <>{f.from} → <b style={{ color:'#4f46e5' }}>{f.to}</b></> },
                 { label:'Why', get: f => f.how, style: () => ({ color:'#64748b' }) },
+              ]} />
+            </div>
+          )}
+
+          {report.blocked?.length > 0 && (
+            <div data-name-blocked style={{ marginTop:16 }}>
+              <div style={{ fontSize:13, fontWeight:600, color:'#b45309', marginBottom:8 }}>
+                {report.blocked.length.toLocaleString()} rows not copied — the name has words the team doesn't upload (Data &amp; Rules → name rules: {[...new Set(report.blocked.map(b => b.phrase))].join(', ')})
+              </div>
+              <MiniTable rows={report.blocked} columns={[
+                { label:'Row', get: b => b.row, style: () => ({ color:'#94a3b8' }) },
+                { label:'Seller SKU', get: b => b.sku, style: () => ({ fontFamily:'monospace' }) },
+                { label:'Product', get: b => b.name },
+                { label:'Why', get: b => b.why, style: () => ({ color:'#b45309' }) },
               ]} />
             </div>
           )}

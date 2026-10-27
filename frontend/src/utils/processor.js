@@ -11,6 +11,7 @@ import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { darazRows, cell } from './darazFiles'
 import { darazCategories, cartupCategories, categoryAttributes, houseRules } from './catalog'
+import { nameRules, removeNameClaims, blockedBy, blockText } from './nameRules'
 import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, troubleCells, aiCandidates, applyAIPicks, applyDecisions } from './variantReview'
 
 
@@ -758,13 +759,13 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const onCartupRows = []
   const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    spNotBelowSkus: [], namePartRows: 0, onCartup: 0, onCartupParent: 0, keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
+    spNotBelowSkus: [], namePartRows: 0, nameClaims: 0, nameBlocked: 0, nameBlockedBy: {}, leftOnlyName: 0, onCartup: 0, onCartupParent: 0, keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
     variantRows: new Set() }   // rows with variant values (applied.variantLook: those that need a person)
   const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
   for (const sc of applied.sizeColor || []) sizeColorBy.set(sc.row, sc)
   // House rules as the team has them (Settings → Rules & defaults).
-  const { stockCap, discountLimit, hashTo } = houseRules()
+  const { stockCap, discountLimit, hashTo } = houseRules(), names = nameRules()
   const capText = Number(stockCap).toLocaleString()
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(stockCap, Math.max(0, Math.round(Number(stock.set) || 0)))
   // Combo parts with no column that every SKU of a product has (applyDecisions'
@@ -813,8 +814,17 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     const hash = /#/.test(item.name) && hashTo !== '#'
     if (hash) for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = String(out[c] ?? '').replace(/#/g, hashTo)
     if (hash) rules.namesHash++
+    // Name: claim words the team cuts out ("100% Original" — Data & Rules → name rules).
+    const claims = removeNameClaims(out['**Name (English)'], names).removed
+    if (claims.length) {
+      for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = removeNameClaims(out[c], names).name
+      notes.push(`Removed from the name: ${claims.map(w => `"${w}"`).join(', ')} (team name rule)`)
+      if (!isDeleted && !onCartupWhy) problems.push({ sku: item.sku, parent: item.parent, row: i, column: '**Name (English)', value: out['**Name (English)'], problem: `${claims.map(w => `"${w}"`).join(', ')} removed from the name (team name rule)`, type: 'nameclaim' })
+      rules.nameClaims++
+    }
     if (item.darazName && out['**Name (English)'] !== item.darazName) {
       log('Name (English)', item.darazName, out['**Name (English)'], [item.name !== item.darazName ? item.nameHow : '', hash ? `"#" replaced with "${hashTo}"` : '',
+        claims.length ? `${claims.map(w => `"${w}"`).join(', ')} removed (team name rule)` : '',
         added ? `"(${added.join(', ')})" added from Variations Combo — no column for it in this category` : ''].filter(Boolean).join(' · '))
     }
 
@@ -915,6 +925,20 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       flag('**Package Weight (kg)', 'No package weight — row left out ("invalid"); type the weight to keep it', 'leftout')
       reasons.push('Package weight empty')
       rules.leftNoWeight++
+    }
+    // A product the team doesn't upload ("Medicine", "99 Taka Deal" — Data &
+    // Rules → name rules): left out and reported. The name as it is now (a name
+    // fixed in the sheet keeps the row), and the Daraz name unless the name was
+    // edited by hand — the AI's clean-up may have dropped the words.
+    const nameEdited = edits[rowKey(item, i)]?.['**Name (English)'] !== undefined
+    const block = blockedBy(out['**Name (English)'], names) || (!nameEdited && item.darazName ? blockedBy(item.darazName, names) : null)
+    if (block) {
+      flag('**Name (English)', `${blockText(block)} — row left out ("invalid"); change the name in the sheet if it is fine`, 'nameblock')
+      reasons.push(blockText(block))
+      if (!isDeleted && !onCartupWhy) {
+        rules.nameBlocked++; rules.nameBlockedBy[block.phrase] = (rules.nameBlockedBy[block.phrase] || 0) + 1
+        if (reasons.length === 1) rules.leftOnlyName++
+      }
     }
     if (isDeleted) { reasons.splice(0, reasons.length, 'Deleted by hand (sheet view)'); rules.deleted++; deletedRows.add(i) }
     if (onCartupWhy) {
@@ -1092,6 +1116,8 @@ export function darazSummary(result, output, options = {}) {
       !options.imageKeys && 'no image key file (Daraz links)',
       !options.imageKeys && output.problems.filter(p => p.type === 'noimage').length && `${n(output.problems.filter(p => p.type === 'noimage').length)} images missing (rows kept — flagged)`])}`,
     `Weight: ${n(leftFor(/weight/i))} left out (no package weight)`,
+    r.nameBlocked || r.nameClaims ? `Name rules (Data & Rules): ${join([r.nameBlocked && `${s(r.nameBlocked, 'row')} not uploaded — ${Object.entries(r.nameBlockedBy).map(([k, v]) => `"${k}" ${n(v)}`).join(', ')} (listed in "invalid")`,
+      r.nameClaims && `${s(r.nameClaims, 'name')} with claim words removed (${houseRules().nameRemove.slice(0, 4).map(w => `"${w}"`).join(', ')}…)`])}` : '',
     `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at ${n(houseRules().stockCap)}`, `${n(r.stockZero)} with 0 stock`])}`,
     r.onCartup + r.onCartupParent ? `Already on CartUp (its error report): ${join([`${s(r.onCartup, 'row')} whose Seller SKU CartUp has`, r.onCartupParent && `${s(r.onCartupParent, 'new variant')} of products CartUp has (add on CartUp)`])} — left out, listed in "already on CartUp"` : '',
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,

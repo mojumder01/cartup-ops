@@ -17,6 +17,8 @@ export const ISSUE_TYPES = {
   required: { label: 'Required — empty', level: 'error' },
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
+  nameblock:{ label: 'Not uploaded — name rule (Medicine, 99 Taka Deal…)', level: 'error' },
+  nameclaim:{ label: 'Name: claim words removed (100% Original…)', level: 'warn' },
   noimage:  { label: 'Image missing (row kept)', level: 'warn' },
   spremoved:{ label: 'Special price removed (big discount or not below the price)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
@@ -97,7 +99,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (byType.numbered) add({ id: 'numbered', level: 'fix', count: byType.numbered, unit: 'SKU',
     title: 'Variants told apart only by a number', why: 'Multicolor-1, -2…: the seller\'s variants differ by something CartUp has no column for — open the product for one-click quick fixes (the size, a part of the combo, or as the seller wrote it)',
     open: { review: { view: 'products', state: 'variants', col: 'g:variant' } } })
-  add({ id: 'leftout', level: 'fix', count: (output.excluded?.size || 0) - (output.onCartupRows?.length || 0), unit: 'row',
+  add({ id: 'leftout', level: 'fix', count: (output.excluded?.size || 0) - (output.onCartupRows?.length || 0) - (output.rules.leftOnlyName || 0), unit: 'row',
     title: 'Rows left out of the upload', why: imageKeys
       ? 'No package weight, no product image with a CartUp key, or no key for the Variant Image — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet'
       : 'No package weight — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet',
@@ -147,6 +149,13 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.onCartup + output.rules.onCartupParent) add({ id: 'oncartup', level: 'info', count: output.rules.onCartup + output.rules.onCartupParent, unit: 'SKU',
     extra: output.rules.onCartupParent ? `${output.rules.onCartupParent.toLocaleString()} new variant${output.rules.onCartupParent === 1 ? '' : 's'}` : '',
     title: 'Already on CartUp — left out', why: 'CartUp\'s error report says it has these Seller SKUs (or Parent SKUs) — they are not in this file, so nothing is uploaded twice; listed in the "already on CartUp" sheet' })
+  if (output.rules.nameBlocked) add({ id: 'nameblock', level: 'check', count: output.rules.nameBlocked, unit: 'row',
+    extra: Object.entries(output.rules.nameBlockedBy).map(([k, v]) => `${k} ${v}`).join(' · '),
+    title: 'Not uploaded — name rule', why: 'The name has words the team doesn\'t upload (Data & Rules → name rules: Medicine, Mystery Box, 99 Taka Deal…) — in the "invalid" sheet with the reason. A product that is fine: change its name in the sheet and it goes back in',
+    open: { sheet: 'nameblock' } })
+  if (output.rules.nameClaims) add({ id: 'nameclaim', level: 'info', count: output.rules.nameClaims, unit: 'SKU',
+    title: 'Claim words removed from names', why: '"100% Original", "Genuine"… cut out of the name (Data & Rules → name rules) — each one is in the change log',
+    open: { sheet: 'nameclaim' } })
   if (output.rules.namePartRows) add({ id: 'namepart', level: 'info', count: output.rules.namePartRows, unit: 'SKU',
     title: 'Names with a part of Variations Combo added', why: 'A part with no column in the category (8TB, 2 pcs…) that every SKU of the product has — kept in the name ("… (8TB)") instead of being lost; CartUp has one name per Parent SKU',
     open: { sheet: 'namepart' } })

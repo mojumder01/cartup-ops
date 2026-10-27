@@ -165,7 +165,7 @@ export default function ManualUpload() {
         {status === 'success' && summary && (
           <div data-manual-summary style={{ padding:'10px 14px', background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:8, fontSize:12.5, color:'#334155', lineHeight:1.7, marginBottom:16 }}>
             <b>{summary.rows.toLocaleString()}</b> rows written
-            {summary.invalid > 0 && <span style={{ color:'#b91c1c' }}> · {summary.invalid.toLocaleString()} in the "invalid" sheet{summary.duplicates ? ` (${summary.duplicates} repeated Seller SKUs)` : ''}</span>}
+            {summary.invalid > 0 && <span style={{ color:'#b91c1c' }}> · {summary.invalid.toLocaleString()} in the "invalid" sheet{[summary.duplicates && `${summary.duplicates} repeated Seller SKUs`, summary.nameBlocked && `${summary.nameBlocked} not uploaded by a name rule — Medicine, Mystery Box, 99 Taka Deal…`].filter(Boolean).map(t => ` (${t})`).join('')}</span>}
             {summary.noCategory > 0 && <span style={{ color:'#b45309' }}> · {summary.noCategory.toLocaleString()} without a category — fill in the Category Id</span>}
             {[
               summary.discountRemoved && `${summary.discountRemoved} special prices removed (${houseRules().discountLimit}%+ discount)`,
@@ -173,6 +173,7 @@ export default function ManualUpload() {
               summary.filled && `${summary.filled} variant values set by rule (the category needs them: Not Specified / One Size / Same as picture)`,
               summary.stockCapped && `${summary.stockCapped} stocks capped at ${houseRules().stockCap.toLocaleString()}`,
               summary.namesHash && `${summary.namesHash} names: "#" → "${houseRules().hashTo}"`,
+              summary.nameClaims && `${summary.nameClaims} names: claim words removed (${houseRules().nameRemove.slice(0, 2).join(', ')}… — Data & Rules)`,
               summary.lowWeight && `${summary.lowWeight} weights to check (empty or 0.00x)`,
             ].filter(Boolean).map(t => <div key={t}>· {t}</div>)}
             <div style={{ color:'#64748b', fontSize:11.5 }}>Each row's notes are in its Report column.</div>

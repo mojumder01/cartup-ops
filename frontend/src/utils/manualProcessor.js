@@ -3,6 +3,7 @@ import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini
 import { applyReplacements } from './wordReplacements'
 import { weightNeedsCheck } from './shopDuplicate'
 import { cartupCategories as cartupMap, categoryAttributes, houseRules } from './catalog'
+import { nameRules, removeNameClaims, blockedBy, blockText } from './nameRules'
 
 
 const SECTIONS = [
@@ -361,10 +362,10 @@ export async function processManualFile(file, apiKey, onProgress) {
   // ── Step 4: Build output rows ─────────────────────────────────────────────
   onProgress('Building output rows...')
   const outputRows = []
-  const summary = { rows: 0, invalid: 0, duplicates: 0, discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, spNotBelow: 0, filled: 0 }
+  const summary = { rows: 0, invalid: 0, duplicates: 0, discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, spNotBelow: 0, filled: 0, nameClaims: 0, nameBlocked: 0 }
   const seenSkus = new Set()
   // The team's house rules and category attributes (Settings), or built in.
-  const { stockCap, discountLimit, hashTo, fillDefaults } = houseRules(), cat_variant_map = categoryAttributes()
+  const { stockCap, discountLimit, hashTo, fillDefaults } = houseRules(), cat_variant_map = categoryAttributes(), names = nameRules()
 
   for (const r of expandedRows) {
     // Seller SKU must be unique: a repeated one goes to "invalid" (the first row is kept).
@@ -375,6 +376,14 @@ export async function processManualFile(file, apiKey, onProgress) {
     }
     seenSkus.add(r.sellerSku)
     const ai = aiCache[r.pid] || { name: uniqueProducts[r.pid]?.name || '', highlights: '', description: '' }
+    // A product the team doesn't upload ("Medicine", "99 Taka Deal" — Data &
+    // Rules → name rules), by the file's name or the cleaned one: "invalid".
+    const block = blockedBy(ai.name, names) || blockedBy(uniqueProducts[r.pid]?.name, names)
+    if (block) {
+      invalidRows.push({ 'Name': uniqueProducts[r.pid]?.name || ai.name || '', 'SKU': r.sellerSku, 'Parent SKU': r.parentSku, 'Price': r.price, 'Image 1': r.img1, 'Stock': r.stock, 'Status': r.status, 'Report': blockText(block) })
+      summary.nameBlocked++
+      continue
+    }
     const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: 'No category match found' }
     const notes = []
     // House rules (as in Daraz Upload): "#" → "-" in names, stock ≤ 99,999,
@@ -382,7 +391,9 @@ export async function processManualFile(file, apiKey, onProgress) {
     // the latter); weights starting with 0.00 are noted, not changed.
     const hash = /#/.test(ai.name || '') && hashTo !== '#'
     if (hash) { summary.namesHash++; notes.push(`"#" in name → "${hashTo}"`) }
-    const productName = String(ai.name || uniqueProducts[r.pid]?.name || '').replace(/#/g, hash ? hashTo : '#')
+    const claims = removeNameClaims(String(ai.name || uniqueProducts[r.pid]?.name || '').replace(/#/g, hash ? hashTo : '#'), names)
+    if (claims.removed.length) { summary.nameClaims++; notes.push(`Removed from the name: ${claims.removed.map(w => `"${w}"`).join(', ')} (team name rule)`) }
+    const productName = claims.name
     let stock = r.stock
     if (Number(stock) > stockCap) { notes.push(`Stock ${stock} capped at ${Number(stockCap).toLocaleString()}`); stock = String(stockCap); summary.stockCapped++ }
     let { specialPrice, spStart, spEnd } = r

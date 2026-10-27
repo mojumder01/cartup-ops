@@ -32,6 +32,10 @@ export const DEFAULT_RULES = {
   hashTo: '-',
   wordReplacements: [{ find: 'daraz', replace: 'cartup' }],
   partsToName: true,
+  // Product name rules (utils/nameRules.js): claim words cut out of the name,
+  // and words that keep a product out of the upload ({n} = any amount).
+  nameRemove: ['100% Original', '100% Genuine', '100% Authentic', 'Genuine', 'Authentic'],
+  nameBlock: ['{n} taka deal', '{n} tk deal', '{n} টাকা ডিল', 'Mystery Box', 'Mistry Box', 'Medicine', 'Pure Gold', 'Pure Diamond'],
 }
 export function houseRules() {
   const t = teamValue('rules') || {}

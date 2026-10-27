@@ -429,7 +429,9 @@ export default function DarazUpload() {
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at ${rulesNow.stockCap.toLocaleString()}`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "${rulesNow.hashTo}"`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
-    output.excluded.size - (output.onCartupRows?.length || 0) && `${output.excluded.size - (output.onCartupRows?.length || 0)} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
+    output.rules.nameClaims && `${output.rules.nameClaims} names: claim words removed (${rulesNow.nameRemove.slice(0, 2).join(', ')}…)`,
+    output.excluded.size - (output.onCartupRows?.length || 0) - output.rules.leftOnlyName && `${output.excluded.size - (output.onCartupRows?.length || 0) - output.rules.leftOnlyName} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
+    output.rules.nameBlocked && `${output.rules.nameBlocked} rows not uploaded by name rule (${Object.keys(output.rules.nameBlockedBy).join(', ')})`,
     output.ruleRows?.size && `${output.ruleRows.size} rows with Color / Model / Size set by rule${output.filledRows?.size ? ` (${output.filledRows.size} to check)` : ''}`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
@@ -643,7 +645,7 @@ export default function DarazUpload() {
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 16px', background:'#dcfce7', color:'#166534', fontSize:13, fontWeight:600 }}>
               <CheckCircle size={14} /> Processed — {(rows - output.excluded.size).toLocaleString()} rows
               <span style={{ fontWeight:500 }}>
-                {result.invalidRows.length + output.excluded.size - (output.onCartupRows?.length || 0) ? ` · ${(result.invalidRows.length + output.excluded.size - (output.onCartupRows?.length || 0)).toLocaleString()} in "invalid" (no name, price, weight${imageKeys ? ' or image key' : ''})` : ''}
+                {result.invalidRows.length + output.excluded.size - (output.onCartupRows?.length || 0) ? ` · ${(result.invalidRows.length + output.excluded.size - (output.onCartupRows?.length || 0)).toLocaleString()} in "invalid" (no name, price, weight${imageKeys ? ', image key' : ''}${output.rules.nameBlocked ? ' or a name rule' : ''})` : ''}
                 {result.duplicateSkus.length ? ` · ${result.duplicateSkus.length} repeated Seller SKU rows removed` : ''}
                 {output.onCartupRows?.length ? ` · ${output.onCartupRows.length.toLocaleString()} already on CartUp (left out)` : ''}
                 {result.skipped ? ` · ${result.skipped.toLocaleString()} inactive rows left out` : ''}
