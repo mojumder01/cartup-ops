@@ -2,6 +2,7 @@
 // the sheet view's filters and the review window all count from here, so a
 // number means the same thing everywhere.
 import { headerKey, colLabel, colGroup } from './variantReview'
+import { houseRules } from './catalog'
 
 export const IMAGE_COLS = ['**Product Image 1', 'Product Image 2', 'Product Image 3', 'Product Image 4',
   'Product Image 5', 'Product Image 6', 'Product Image 7', 'Product Image 8', '*Variant Image']
@@ -16,7 +17,7 @@ export const ISSUE_TYPES = {
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
   noimage:  { label: 'Image missing (row kept)', level: 'warn' },
-  spremoved:{ label: 'Special price removed (75–99% discount or not below the price)', level: 'warn' },
+  spremoved:{ label: 'Special price removed (big discount or not below the price)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
   defaults: { label: 'Set by rule (Not Specified / One Size)', level: 'warn' },
   sizecolor:{ label: 'Size / variant in the Color column (Grey-L…) — not sure', level: 'warn' },
@@ -143,7 +144,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })
   if (output.rules.discountRemoved) add({ id: 'spremoved', level: 'info', count: output.rules.discountRemoved, unit: 'row',
-    title: 'Special prices removed (75–99% discount)', why: 'The special price was removed, the SKU stays — Report and the change log say so',
+    title: `Special prices removed (${houseRules().discountLimit}–99% discount)`, why: 'The special price was removed, the SKU stays — Report and the change log say so',
     open: { sheet: 'spremoved' } })
   if (output.rules.spNotBelow) add({ id: 'spprice', level: 'info', count: output.rules.spNotBelow, unit: 'SKU',
     extra: (n => `${n.toLocaleString()} product${n === 1 ? '' : 's'}`)(new Set(output.rules.spNotBelowSkus.map(x => x.parent)).size),

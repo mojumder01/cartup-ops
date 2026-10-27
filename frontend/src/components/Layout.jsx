@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight } from 'lucide-react'
+import { loadTeamSettings, refreshTeamSettings } from '../utils/teamSettings'
+import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight, SlidersHorizontal } from 'lucide-react'
 import VersionSwitch from './VersionSwitch'
 import { HoverZoomLayer } from './HoverZoom'
 
@@ -12,6 +14,16 @@ export default function Layout() {
   const onGov    = location.pathname.startsWith('/governance')
 
   const handleLogout = () => { signOut(); navigate('/login') }
+
+  // Team settings (category data, house rules): this browser's copy at once,
+  // then what changed on the server — again when the tab comes back after a while.
+  useEffect(() => {
+    loadTeamSettings()
+    let last = Date.now()
+    const back = () => { if (document.visibilityState === 'visible' && Date.now() - last > 5 * 60000) { last = Date.now(); refreshTeamSettings() } }
+    document.addEventListener('visibilitychange', back)
+    return () => document.removeEventListener('visibilitychange', back)
+  }, [])
 
   const navItem = (to, Icon, label, soon, end = false) => (
     <NavLink key={to} to={to} end={end} className="sb-item"
@@ -92,6 +104,7 @@ export default function Layout() {
               {subItem('/governance/dataviz', 'Data Viz')}
             </>
           )}
+          {navItem('/settings',   SlidersHorizontal, 'Data & Rules', false)}
         </nav>
 
         {/* Sidebar footer */}

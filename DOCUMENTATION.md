@@ -52,7 +52,7 @@ Only these call Gemini (they use requests from the ticked keys' daily limits); e
 | **Governance** | Revamp product content (zero-tolerance rewrite) |
 
 ### Latest and old version
-The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/. At the bottom of the sidebar (and under the sign-in box) there are **two buttons — `OLD: v25.6.76` and `Latest: v25.6.90`**; the one you are using is **green with "Running"**, the other one opens that version. The old version shows the same two buttons with OLD running. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
+The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/. At the bottom of the sidebar (and under the sign-in box) there are **two buttons — `OLD: v25.6.76` and `Latest: v25.6.91`**; the one you are using is **green with "Running"**, the other one opens that version. The old version shows the same two buttons with OLD running. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
 - **How it is kept:** every deploy builds the old version from its own source (commit in `frontend/old-version.json`) with `frontend/scripts/build-old.mjs` and puts it in `/old/`; links straight into it (e.g. `/cartup-ops/old/production/daraz`) work too. To keep a different version as the old one, change `version` and `commit` in `frontend/old-version.json`.
 
 ---
@@ -383,12 +383,33 @@ Pass 5: Description (recreated from cleaned Name + fixed Highlights)
 
 ## 7. Settings & Configuration
 
-All settings persist in the browser (localStorage).
+### Data & Rules — shared with the whole team (sidebar → Data & Rules)
+
+The category data and house rules every page works with are changed here, not in code, and **one save reaches the whole team** (stored in Supabase through the backend, `backend/routers/settings.py`). Anyone signed in can change them; **every save is kept with who, when and a note**, and any version can be restored. Until someone saves a part, the copy built into the app is used (*Built-in copy — nobody has changed it yet*).
+
+| Part | What it is | Used by |
+|---|---|---|
+| **Category attributes** | Which attributes each CartUp category is mapped to (Color, Size, Age Group, Main Materials…) — a variant attribute the category needs is always filled, or CartUp rejects the row (*Attribute-Variant Mapping Missing*) | Daraz Upload, Manual Upload |
+| **Daraz → CartUp categories** | The CartUp category each Daraz category becomes; mystery boxes (none) and categories mapped by hand | Daraz Upload |
+| **CartUp categories** | ID, path and tags of every CartUp category | Daraz Upload (path, tags, AI category check), Manual Upload, QC, Governance |
+| **Rules & defaults** | Value for an empty variant column the category needs (Not Specified / One Size / Same as picture), special price removed at a discount of **75%** or more, stock cap **99,999**, `#` in names → `-`, word replacements | Daraz Upload, Manual Upload, Shop Duplicate |
+
+- **Edit one row:** search by id or words of the path (`4965`, `umbrella boys`), click a category to toggle its attributes, change a mapping or a path; the changes collect in a yellow bar (*3 unsaved changes* with each one listed) → optional note → **Save for the team**.
+- **Upload an Excel file:** Category attributes takes the **Attribute_Check file as it is** (sheet *Category Wise Attribute match*: attribute names on row 1, each followed by *Staus*, the category ids under each) — or a *Category Id* column with a Yes column per attribute, or an *Attributes* column; Daraz → CartUp takes *Daraz Category Id* + *CartUp Category Id*; CartUp categories takes *ID*, *Path*, *Tags*. **Nothing is saved before a preview**: *n added · n changed · n removed* and each change (`6591 Media, Music Books > … : + ISBN/ISSN`), with **Change only what the file has** or **Replace everything with the file** (the latter is pre-chosen when the file covers nearly every category).
+- **Download** gives each part in the layout the upload reads — edit it in Excel and upload it back.
+- **History** lists every version (who, when, note) with **Restore**; **Built-in** goes back to the built-in copy for everyone (kept in History, so it can be undone).
+- **Two people at once:** a save names the version it started from; if someone saved in between, it is refused, their version is loaded and your changes are put on top of it to look at and save again — nothing is overwritten.
+- **Daraz Upload → AI category check:** *Save n to the Daraz → CartUp map* adds the categories the AI filled for unmapped Daraz categories to the team's map, so the next shop gets them without AI.
+- **Speed / server asleep:** the team's copy is kept in each browser and only parts whose version changed are downloaded; the app opens with the last copy and checks for changes in the background (again when the tab comes back after 5 minutes). Processing always uses what is loaded.
+- **Setup (once):** in Supabase → SQL Editor run `backend/sql/app_settings.sql` (two tables: `app_settings`, `app_settings_history`, readable and writable by signed-in users). Until then the page says *Team settings aren't set up yet* and the built-in data is used. The backend must be the version with `/settings` (Render deploys it from `main`).
+- Note found by the first upload of the team's Attribute_Check: it gives **ISBN/ISSN** to 112 book categories that the built-in copy didn't have.
+
+### This browser only
 
 | Setting | Where | Default |
 |---|---|---|
 | Gemini API keys, models and limits, pause between requests, requests at the same time, per-minute guard | Profile & Settings | Gemini 3.5 Flash Lite → 3.1 Flash Lite → 2.5 Flash Lite, 1 s, 3, on |
-| Word replacements (applies to Production output) — in the text only, never inside HTML tags or web links (Daraz-hosted images keep working); the found word's capitals are kept (`Daraz` → `Cartup`, `DARAZ` → `CARTUP`) | Profile & Settings | `daraz` → `cartup` |
+| Word replacements — now in **Data & Rules → Rules & defaults** (shared); the first team save starts from this browser's list. In the text only, never inside HTML tags or web links (Daraz-hosted images keep working); the found word's capitals are kept (`Daraz` → `Cartup`, `DARAZ` → `CARTUP`) | Data & Rules | `daraz` → `cartup` |
 | QC batch size | QC control bar | 5 |
 | Governance batch size | Governance page | 10 |
 | Competitor list | QC → Lists button | 17 marketplaces |
@@ -445,6 +466,8 @@ AI runs on **Gemini only** (Production, QC, Governance) — Grok and Groq were r
 | CartUp's error report: **Validation Errors — Special Price must be less than Price** | Fixed in v25.6.89: a special price equal to or above the price is removed (the SKU stays); before it was only flagged |
 | CartUp's error report: **Duplicate Seller SKUs / Duplicate Parent SKUs — already exists** | Not a file problem: those products are already on CartUp (uploaded before). Leave those rows out (delete them in the sheet view) or update them on CartUp instead |
 | CartUp's error report: **Max Retries Exceeded** — *could not be processed after multiple attempts* | A CartUp server hiccup, not the data — upload those rows again |
+| Data & Rules says *Team settings aren't set up yet* | Run `backend/sql/app_settings.sql` once in Supabase → SQL Editor, and make sure the backend on Render is the new version (it deploys from `main`), then **Retry**. Until then everything works with the built-in data |
+| Data & Rules: *Someone saved a newer version a moment ago* | Another person saved the same part while you were editing — their version is loaded with your changes on top; check and save again |
 | Output missing products | Check the `invalid` sheet — every row there says why (no Product ID, Seller SKU, name, price or image; repeated Seller SKU) |
 
 ---

@@ -1,6 +1,5 @@
 import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
-import MAPPINGS from './mappings.json'
 import { processProductsBatch, readVariantCombos, pickVariantValues, checkProductCategories, localFixName, runConcurrent } from './gemini'
 import { categoryCandidates } from './categoryAI'
 import { applyReplacements } from './wordReplacements'
@@ -11,9 +10,9 @@ import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { darazRows, cell } from './darazFiles'
-import { COMBO_TARGETS, FILL_DEFAULTS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, troubleCells, aiCandidates, applyAIPicks, applyDecisions } from './variantReview'
+import { darazCategories, cartupCategories, categoryAttributes, houseRules } from './catalog'
+import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, troubleCells, aiCandidates, applyAIPicks, applyDecisions } from './variantReview'
 
-const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
 // The CartUp upload template's columns, in its order — for a file made without
 // the template (with it, the template itself is filled). [section, headers];
@@ -148,6 +147,9 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false, combo: options.aiFields?.combo !== false,
     category: options.aiFields?.category === true }
   const aiName = aiFields.name, aiContent = aiFields.name || aiFields.highlights || aiFields.description
+  // The category tables as the team has them now (Settings), or built in.
+  const { map: daraz_to_cartup, mystery: mystery_cats = [], manual: manual_cats = [] } = darazCategories()
+  const cartup_map = cartupCategories(), cat_variant_map = categoryAttributes()
   // onProgress(text, step): text for the progress line (or null); step for the
   // page's live view — { step, done, total, last: [what was just done], note
   // (when it ends), end, skip: why it doesn't run }. Steps: read, content,
@@ -483,6 +485,7 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
 // answer. → { asked, kept, filled, changed, none, missed, slips, message }
 const CAT_BATCH = 15
 async function checkCategories(items, onProgress) {
+  const cartup_map = cartupCategories(), cat_variant_map = categoryAttributes()
   const products = []
   for (const [pid, g] of groupBy(items, it => it.parent)) {
     const id = String(g[0].out['**Category Id'] ?? '').trim()
@@ -689,7 +692,7 @@ export function matchItems(items, lists, variantMode = 'match') {
       // A variant column the category needs but the seller didn't fill (no
       // variant, or a variant of another kind): Color → "Not Specified",
       // Model → "Same as picture", a size → "One Size" — in the list's own spelling.
-      for (const [col, value] of Object.entries(FILL_DEFAULTS)) {
+      for (const [col, value] of Object.entries(houseRules().fillDefaults)) {
         if (it.applicable.includes(col) && !it.cells.some(c => c.col === col)) it.cells.push(makeCell(col, value, lists, 'fill'))
       }
       // Every other dropdown column (Brand, Unit, Warranty…).
@@ -748,7 +751,10 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
   for (const sc of applied.sizeColor || []) sizeColorBy.set(sc.row, sc)
-  const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(stock.set) || 0)))
+  // House rules as the team has them (Settings → Rules & defaults).
+  const { stockCap, discountLimit, hashTo } = houseRules()
+  const capText = Number(stockCap).toLocaleString()
+  const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(stockCap, Math.max(0, Math.round(Number(stock.set) || 0)))
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
     const log = (column, from, to, change) => applied.changes.push({ sku: item.sku, parent: item.parent, name: item.name, column, from: String(from ?? ''), to: String(to ?? ''), change, detail: '' })
@@ -765,12 +771,12 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     for (const [c, v] of Object.entries(item.fixed || {})) out[c] = v
     for (const rc of item.ruleChanges || []) log(rc.column, rc.from, rc.to, rc.change)
 
-    // Name: "#" becomes "-".
-    const hash = /#/.test(item.name)
-    for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = String(out[c] ?? '').replace(/#/g, '-')
+    // Name: "#" becomes "-" (the team's choice).
+    const hash = /#/.test(item.name) && hashTo !== '#'
+    if (hash) for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = String(out[c] ?? '').replace(/#/g, hashTo)
     if (hash) rules.namesHash++
     if (item.darazName && out['**Name (English)'] !== item.darazName) {
-      log('Name (English)', item.darazName, out['**Name (English)'], [item.name !== item.darazName ? item.nameHow : '', hash ? '"#" replaced with "-"' : ''].filter(Boolean).join(' · '))
+      log('Name (English)', item.darazName, out['**Name (English)'], [item.name !== item.darazName ? item.nameHow : '', hash ? `"#" replaced with "${hashTo}"` : ''].filter(Boolean).join(' · '))
     }
 
     // Stock: one number for every row when chosen (a seller who wants to upload with 0 stock).
@@ -779,23 +785,23 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       out['**Current Stock Qty'] = String(stockSet)
       rules.stockSet++
     }
-    // Stock never above 99,999.
-    if (Number(out['**Current Stock Qty']) > 99999) {
-      log('Current Stock Qty', out['**Current Stock Qty'], 99999, 'Stock capped at 99,999')
-      out['**Current Stock Qty'] = '99999'
+    // Stock never above the cap (99,999).
+    if (Number(out['**Current Stock Qty']) > stockCap) {
+      log('Current Stock Qty', out['**Current Stock Qty'], stockCap, `Stock capped at ${capText}`)
+      out['**Current Stock Qty'] = String(stockCap)
       rules.stockCapped++
     }
 
-    // Special price: only when wanted; a discount of 75–99% removes the
+    // Special price: only when wanted; a discount of 75–99% (the limit) removes the
     // special price, never the SKU; a special price of 0 means none (not a
     // 100% discount) and is just left empty; dates = today → the chosen end.
     const spText = String(out['Special Price'] ?? '').trim()
     const sp = Number(spText), mrp = Number(out['**Price(MRP)'])
     const clearSpecial = () => { out['Special Price'] = ''; out['Special Price Start Date'] = ''; out['Special Price End Date'] = '' }
     if (!specialPrice.include || spText === '' || Number.isNaN(sp) || sp <= 0) clearSpecial()
-    else if (mrp > 0 && 1 - sp / mrp >= 0.75) {
+    else if (mrp > 0 && 1 - sp / mrp >= discountLimit / 100) {
       const pct = Math.min(99, Math.round((1 - sp / mrp) * 100))
-      const why = `Special price ${spText} removed — ${pct}% discount (75% or more); the SKU stays`
+      const why = `Special price ${spText} removed — ${pct}% discount (${discountLimit}% or more); the SKU stays`
       log('Special Price', spText, '', why)
       notes.push(`Special price removed: ${pct}% discount`)
       clearSpecial()
@@ -1031,7 +1037,7 @@ export function darazSummary(result, output, options = {}) {
     `CartUp upload summary — ${todayISO()}`,
     `Rows: ${n(total)} in the Price file → ${s(uploaded.length, 'row')} uploaded (${s(products, 'product')}) · ${n(left)} left out`,
     `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
-    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–99% discount — SKU kept)`,
+    `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (${houseRules().discountLimit}–99% discount — SKU kept)`,
       r.spNotBelow && `${s(r.spNotBelow, 'special price')} removed (not below the SKU's own price — SKU kept: ${r.spNotBelowSkus.slice(0, 8).map(x => `${x.sku} ${x.special} ≥ ${x.price}`).join(', ')}${r.spNotBelow > 8 ? ', …' : ''})`])}`,
     `Image: ${join([options.imageKeys ? `${n(leftFor(/^(Images|Variant Image):/))} left out — no CartUp image key (${n(leftFor(/^Images:/))} for any product image, ${n(leftFor(/^Variant Image:/))} for the variant image)` : '0 left out',
       options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`, options.imageKeys && r.imagesMoved && `${s(r.imagesMoved, 'row')} with images moved up to fill gaps`,
@@ -1039,7 +1045,7 @@ export function darazSummary(result, output, options = {}) {
       !options.imageKeys && 'no image key file (Daraz links)',
       !options.imageKeys && output.problems.filter(p => p.type === 'noimage').length && `${n(output.problems.filter(p => p.type === 'noimage').length)} images missing (rows kept — flagged)`])}`,
     `Weight: ${n(leftFor(/weight/i))} left out (no package weight)`,
-    `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at 99,999`, `${n(r.stockZero)} with 0 stock`])}`,
+    `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at ${n(houseRules().stockCap)}`, `${n(r.stockZero)} with 0 stock`])}`,
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (fill in the Category Id)${result.ai?.category ? ` · ${categorySummary(result.ai.category)}` : ' · by the mapping table (AI category check off)'}`,

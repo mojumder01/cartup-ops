@@ -3,9 +3,8 @@
 // from when a product's category is empty or doesn't fit it. Words in the
 // last part of a path ("Umbrellas Rainwear") count more, and words common to
 // many categories (women, set, accessories) count less.
-import MAPPINGS from './mappings.json'
+import { cartupCategories } from './catalog'
 
-const { cartup_map } = MAPPINGS
 const STOP = new Set(['and', 'for', 'with', 'the', 'new', 'best', 'pcs', 'piece', 'pieces', 'set', 'pack', 'combo', 'free', 'size', 'color', 'colour',
   'high', 'quality', 'original', 'premium', 'other', 'others', 'more', 'item', 'items', 'type', 'style', 'from', 'your', 'all', 'one'])
 const stem = w => w.length > 4 && w.endsWith('ies') ? w.slice(0, -3) + 'y' : w.length > 3 && /[^s]s$/.test(w) ? w.slice(0, -1) : w
@@ -24,9 +23,11 @@ const GENDER = { men: /\b(men|man|mens|male|gents?)\b/, women: /\b(women|woman|w
 const genders = s => { const t = String(s).toLowerCase().replace(/[^a-z\s]/g, ' '); return Object.keys(GENDER).filter(g => GENDER[g].test(t)) }
 const phrase = s => tokens(String(s).toLowerCase().replace(/(\w)-(\w)/g, '$1$2').replace(/[^a-z0-9\s]/g, ' ')).join(' ')
 
-let index = null
+let index = null, indexed = null   // built once per category list (the team's may change)
 function categoryIndex() {
-  if (index) return index
+  const cartup_map = cartupCategories()
+  if (index && indexed === cartup_map) return index
+  indexed = cartup_map
   const cats = Object.entries(cartup_map).map(([id, c]) => ({ id, path: c.path || '', tags: c.tags || '' }))
   const byWord = new Map(), byPhrase = new Map()
   const add = (m, k, v) => { if (!m.has(k)) m.set(k, []); m.get(k).push(v) }

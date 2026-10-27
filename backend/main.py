@@ -1,8 +1,9 @@
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from routers import auth, production
+from routers import auth, production, settings
 
 app = FastAPI(title="CartUp Ops API")
 
@@ -13,6 +14,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Team settings carry the category tables (hundreds of KB) — sent compressed.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Any exception that escapes a route (not just the ones each router already
 # catches) lands here instead of Starlette's bare "Internal Server Error"
@@ -29,6 +32,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(production.router, prefix="/production", tags=["production"])
+app.include_router(settings.router, prefix="/settings", tags=["settings"])
 
 @app.get("/")
 def root():

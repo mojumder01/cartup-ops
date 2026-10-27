@@ -1,10 +1,9 @@
 import * as XLSX from 'xlsx'
-import MAPPINGS from './mappings.json'
+import { cartupCategories } from './catalog'
 import { applyReplacements } from './wordReplacements'
 import { callAI } from './aiPool'
 import { stripImagesFromHighlights, fixDescriptionImages, enforceImageRules, IMAGE_RULE_PROMPT } from './contentRules'
 
-const { cartup_map } = MAPPINGS
 // batch size is user-configurable (smaller = better accuracy, more API calls)
 export function getGovBatchSize() {
   const v = parseInt(localStorage.getItem('gov_batch_size'), 10)
@@ -74,7 +73,9 @@ function saveCheckpoint(file, checks, state) {
 }
 
 // ── Category helpers ──────────────────────────────────────────────────────────
-const ALL_CATS = Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+// CartUp's categories as the team has them (Settings), listed once per change.
+let catsOf = null, catsList = []
+const allCats = () => { const m = cartupCategories(); if (catsOf !== m) { catsOf = m; catsList = Object.entries(m).map(([id, v]) => ({ id, path: v.path })) } return catsList }
 
 const SKIP_TOKENS = new Set([
   'the','and','for','with','from','this','that','are','was','has','not','but',
@@ -112,8 +113,8 @@ function topCandidates(items, n = 25) {
   const result = {}
   for (const { sku, queries } of items) {
     const allQueryTokens = [...new Set(queries.flatMap(q => tokenize(q)))]
-    if (!allQueryTokens.length) { result[sku] = ALL_CATS.slice(0, n); continue }
-    const scored = ALL_CATS.map(c => ({
+    if (!allQueryTokens.length) { result[sku] = allCats().slice(0, n); continue }
+    const scored = allCats().map(c => ({
       ...c,
       score: scorePathWeighted(c, allQueryTokens),
     })).sort((a, b) => b.score - a.score)
@@ -253,7 +254,7 @@ Return ONLY a JSON array, no markdown:
       const sku = String(item.sku || products[i]?.sku || '')
       if (!sku) continue
       const catId = String(item.category_id || '')
-      const validCat = ALL_CATS.find(c => c.id === catId)
+      const validCat = allCats().find(c => c.id === catId)
       map[sku] = {
         category_id:    validCat ? catId : '',
         category_path:  validCat ? validCat.path : '',

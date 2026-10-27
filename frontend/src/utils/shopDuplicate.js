@@ -13,6 +13,7 @@ import JSZip from 'jszip'
 import * as XLSX from 'xlsx'
 import { applyReplacements } from './wordReplacements'
 import { utf8 } from './zipText'
+import { houseRules } from './catalog'
 import { listMatcher, columnKind, MATCH_LABEL } from './listMatch'
 import {
   tokenize, parse, fillDown, moveRef, refText, evaluate, finalValue,
@@ -649,7 +650,9 @@ function parseAttrList(text, names) {
 export function buildRows(exportRows, tpl, sku, rules = {}) {
   const warnings = [], fixes = []
   const spRule = rules.specialPrice
-  const stockSet = rules.stock?.set == null || rules.stock.set === '' ? null : Math.min(99999, Math.max(0, Math.round(Number(rules.stock.set) || 0)))
+  // House rules as the team has them (Settings → Rules & defaults).
+  const { stockCap, discountLimit, hashTo } = houseRules()
+  const stockSet = rules.stock?.set == null || rules.stock.set === '' ? null : Math.min(stockCap, Math.max(0, Math.round(Number(rules.stock.set) || 0)))
   const wtCol = tpl.columns.find(c => c.key === 'warrantytype'), wpCol = tpl.columns.find(c => c.key === 'warrantyperiod')
   const warn = (src, field, message) => warnings.push({ row: src.__row, sku: src.sellersku ?? '', field, message })
 
@@ -677,11 +680,15 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
     const attrs = parseAttrList(src.productattributes, attrNames)
     if (attrs.unknown.length) warn(src, 'Product attributes', `Could not map: ${attrs.unknown.join('; ')}`)
     const change = (field, from, to, how) => fixes.push({ row: src.__row, sku: src.sellersku ?? '', field, from: String(from), to: String(to), how })
-    // Special price: only when wanted, and never at a discount of 75% or more.
+    // Special price: only when wanted, never at a discount of 75% or more,
+    // and below the price (CartUp rejects it otherwise) — each SKU on its own.
     const sp = Number(toNumber(src.specialprice)), mrp = Number(toNumber(src.pricemrp))
     let hasSpecial = !blank(src.specialprice) && sp !== 0 && (spRule?.include ?? true)
-    if (hasSpecial && mrp > 0 && 1 - sp / mrp >= 0.75) {
-      change('Special Price', src.specialprice, '(removed)', `${Math.round((1 - sp / mrp) * 100)}% discount — 75% or more`)
+    if (hasSpecial && mrp > 0 && 1 - sp / mrp >= discountLimit / 100) {
+      change('Special Price', src.specialprice, '(removed)', `${Math.round((1 - sp / mrp) * 100)}% discount — ${discountLimit}% or more`)
+      hasSpecial = false
+    } else if (hasSpecial && sp > 0 && mrp > 0 && sp >= mrp) {
+      change('Special Price', src.specialprice, '(removed)', `not below the price (${src.pricemrp}) — CartUp rejects it`)
       hasSpecial = false
     }
 
@@ -705,15 +712,15 @@ export function buildRows(exportRows, tpl, sku, rules = {}) {
       else if (NUMBER_FIELDS.has(key) && v !== '') v = toNumber(v)
       else if (typeof v === 'string') v = v.trim()
 
-      if ((key === 'nameenglish' || key === 'namebengali') && /#/.test(v)) {
-        if (key === 'nameenglish') change(col.header.replace(/^\*+/, ''), v, v.replace(/#/g, '-'), '"#" replaced with "-"')
-        v = v.replace(/#/g, '-')
+      if ((key === 'nameenglish' || key === 'namebengali') && /#/.test(v) && hashTo !== '#') {
+        if (key === 'nameenglish') change(col.header.replace(/^\*+/, ''), v, v.replace(/#/g, hashTo), `"#" replaced with "${hashTo}"`)
+        v = v.replace(/#/g, hashTo)
       }
       if (key === 'currentstockqty' && stockSet !== null) {
         if (String(v) !== String(stockSet)) change('Current Stock Qty', v === '' ? '(empty)' : v, stockSet, `Stock set to ${stockSet} for every row (option)`)
         v = stockSet
       }
-      if (key === 'currentstockqty' && Number(v) > 99999) { change('Current Stock Qty', v, 99999, 'Stock capped at 99,999'); v = 99999 }
+      if (key === 'currentstockqty' && Number(v) > stockCap) { change('Current Stock Qty', v, stockCap, `Stock capped at ${Number(stockCap).toLocaleString()}`); v = stockCap }
       if (key === 'packageweightkg' && v !== '' && weightNeedsCheck(v)) {
         warn(src, 'Package Weight (kg)', `${v} kg — starts with 0.00; CartUp may show a delivery charge of 0`)
       }
@@ -1040,7 +1047,7 @@ function reportRows({ built, sku, meta, notes, part, parts, partRows, hiddenErro
       : [['None — every hidden cell has a value']]),
     [],
     [T(`Changed values (${fixes.length})`)],
-    ['Values matched to the template\'s lists (spelling, known equivalents) and house rules (75%+ special price discounts, stock over 99,999, "#" in names, warranty). Check any that look wrong.'],
+    ['Values matched to the template\'s lists (spelling, known equivalents) and house rules (special prices — big discounts or not below the price —, stock cap, "#" in names, warranty). Check any that look wrong.'],
     [H('Export Row'), H('Seller SKU (export)'), H('Column'), H('Export value'), H('Written as'), H('Why')],
     ...(fixes.length ? fixes.map(f => [f.row, f.sku, f.field, f.from, f.to, f.how]) : [['None']]),
     [],

@@ -1,8 +1,7 @@
 import * as XLSX from 'xlsx'
-import MAPPINGS from './mappings.json'
+import { cartupCategories } from './catalog'
 import { callAI } from './aiPool'
 
-const { cartup_map } = MAPPINGS
 
 // batch size is user-configurable (smaller = better accuracy, more API calls)
 export function getQcBatchSize() {
@@ -187,7 +186,9 @@ Return ONLY a JSON array, no markdown:
 }
 
 // ── Category matching helpers (same technique as Production/Governance) ──────
-const ALL_CATS = Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+// CartUp's categories as the team has them (Settings), listed once per change.
+let catsOf = null, catsList = []
+const allCats = () => { const m = cartupCategories(); if (catsOf !== m) { catsOf = m; catsList = Object.entries(m).map(([id, v]) => ({ id, path: v.path })) } return catsList }
 const CAT_SKIP = new Set(['the','and','for','with','from','this','that','other','products','size','color','type','pack','pcs','set','kit'])
 
 function catTokenize(text) {
@@ -238,7 +239,7 @@ Return ONLY a JSON array, no markdown:
     const assignedScore = catScore(r['CategoryPath'] || '', catTokenize(desc))
 
     let best = null
-    for (const c of ALL_CATS) {
+    for (const c of allCats()) {
       const s = catScore(c.path, qTokens)
       if (!best || s > best.score) best = { ...c, score: s }
     }

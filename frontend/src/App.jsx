@@ -12,6 +12,7 @@ import QC from './pages/QC'
 import Governance from './pages/Governance'
 import GovernanceChecks from './pages/GovernanceChecks'
 import GovernanceDataViz from './pages/GovernanceDataViz'
+import DataRules from './pages/DataRules'
 import Layout from './components/Layout'
 
 function PrivateRoute({ children }) {
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="checks"  element={<GovernanceChecks />} />
           <Route path="dataviz" element={<GovernanceDataViz />} />
         </Route>
+        <Route path="settings" element={<DataRules />} />
         <Route path="profile" element={<Profile />} />
       </Route>
     </Routes>

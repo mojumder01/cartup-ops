@@ -1,11 +1,9 @@
 import * as XLSX from 'xlsx'
-import MAPPINGS from './mappings.json'
 import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
 import { weightNeedsCheck } from './shopDuplicate'
-import { FILL_DEFAULTS } from './variantReview'
+import { cartupCategories as cartupMap, categoryAttributes, houseRules } from './catalog'
 
-const { cartup_map, cat_variant_map } = MAPPINGS
 
 const SECTIONS = [
   { name: 'Basic Information',   color: 'FFD9E1F2', cols: 15 },
@@ -102,7 +100,7 @@ function readFile(file) {
 }
 
 function getCartupCategories() {
-  return Object.entries(cartup_map).map(([id, v]) => ({ id, path: v.path }))
+  return Object.entries(cartupMap()).map(([id, v]) => ({ id, path: v.path }))
 }
 
 export function generateTemplate() {
@@ -338,7 +336,7 @@ export async function processManualFile(file, apiKey, onProgress) {
         aiCache[p.pid] = { name: r.name || p.name, highlights: r.highlights || '', description: r.description || '' }
         const cid = r.categoryId || ''
         catMatchCache[p.pid] = cid
-          ? { cartupId: cid, cartupPath: r.categoryPath || '', tags: cartup_map[cid]?.tags || '', reportNote: '[AI] Category matched' }
+          ? { cartupId: cid, cartupPath: r.categoryPath || '', tags: cartupMap()[cid]?.tags || '', reportNote: '[AI] Category matched' }
           : { cartupId: '', cartupPath: '', tags: '', reportNote: r.categoryError ? `API error: ${r.categoryError}` : 'No category match found' }
       }
     })
@@ -365,6 +363,8 @@ export async function processManualFile(file, apiKey, onProgress) {
   const outputRows = []
   const summary = { rows: 0, invalid: 0, duplicates: 0, discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, spNotBelow: 0, filled: 0 }
   const seenSkus = new Set()
+  // The team's house rules and category attributes (Settings), or built in.
+  const { stockCap, discountLimit, hashTo, fillDefaults } = houseRules(), cat_variant_map = categoryAttributes()
 
   for (const r of expandedRows) {
     // Seller SKU must be unique: a repeated one goes to "invalid" (the first row is kept).
@@ -380,13 +380,14 @@ export async function processManualFile(file, apiKey, onProgress) {
     // House rules (as in Daraz Upload): "#" → "-" in names, stock ≤ 99,999,
     // a 75%+ special price or one not below the price removed (CartUp rejects
     // the latter); weights starting with 0.00 are noted, not changed.
-    if (/#/.test(ai.name || '')) { summary.namesHash++; notes.push('"#" in name → "-"') }
-    const productName = String(ai.name || uniqueProducts[r.pid]?.name || '').replace(/#/g, '-')
+    const hash = /#/.test(ai.name || '') && hashTo !== '#'
+    if (hash) { summary.namesHash++; notes.push(`"#" in name → "${hashTo}"`) }
+    const productName = String(ai.name || uniqueProducts[r.pid]?.name || '').replace(/#/g, hash ? hashTo : '#')
     let stock = r.stock
-    if (Number(stock) > 99999) { notes.push(`Stock ${stock} capped at 99,999`); stock = '99999'; summary.stockCapped++ }
+    if (Number(stock) > stockCap) { notes.push(`Stock ${stock} capped at ${Number(stockCap).toLocaleString()}`); stock = String(stockCap); summary.stockCapped++ }
     let { specialPrice, spStart, spEnd } = r
     const sp = Number(specialPrice), mrp = Number(r.price)
-    if (sp > 0 && mrp > 0 && 1 - sp / mrp >= 0.75) {
+    if (sp > 0 && mrp > 0 && 1 - sp / mrp >= discountLimit / 100) {
       notes.push(`Special price removed: ${Math.round((1 - sp / mrp) * 100)}% discount`)
       specialPrice = ''; spStart = ''; spEnd = ''; summary.discountRemoved++
     } else if (sp > 0 && mrp > 0 && sp >= mrp) {
@@ -461,7 +462,7 @@ export async function processManualFile(file, apiKey, onProgress) {
     }
     // A variant column the category needs but the file left empty gets the
     // neutral value (CartUp rejects the row without it), as in Daraz Upload.
-    for (const [col, value] of Object.entries(FILL_DEFAULTS)) {
+    for (const [col, value] of Object.entries(fillDefaults)) {
       if (!cat.cartupId || !applicable.includes(col) || String(row[col] ?? '').trim()) continue
       row[col] = value
       notes.push(`Not given, set by rule (category needs it): ${col} = ${value}`)

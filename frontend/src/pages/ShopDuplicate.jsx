@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { houseRules } from '../utils/catalog'
+import { onTeamSettings } from '../utils/teamSettings'
 import * as XLSX from 'xlsx'
 import { duplicateShop, readSellerExport, skuCodes, parseSkuRules, planSkus, skuOptionsError, zipFiles } from '../utils/shopDuplicate'
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
@@ -84,6 +86,9 @@ function mergeRules(existing, incoming) {
 }
 
 export default function ShopDuplicate() {
+  const [, redrawTeam] = useState(0)
+  useEffect(() => onTeamSettings(() => redrawTeam(n => n + 1)), [])   // the team's rules arrived or changed
+  const house = houseRules()   // the team's house rules (Settings), for the texts here
   const [exportFile, setExportFile]     = useState(null)
   const [exportRows, setExportRows]     = useState(null)
   const [templateFile, setTemplateFile] = useState(null)
@@ -333,8 +338,8 @@ export default function ShopDuplicate() {
           · VariantName <code>Size-One Size, Color-Black</code> → Size and Color columns<br/>
           · Warranty Type ID → its name (e.g. 3 → No Warranty)<br/>
           · Brand, Color, Size, Warranty… matched to the template's lists — spelling / format differences fixed (EU:40 → 40 (EU), XXL → 2XL, Free Size → One Size); anything still unmatched (#N/A) is listed<br/>
-          · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank · a 75%+ discount is removed<br/>
-          · Stock over 99,999 → 99,999 · "#" in names → "-" · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight starting with 0.00 (0.001–0.009) flagged<br/>
+          · Duplicate Seller SKUs → first one kept · Special Price 0 → left blank · a {house.discountLimit}%+ discount or one not below the price is removed<br/>
+          · Stock over {house.stockCap.toLocaleString()} → {house.stockCap.toLocaleString()} · "#" in names → "{house.hashTo}" · No Warranty with a period → period removed; Seller/Brand Warranty without one → No Warranty · weight starting with 0.00 (0.001–0.009) flagged<br/>
           · Word Replacements from Profile applied to names, highlights &amp; descriptions (e.g. daraz → cartup)<br/>
           · Hidden ID sheet is computed for you — no need to open in Excel first
         </div>
@@ -360,7 +365,7 @@ export default function ShopDuplicate() {
             <input type="number" min={0} max={99999} value={stockValue} onChange={e => { setStockValue(e.target.value); reset() }} aria-label="Stock for every row"
               style={{ width:90, padding:'5px 8px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12.5 }} />
             <span style={{ fontSize:12, color:'#94a3b8' }}>e.g. 0 when the seller wants to upload with no stock — listed under Changed values</span>
-          </> : <span style={{ fontSize:12, color:'#94a3b8' }}>off: stock as in the export (never above 99,999)</span>}
+          </> : <span style={{ fontSize:12, color:'#94a3b8' }}>off: stock as in the export (never above {house.stockCap.toLocaleString()})</span>}
         </div>
 
         <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:10, fontSize:13, color:'#334155', cursor:'pointer', width:'fit-content' }}>
@@ -446,7 +451,7 @@ export default function ShopDuplicate() {
           {report.fixes.length > 0 && (
             <div style={{ marginTop:16 }}>
               <div style={{ fontSize:13, fontWeight:600, color:'#334155', marginBottom:8 }}>
-                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, 75%+ discounts, stock option / cap, "#" in names, warranty) — check any that look wrong
+                {report.fixes.length.toLocaleString()} values changed automatically (list spelling, special prices, stock option / cap, "#" in names, warranty) — check any that look wrong
               </div>
               <MiniTable rows={report.fixes} columns={[
                 { label:'Row', get: f => f.row, style: () => ({ color:'#94a3b8' }) },

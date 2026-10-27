@@ -12,6 +12,8 @@ import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateSt
 import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import VariantReview from '../components/VariantReview'
 import { buildAttributeList, saveFile } from '../utils/attributeList'
+import { houseRules, darazCategories } from '../utils/catalog'
+import { saveTeamSetting, onTeamSettings } from '../utils/teamSettings'
 import SheetEditor from '../components/SheetEditor'
 import FilePreview from '../components/FilePreview'
 import ProcessSteps from '../components/ProcessSteps'
@@ -87,6 +89,7 @@ const BATCH = 5   // products per AI request (processor.js)
 export default function DarazUpload() {
   const [, redraw] = useState(0)
   useEffect(() => onAiChange(() => redraw(n => n + 1)), [])
+  useEffect(() => onTeamSettings(() => redraw(n => n + 1)), [])   // the team's rules arrived or changed
   const apiKey = getApiKey()
   const pool = poolSummary()
   const [files, setFiles]     = useState({})
@@ -235,7 +238,7 @@ export default function DarazUpload() {
     const dec = {}, ed = {}, del = new Set()
     setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions(dec); setEdits(ed); setDeleted(del)
     setAiRun({ start: sessionStats(), end: null })
-    setSteps({}); setRunTime({ start: Date.now(), end: null }); setPanel('process')
+    setSteps({}); setRunTime({ start: Date.now(), end: null }); setPanel('process'); setCatSaved('')
     try {
       const res = await processDarazFiles(files, apiKey, onStep, { activeOnly, aiFields, variantMode })
       setAiRun(r => r && { ...r, end: sessionStats() })
@@ -308,7 +311,30 @@ export default function DarazUpload() {
     setKeyFile(null); setKeySheets(null); setKeyPick(NO_KEY_PICK)
     setResult(null); setStatus(''); setProgress(''); setError(''); setDecisions({}); setEdits({}); setDeleted(new Set())
     setReviewing(null); setSheetOpen(null); setLastFile(null); setAiRun(null)
-    setSteps({}); setRunTime(null); setPanel('process')
+    setSteps({}); setRunTime(null); setPanel('process'); setCatSaved('')
+  }
+
+  // Categories the AI check filled for Daraz categories with no mapping: saved
+  // into the team's Daraz → CartUp map, so the next shop gets them without AI.
+  // A Daraz category the AI put in two different places is left out.
+  const aiCatPairs = useMemo(() => {
+    if (!result?.ai?.category) return []
+    const { map, mystery = [] } = darazCategories(), to = new Map()
+    for (const it of result.items) {
+      const d = String(it.darazCat ?? '')
+      if (!it.catChange || it.catChange.from || !d || map[d] || mystery.includes(d)) continue
+      to.set(d, to.has(d) && to.get(d) !== it.catChange.to ? null : it.catChange.to)
+    }
+    return [...to].filter(([, c]) => c).map(([d, c]) => ({ d, c, path: result.items.find(it => it.catChange?.to === c)?.category || '' }))
+  }, [result])
+  const [catSaved, setCatSaved] = useState('')
+  const saveAiCategories = async () => {
+    if (!window.confirm(`Add ${aiCatPairs.length} Daraz → CartUp mapping${aiCatPairs.length === 1 ? '' : 's'} for the whole team?\n\n${aiCatPairs.slice(0, 15).map(p => `${p.d} → ${p.c} ${p.path}`).join('\n')}${aiCatPairs.length > 15 ? '\n…' : ''}\n\nThey can be changed or undone in Data & Rules.`)) return
+    try {
+      const b = darazCategories()
+      await saveTeamSetting('daraz_categories', { ...b, map: { ...b.map, ...Object.fromEntries(aiCatPairs.map(p => [p.d, p.c])) } }, `From the AI category check (${aiCatPairs.length} Daraz categories)`)
+      setCatSaved(`${aiCatPairs.length} saved to the Daraz → CartUp map`)
+    } catch (e) { setCatSaved(`Not saved: ${e.message}`) }
   }
 
   // Values kept as new, for CartUp to add: exported in its Attribute List format.
@@ -359,6 +385,7 @@ export default function DarazUpload() {
   const sel = { padding:'5px 8px', border:'1.5px solid #e2e8f0', borderRadius:7, fontSize:12, background:'#fff', maxWidth:220 }
   const btn = (primary) => ({ display:'flex', alignItems:'center', gap:6, padding:'8px 14px', background: primary ? '#4f46e5' : '#fff', color: primary ? '#fff' : '#4f46e5', border: primary ? 'none' : '1.5px solid #c7d2fe', borderRadius:8, fontSize:13, fontWeight:600, cursor:'pointer' })
 
+  const rulesNow = houseRules()   // the team's house rules (Settings), for the texts here
   const rows = output?.rows.length || 0
   const needs = output?.attention.size || 0
   const autoPct = rows ? Math.round(((rows - needs) / rows) * 100) : 0
@@ -369,11 +396,11 @@ export default function DarazUpload() {
   const valuePct = stats?.checked ? Math.round(((stats.checked - stats.open) / stats.checked) * 100) : 100
   const summary = output ? darazSummary(result, output, { ...options, activeOnly }) : ''
   const ruleLine = output && [
-    output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (75%+ discount)`,
+    output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (${rulesNow.discountLimit}%+ discount)`,
     output.rules.spNotBelow && `${output.rules.spNotBelow} special prices removed (not below the price)`,
     output.rules.stockSet && `${output.rules.stockSet} stocks set to ${stockSet}`,
-    output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at 99,999`,
-    output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,
+    output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at ${rulesNow.stockCap.toLocaleString()}`,
+    output.rules.namesHash && `${output.rules.namesHash} names: "#" → "${rulesNow.hashTo}"`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
     output.excluded.size && `${output.excluded.size} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
     output.ruleRows?.size && `${output.ruleRows.size} rows with Color / Model / Size set by rule${output.filledRows?.size ? ` (${output.filledRows.size} to check)` : ''}`,
@@ -482,7 +509,7 @@ export default function DarazUpload() {
             {spInclude && <>
               <span style={{ fontSize:12.5, color:'#475569' }}>from <b>{todayISO()}</b> (the day the file is made) to</span>
               <input type="date" value={spEnd} min={todayISO()} onChange={e => setSpEnd(e.target.value)} style={sel} />
-              <span style={{ fontSize:11.5, color:'#94a3b8' }}>a discount of 75% or more is removed</span>
+              <span style={{ fontSize:11.5, color:'#94a3b8' }}>a discount of {rulesNow.discountLimit}% or more is removed</span>
             </>}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
@@ -494,7 +521,7 @@ export default function DarazUpload() {
             {stockMode === 'set' ? <>
               <input type="number" min={0} max={99999} value={stockValue} onChange={e => setStockValue(e.target.value)} aria-label="Stock for every row" style={{ ...sel, width:90 }} />
               <span style={{ fontSize:11.5, color:'#94a3b8' }}>e.g. 0 when the seller wants to upload with no stock — every change is logged</span>
-            </> : <span style={{ fontSize:11.5, color:'#94a3b8' }}>from the price file, never above 99,999</span>}
+            </> : <span style={{ fontSize:11.5, color:'#94a3b8' }}>from the price file, never above {rulesNow.stockCap.toLocaleString()}</span>}
           </div>
           <div style={{ display:'flex', alignItems:'flex-start', gap:10, flexWrap:'wrap' }}>
             <span style={{ ...lbl, paddingTop:8 }}>Image keys</span>
@@ -703,7 +730,10 @@ export default function DarazUpload() {
                   </> : <div>· Values were not checked against CartUp's lists (no template)</div>}
                   {result.ai && <div>· {aiSummary(result.ai)}{aiUse ? ` · ${aiUse.calls.toLocaleString()} request${aiUse.calls === 1 ? '' : 's'}, ${aiUse.tokens.toLocaleString()} tokens` : ''}</div>}
                   {result.ai?.combo && <div data-combo-ai>· {comboSummary(result.ai.combo)}</div>}
-                  {result.ai?.category && <div data-category-ai>· {categorySummary(result.ai.category)}</div>}
+                  {result.ai?.category && <div data-category-ai>· {categorySummary(result.ai.category)}
+                    {aiCatPairs.length > 0 && !catSaved && <button data-save-ai-cats onClick={saveAiCategories} style={{ marginLeft:8, border:'1px solid #c7d2fe', background:'#fff', color:'#4f46e5', borderRadius:6, padding:'1px 9px', fontSize:11.5, fontWeight:600, cursor:'pointer' }}>Save {aiCatPairs.length} to the Daraz → CartUp map</button>}
+                    {catSaved && <span style={{ marginLeft:8, color: /^Not/.test(catSaved) ? '#b91c1c' : '#15803d', fontWeight:600 }}>{catSaved}</span>}
+                  </div>}
                   {ruleLine.length > 0 && <div>· {ruleLine.join(' · ')}</div>}
                 </div>
               </details>

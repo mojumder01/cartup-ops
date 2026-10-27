@@ -1,9 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { houseRules } from '../utils/catalog'
+import { onTeamSettings } from '../utils/teamSettings'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { processManualFile, generateTemplate } from '../utils/manualProcessor'
 import { FileSpreadsheet, CheckCircle, AlertCircle, Loader, Download, Zap, Info } from 'lucide-react'
 
 export default function ManualUpload() {
+  const [, redrawTeam] = useState(0)
+  useEffect(() => onTeamSettings(() => redrawTeam(n => n + 1)), [])   // the team's rules arrived or changed
   const apiKey = getApiKey()
   const [file, setFile]         = useState(null)
   const [fileName, setFileName] = useState('')
@@ -164,11 +168,11 @@ export default function ManualUpload() {
             {summary.invalid > 0 && <span style={{ color:'#b91c1c' }}> · {summary.invalid.toLocaleString()} in the "invalid" sheet{summary.duplicates ? ` (${summary.duplicates} repeated Seller SKUs)` : ''}</span>}
             {summary.noCategory > 0 && <span style={{ color:'#b45309' }}> · {summary.noCategory.toLocaleString()} without a category — fill in the Category Id</span>}
             {[
-              summary.discountRemoved && `${summary.discountRemoved} special prices removed (75%+ discount)`,
+              summary.discountRemoved && `${summary.discountRemoved} special prices removed (${houseRules().discountLimit}%+ discount)`,
               summary.spNotBelow && `${summary.spNotBelow} special prices removed (not below the price)`,
               summary.filled && `${summary.filled} variant values set by rule (the category needs them: Not Specified / One Size / Same as picture)`,
-              summary.stockCapped && `${summary.stockCapped} stocks capped at 99,999`,
-              summary.namesHash && `${summary.namesHash} names: "#" → "-"`,
+              summary.stockCapped && `${summary.stockCapped} stocks capped at ${houseRules().stockCap.toLocaleString()}`,
+              summary.namesHash && `${summary.namesHash} names: "#" → "${houseRules().hashTo}"`,
               summary.lowWeight && `${summary.lowWeight} weights to check (empty or 0.00x)`,
             ].filter(Boolean).map(t => <div key={t}>· {t}</div>)}
             <div style={{ color:'#64748b', fontSize:11.5 }}>Each row's notes are in its Report column.</div>

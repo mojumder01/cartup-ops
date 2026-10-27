@@ -1,10 +1,16 @@
+import { teamValue } from './teamSettings'
+
 const STORAGE_KEY = 'cartup_word_replacements'
 
 export const DEFAULT_REPLACEMENTS = [
   { find: 'daraz', replace: 'cartup' },
 ]
 
+// The team's list (Settings → Rules & defaults) once saved; until then the
+// one kept in this browser, else the default.
 export function getReplacements() {
+  const team = teamValue('rules')?.wordReplacements
+  if (Array.isArray(team)) return team
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored) return JSON.parse(stored)
