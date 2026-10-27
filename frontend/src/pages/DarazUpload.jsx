@@ -13,7 +13,7 @@ import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import VariantReview from '../components/VariantReview'
 import { buildAttributeList, saveFile } from '../utils/attributeList'
 import SheetEditor from '../components/SheetEditor'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch } from 'lucide-react'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw } from 'lucide-react'
 
 // A file box. file: the picked File; current: text shown when nothing is
 // picked here (a remembered file); check: what the file check found
@@ -68,6 +68,7 @@ function FileInput({ label, required, onChange, file, current, hint, check, chec
 }
 
 const SHEET_COLS = OUTPUT_COLS.filter(c => c !== 'Report' && c !== 'Check')
+const NO_KEY_PICK = { sheet: 0, mode: 'link', link: '', key: '', match: '', slots: {} }
 const BATCH = 5   // products per AI request (processor.js)
 
 export default function DarazUpload() {
@@ -106,11 +107,11 @@ export default function DarazUpload() {
   const [stockValue, setStockValue] = useState('0')
   const [aiRun, setAiRun]         = useState(null)     // AI calls of the latest run: { start, end }
   const [copied, setCopied]       = useState(false)
-  const [lastFile, setLastFile]   = useState(null)   // the last download: { name, parts, hiddenErrors, template }
+  const [lastFile, setLastFile]   = useState(null)   // the last download: { name, parts, hiddenErrors, template, state }
   const [keyFile, setKeyFile]     = useState(null)
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   // mode 'link': a Daraz link column + a key column · 'columns': keys per Seller SKU, one column per image
-  const [keyPick, setKeyPick]     = useState({ sheet: 0, mode: 'link', link: '', key: '', match: '', slots: {} })
+  const [keyPick, setKeyPick]     = useState(NO_KEY_PICK)
 
   const imageKeys = useMemo(() => {
     const sh = keySheets?.[keyPick.sheet]
@@ -199,16 +200,18 @@ export default function DarazUpload() {
     }
     if (crossErrors.length && !window.confirm(`The file check found a problem:\n\n${crossErrors.map(c => '• ' + c.text).join('\n')}\n\nProcess anyway?`)) return
     if (result && !window.confirm('Process the files again? This runs the AI again (uses requests from today\'s limit) and starts the review over.')) return
-    setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions({}); setEdits({}); setDeleted(new Set())
+    // A fresh run: no picks, edits or deleted rows (this closure still holds the last run's).
+    const dec = {}, ed = {}, del = new Set()
+    setError(''); setStatus('processing'); setProgress('Starting...'); setResult(null); setDecisions(dec); setEdits(ed); setDeleted(del)
     setAiRun({ start: sessionStats(), end: null })
     try {
       const res = await processDarazFiles(files, apiKey, msg => setProgress(msg), { activeOnly, aiFields, variantMode })
       setAiRun(r => r && { ...r, end: sessionStats() })
       setResult(res); setStatus('success'); setProgress('')
       // Values still undecided (or variants left identical) → review first; otherwise download now.
-      const out = buildOutput(res, {}, memory, options)
-      if (out.stats.open || out.stats.dupes) setReviewing(reviewStart(valueGroups(res, {}, memory), out.stats.dupes))
-      else download(res, {}, {})
+      const out = buildOutput(res, dec, memory, { ...options, edits: ed, deleted: del })
+      if (out.stats.open || out.stats.dupes) setReviewing(reviewStart(valueGroups(res, dec, memory), out.stats.dupes))
+      else download(res, dec, ed, del)
     } catch(e) {
       setStatus('error'); setError(e.message); setProgress('')
     }
@@ -229,18 +232,32 @@ export default function DarazUpload() {
     setRechecking('')
   }
 
-  async function download(res = result, dec = decisions, ed = edits) {
+  async function download(res = result, dec = decisions, ed = edits, del = deleted) {
     let file
     // With the CartUp template the template itself is filled (its columns and formulas kept).
-    try { file = await buildDarazWorkbook(res, dec, memory, { ...options, activeOnly, edits: ed, template: res.template ? files.template : null }) }
+    try { file = await buildDarazWorkbook(res, dec, memory, { ...options, activeOnly, edits: ed, deleted: del, template: res.template ? files.template : null }) }
     catch (e) { setError(`Could not build the file: ${e.message}`); return }
     const blob = new Blob([file.bytes], { type: file.name.endsWith('.zip') ? 'application/zip' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
     a.href = url; a.download = file.name; a.click()
     URL.revokeObjectURL(url)
-    setLastFile({ name: file.name, parts: file.parts, hiddenErrors: file.hiddenErrors, template: !!(res.template && files.template) })
+    setLastFile({ name: file.name, parts: file.parts, hiddenErrors: file.hiddenErrors, template: !!(res.template && files.template), state: [res, dec, ed, del] })
     setMemory(rememberDecisions(dec))
+  }
+
+  // Next task: the input files go (and the run made from them); the options and
+  // the CartUp template stay. Asks only when the run has work not downloaded yet.
+  const downloaded = lastFile?.state && [result, decisions, edits, deleted].every((v, i) => v === lastFile.state[i])
+  const canReset = status !== 'processing' && (Object.keys(files).some(k => k !== 'template' && files[k]) || keyFile || result || error)
+  const resetFiles = () => {
+    if (result && !downloaded && !window.confirm('Clear the files for a new task?\n\nThis run (with your picks and edits) is not in a downloaded file yet.')) return
+    setFiles(p => p.template ? { template: p.template } : {})
+    setFileChecks(c => c.template ? { template: c.template } : {})
+    setChecking(c => ({ template: c.template }))
+    setKeyFile(null); setKeySheets(null); setKeyPick(NO_KEY_PICK)
+    setResult(null); setStatus(''); setProgress(''); setError(''); setDecisions({}); setEdits({}); setDeleted(new Set())
+    setReviewing(null); setSheetOpen(null); setLastFile(null); setAiRun(null)
   }
 
   // Values kept as new, for CartUp to add: exported in its Attribute List format.
@@ -298,6 +315,11 @@ export default function DarazUpload() {
             <div style={{ fontWeight:600, fontSize:15 }}>Daraz Export Files</div>
             <div style={{ color:'#718096', fontSize:12 }}>Price, Basic, Weight, SKU Image (+ optional Attribute, CartUp template, image keys)</div>
           </div>
+          <button data-reset-files onClick={resetFiles} disabled={!canReset}
+            title="Clear the chosen files (and image key file) for the next task — the options and the CartUp template stay"
+            style={{ ...btn(false), marginLeft:'auto', padding:'6px 12px', fontSize:12, opacity: canReset ? 1 : 0.45, cursor: canReset ? 'pointer' : 'not-allowed' }}>
+            <RotateCcw size={13} /> Reset files
+          </button>
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0 20px' }}>

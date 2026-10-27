@@ -52,7 +52,7 @@ Only these call Gemini (they use requests from the ticked keys' daily limits); e
 | **Governance** | Revamp product content (zero-tolerance rewrite) |
 
 ### Latest and old version
-The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/. At the bottom of the sidebar (and under the sign-in box) there are **two buttons — `OLD: v25.6.76` and `Latest: v25.6.86`**; the one you are using is **green with "Running"**, the other one opens that version. The old version shows the same two buttons with OLD running. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
+The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/. At the bottom of the sidebar (and under the sign-in box) there are **two buttons — `OLD: v25.6.76` and `Latest: v25.6.87`**; the one you are using is **green with "Running"**, the other one opens that version. The old version shows the same two buttons with OLD running. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
 - **How it is kept:** every deploy builds the old version from its own source (commit in `frontend/old-version.json`) with `frontend/scripts/build-old.mjs` and puts it in `/old/`; links straight into it (e.g. `/cartup-ops/old/production/daraz`) work too. To keep a different version as the old one, change `version` and `commit` in `frontend/old-version.json`.
 
 ---
@@ -84,6 +84,7 @@ Upload 4-5 Daraz files → AI cleans content (optional) → category by lookup �
 - **File check panel** — the files against each other: the **same file in two boxes**; **Price and Basic from different exports** (fewer than half the products in both); products in the Price file but not in Basic (kept, image flagged) or Weight (no weight → left out unless typed in), Seller SKUs not in the SKU Image file (with the first IDs as examples); how many products get a brand from the Attribute file.
 - **Process** is blocked while a box is red (with the reason); a cross-file error asks "Process anyway?". Files are read once — processing reuses them. A title row above the header, another sheet name than `template`, or extra spaces in headers are handled. If the Weight file has a `SellerSKU` column, each SKU gets its own weight.
 - After a run the button says **Process again** and asks first (it runs the AI again and starts the review over).
+- **Reset files** (top right of the Daraz Export Files box) — for the next task: clears the chosen files (Price, Basic, Weight, SKU Image, Attribute and the image key file), their checks and the run made from them. **The options and the CartUp template stay.** If the run has picks or edits that aren't in a downloaded file yet, it asks first; after a download it clears straight away. Greyed out while processing or when nothing is chosen.
 
 **Options** (on the page):
 - **Rows:** all rows, or **active only** (by the price file's `status` column) — chosen before processing
@@ -431,6 +432,7 @@ AI runs on **Gemini only** (Production, QC, Governance) — Grok and Groq were r
 | Category obviously wrong | Check the Report/Note column — low-confidence picks are labelled for manual review. Add a context hint (QC) to improve accuracy |
 | AI checks skipped | No Gemini key ticked — add or tick one in Profile & Settings |
 | Daraz Upload stays on "AI reading Variations Combo — products … of …" for minutes (big shops) | Fixed in v25.6.85: after the AI reading, preparing what the rules couldn't finish searched CartUp's whole Color list for every part — now it uses a word index (about 2 ms a product instead of 60) and the progress line says *Preparing what the rules couldn't finish — product n of N*, then *Applying the AI's picks*. An AI request with no answer in 2 minutes is given up and retried with another key or model, so a stalled connection can't hang a run |
+| The downloaded file opens with **product** and **payload_hidden** empty (the other tabs have data) | Fixed in v25.6.87. Products whose descriptions are full of emojis (💦✨…): the zip library writes a sheet as text in pieces of 16,384 characters, and an emoji that fell exactly on a piece edge was written as two broken halves — Excel then can't read that sheet and shows it empty. Every sheet is now written already encoded, in one piece (`utils/zipText.js`), in the Daraz output, Shop Duplicate and the Attribute List export. A file made before the fix: hard refresh and process the files again |
 | Output missing products | Check the `invalid` sheet — every row there says why (no Product ID, Seller SKU, name, price or image; repeated Seller SKU) |
 
 ---

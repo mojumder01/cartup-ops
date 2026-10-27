@@ -5,6 +5,7 @@
 // is, so its dropdown and hidden list stay; rows go from row 2 down.
 import JSZip from 'jszip'
 import templateUrl from '../assets/attribute-list-template.xlsx?url'
+import { utf8 } from './zipText'
 
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const key = s => String(s).toLowerCase().replace(/^\s*\[\d+\]\s*/, '').replace(/[^a-z0-9]/g, '')
@@ -52,7 +53,7 @@ export async function buildAttributeList(rows, template = templateUrl) {
   })
   const last = Math.max(out.length + 1, ...[...sheet.matchAll(new RegExp(`<${tag('row')} r="(\\d+)"`, 'g'))].map(m => +m[1]))
   sheet = sheet.replace(/<((?:\w+:)?dimension) ref="[^"]*"/, `<$1 ref="A1:J${last}"`)
-  zip.file(sheetPath, sheet)
+  zip.file(sheetPath, utf8(sheet))
   const stamp = new Date().toISOString().slice(0, 10)
   return { bytes: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }), name: `Attribute-List_new-values_${stamp}.xlsx`, rows: out.length, skipped: [...skipped] }
 }

@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import MAPPINGS from './mappings.json'
 import { processProductsBatch, readVariantCombos, pickVariantValues, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
+import { utf8 } from './zipText'
 import { loadTemplate, writeTemplate, chunkRows, zipFiles } from './shopDuplicate'
 import { colToNum, numToCol } from './xlsxFormula'
 import { IMAGE_COLS } from './checks'
@@ -844,8 +845,8 @@ async function wrapCell(bytes, sheetName, ref) {
   styles = styles.replace(/<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/, (_, xfs) =>
     `<cellXfs count="${count + 1}">${xfs}<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs>`)
   const sheet = (await sheetFile.async('string')).replace(new RegExp(`<c r="${ref}"( s="\\d+")?`), `<c r="${ref}" s="${count}"`)
-  zip.file('xl/styles.xml', styles)
-  zip.file(sheetFile.name, sheet)
+  zip.file('xl/styles.xml', utf8(styles))
+  zip.file(sheetFile.name, utf8(sheet))
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
 

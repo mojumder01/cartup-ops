@@ -12,6 +12,7 @@
 import JSZip from 'jszip'
 import * as XLSX from 'xlsx'
 import { applyReplacements } from './wordReplacements'
+import { utf8 } from './zipText'
 import { listMatcher, columnKind, MATCH_LABEL } from './listMatch'
 import {
   tokenize, parse, fillDown, moveRef, refText, evaluate, finalValue,
@@ -847,7 +848,7 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
     const lastCol = extraHeads[extraHeads.length - 1][0]
     head = head.replace(/(<dimension\b[^>]*\bref="[A-Z]+\d+:)([A-Z]+)(\d+")/, (m, a, col, b) => colToNum(col) < colToNum(lastCol) ? `${a}${lastCol}${b}` : m)
   }
-  zip.file(tpl.product.path, head + productRows.join('') + pp.tail, { createFolders: false })
+  zip.file(tpl.product.path, utf8(head + productRows.join('') + pp.tail), { createFolders: false })
 
   // payload_hidden: every row rebuilt by filling each column's formula down,
   // with the result Excel would compute stored as the cell's cached value.
@@ -885,15 +886,15 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
     cells.sort((a, b) => a[0] - b[0])
     payloadRows.push(`${rowOpenTag((existing.get(p) || firstPayload).attrs, p)}${cells.map(c => c[1]).join('')}</row>`)
   }
-  zip.file(pl.path, pl.parts.head + payloadRows.join('') + pl.parts.tail, { createFolders: false })
+  zip.file(pl.path, utf8(pl.parts.head + payloadRows.join('') + pl.parts.tail), { createFolders: false })
 
   if (makeReport) {
     const tab = await addSheet(tpl, REPORT_SHEET)
-    zip.file(tab.path, reportSheetXml(makeReport(), tab.styles), { createFolders: false })
+    zip.file(tab.path, utf8(reportSheetXml(makeReport(), tab.styles)), { createFolders: false })
   }
   for (const sh of sheets) {
     const tab = await addSheet(tpl, sh.name)
-    zip.file(tab.path, reportSheetXml(sh.rows(), tab.styles, sh.widths, sh.heights), { createFolders: false })
+    zip.file(tab.path, utf8(reportSheetXml(sh.rows(), tab.styles, sh.widths, sh.heights)), { createFolders: false })
   }
 
   // Ask Excel to recalculate on open, so edits made later stay consistent.
@@ -903,7 +904,7 @@ export async function writeTemplate(tpl, rows, { report: makeReport = null, erro
   } else {
     wb = wb.replace(/(<extLst\b|<\/workbook>)/, '<calcPr fullCalcOnLoad="1"/>$1')
   }
-  zip.file('xl/workbook.xml', wb, { createFolders: false })
+  zip.file('xl/workbook.xml', utf8(wb), { createFolders: false })
 
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 } })
 }
@@ -930,11 +931,11 @@ async function addSheet(tpl, name) {
   const rels = await zip.file(relsPath).async('string')
   let k = 1
   while (rels.includes(`Id="rId${k}"`)) k++
-  zip.file(relsPath, rels.replace('</Relationships>',
-    `<Relationship Id="rId${k}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/></Relationships>`), { createFolders: false })
+  zip.file(relsPath, utf8(rels.replace('</Relationships>',
+    `<Relationship Id="rId${k}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/></Relationships>`)), { createFolders: false })
   const types = await zip.file('[Content_Types].xml').async('string')
-  zip.file('[Content_Types].xml', types.replace('</Types>',
-    `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`), { createFolders: false })
+  zip.file('[Content_Types].xml', utf8(types.replace('</Types>',
+    `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`)), { createFolders: false })
   const sheetId = Math.max(0, ...[...tpl.workbookXml.matchAll(/<sheet\b[^>]*\bsheetId="(\d+)"/g)].map(m => +m[1])) + 1
   const ns = /<sheet\b[^>]*\s([\w]+):id="/.exec(tpl.workbookXml)?.[1] || 'r'
   tpl.workbookXml = tpl.workbookXml.replace('</sheets>', `<sheet name="${xmlEscape(name)}" sheetId="${sheetId}" ${ns}:id="rId${k}"/></sheets>`)
@@ -947,7 +948,7 @@ async function addSheet(tpl, name) {
     const next = app
       .replace(titles[0], () => `${titles[1]}${+titles[2] + 1}${titles[3]}${titles[4]}<vt:lpstr>${xmlEscape(name)}</vt:lpstr>${titles[5]}`)
       .replace(count[0], () => `${count[1]}${+count[2] + 1}${count[3]}`)
-    zip.file('docProps/app.xml', next, { createFolders: false })
+    zip.file('docProps/app.xml', utf8(next), { createFolders: false })
   }
   return (tpl.addedSheets[name] = { path, styles })
 }
@@ -974,7 +975,7 @@ async function addReportStyles(zip) {
       `<xf numFmtId="0" fontId="${nFont + 1}" fillId="${nFill}" borderId="0" xfId="0" applyFont="1" applyFill="1"/>` +
       `<xf numFmtId="0" fontId="${nFont + 1}" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
       '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>', nXf + 4))
-  zip.file(path, xml, { createFolders: false })
+  zip.file(path, utf8(xml), { createFolders: false })
   return { title: nXf, head: nXf + 1, bold: nXf + 2, wrap: nXf + 3 }
 }
 
