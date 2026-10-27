@@ -12,7 +12,7 @@ export const IMAGE_COLS = ['**Product Image 1', 'Product Image 2', 'Product Imag
 export const ISSUE_TYPES = {
   list:     { label: 'Not on CartUp list (#N/A)', level: 'error' },
   category: { label: 'No category', level: 'error' },
-  aicat:    { label: 'Category set or changed by the AI', level: 'warn' },
+  aicat:    { label: 'Category set by the AI', level: 'warn' },
   namepart: { label: 'Name: a part of Variations Combo added (8TB…)', level: 'warn' },
   required: { label: 'Required — empty', level: 'error' },
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
@@ -89,7 +89,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     title: 'Rows without a CartUp category', why: 'The Daraz category had no match — fill in the Category Id',
     open: { sheet: 'category' } })
   if (byType.aicat) add({ id: 'aicat', level: 'check', count: byType.aicat, unit: 'row',
-    title: 'Categories set or changed by the AI', why: 'The AI category check: empty (no mapping) or not fitting the product — the AI picked from CartUp\'s categories that share the product\'s words; Report says from what to what',
+    title: 'Categories set by the AI', why: 'The AI category check: products whose Daraz category had no CartUp mapping — the AI picked from CartUp\'s categories that share the product\'s words; Report says which',
     open: { sheet: 'aicat' } })
   add({ id: 'required', level: 'fix', count: byType.required || 0, unit: 'cell',
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',

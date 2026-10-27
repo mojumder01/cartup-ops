@@ -472,39 +472,40 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   if (apiKey && aiFields.category) {
     category = await checkCategories(items, onProgress)
     // A new category can need other variant columns: matched again (no AI).
-    if (category.filled || category.changed) matchItems(items, lists, variantMode)
+    if (category.filled) matchItems(items, lists, variantMode)
   } else onProgress(null, { step: 'category', skip: !apiKey ? 'no Gemini key ticked' : 'Category unticked' })
   return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo, category } : null }
 }
 
 // The AI category check on a processed run (Daraz Upload's button, any time
 // after processing — no files read again): the same check as the Category
-// option, then the variant columns matched again where a category changed.
-export async function runCategoryCheck(result, onProgress = () => {}) {
-  const category = await checkCategories(result.items, onProgress)
-  if (category.filled || category.changed) matchItems(result.items, result.lists, result.variantMode)
+// option, then the variant columns matched again where a category was set.
+// skip: Parent SKUs whose category was typed in by hand (sheet view).
+export async function runCategoryCheck(result, onProgress = () => {}, skip = new Set()) {
+  const category = await checkCategories(result.items, onProgress, skip)
+  if (category.filled) matchItems(result.items, result.lists, result.variantMode)
   const ai = result.ai || { products: 0, missed: 0, message: '', name: false, fields: { name: false, highlights: false, description: false, combo: false }, combo: null }
   return { ...result, items: [...result.items], ai: { ...ai, fields: { ...ai.fields, category: true }, category } }
 }
 
-// Each product's CartUp category, checked by the AI (the Category option, run
-// after everything else): empty (no mapping, mystery box) or not fitting the
-// product → the AI picks from the CartUp categories that share the product's
-// words (categoryCandidates); only such a candidate is taken, so a category is
-// never invented. Kept as it was when the AI keeps it, finds none or doesn't
-// answer. → { asked, kept, filled, changed, none, missed, slips, message }
+// Products without a CartUp category (their Daraz category has no mapping, or
+// a mystery box), given one by the AI (the AI category check — the button on
+// the result, or the Category option as the last step): it picks from the
+// CartUp categories that share the product's words (categoryCandidates); only
+// such a candidate is taken, so a category is never invented. Products that
+// have a category are not asked. → { asked, filled, none, missed, slips, message }
 const CAT_BATCH = 15
-async function checkCategories(items, onProgress) {
+async function checkCategories(items, onProgress, skip = new Set()) {
   const cartup_map = cartupCategories(), cat_variant_map = categoryAttributes()
   const products = []
+  let noWords = 0
   for (const [pid, g] of groupBy(items, it => it.parent)) {
-    const id = String(g[0].out['**Category Id'] ?? '').trim()
-    const current = id ? { id, path: cartup_map[id]?.path || g[0].category || '' } : null
-    const candidates = categoryCandidates(g[0].name, 10).filter(c => c.id !== id)
-    if (!candidates.length && current) continue   // nothing else to offer
-    products.push({ pid, items: g, name: g[0].name, current, candidates })
+    if (String(g[0].out['**Category Id'] ?? '').trim() || skip.has(pid)) continue
+    const candidates = categoryCandidates(g[0].name, 10)
+    if (!candidates.length) { noWords++; continue }   // nothing in CartUp's list shares its words
+    products.push({ pid, items: g, name: g[0].name, current: null, candidates })
   }
-  const stats = { asked: products.length, kept: 0, filled: 0, changed: 0, none: 0, missed: 0, slips: 0, message: '' }
+  const stats = { asked: products.length, filled: 0, none: noWords, missed: 0, slips: 0, message: '' }
   const batches = []
   for (let i = 0; i < products.length; i += CAT_BATCH) batches.push(products.slice(i, i + CAT_BATCH))
   const answers = {}
@@ -518,19 +519,17 @@ async function checkCategories(items, onProgress) {
     done += batch.length
     const last = batch.filter(p => got[p.pid]).slice(0, 2).map(p => {
       const a = got[p.pid], to = p.candidates.find(c => c.id === a.category)
-      return a.verdict === 'change' && to ? `${p.name} → ${leaf(to.path)}${p.current ? ` (was ${leaf(p.current.path)})` : ''}` : `${p.name} · ${a.verdict === 'keep' && p.current ? `keeps ${leaf(p.current.path)}` : 'no fitting category'}`
+      return a.verdict === 'pick' && to ? `${p.name} → ${leaf(to.path)}` : `${p.name} · no fitting category`
     })
     onProgress(null, { step: 'category', done, total: products.length, last })
   }))
   for (const p of products) {
     const a = answers[p.pid]
     if (!a) { stats.missed++; continue }
-    const to = a.verdict === 'change' ? p.candidates.find(c => c.id === a.category) : null
-    if (a.verdict === 'change' && !to) { stats.slips++; continue }   // not one of its candidates: ignored
-    if (!to) { if (a.verdict === 'keep' && p.current) stats.kept++; else stats.none++; continue }
-    const why = p.current
-      ? `Category changed by AI: ${p.current.path} → ${to.path} (the mapping's category didn't fit the product)`
-      : `Category by AI: ${to.path} (${p.items[0].reportNote.replace(/\s*[;—]\s*fill in the Category Id$/, '')})`
+    const to = a.verdict === 'pick' ? p.candidates.find(c => c.id === a.category) : null
+    if (a.verdict === 'pick' && !to) { stats.slips++; continue }   // not one of its candidates: ignored
+    if (!to) { stats.none++; continue }
+    const why = `Category by AI: ${to.path} (${p.items[0].reportNote.replace(/\s*[;—]\s*fill in the Category Id$/, '')})`
     for (const it of p.items) {
       it.catChange = { from: p.current?.id || '', to: to.id, why }
       it.out['**Category Id'] = to.id
@@ -541,10 +540,10 @@ async function checkCategories(items, onProgress) {
       it.reportNote = why
       it.out.Report = why
     }
-    stats[p.current ? 'changed' : 'filled']++
+    stats.filled++
   }
   onProgress(null, { step: 'category', end: true,
-    note: `${stats.filled.toLocaleString()} filled · ${stats.changed.toLocaleString()} changed · ${stats.kept.toLocaleString()} kept${stats.none ? ` · ${stats.none} with no fitting category` : ''}${stats.missed ? ` · ${stats.missed} not answered` : ''}` })
+    note: stats.asked + noWords ? `${stats.filled.toLocaleString()} of ${(stats.asked + noWords).toLocaleString()} products without a category filled${stats.none ? ` · ${stats.none} with no fitting category` : ''}${stats.missed ? ` · ${stats.missed} not answered` : ''}` : 'every product has a category — nothing to ask' })
   return stats
 }
 
@@ -1036,8 +1035,10 @@ export function aiSummary(ai) {
 // The AI's category check, in a line.
 export function categorySummary(c) {
   if (!c) return ''
-  return `AI category check: ${c.asked.toLocaleString()} products — ${c.filled.toLocaleString()} filled (no mapping) · ${c.changed.toLocaleString()} changed (didn't fit) · ${c.kept.toLocaleString()} kept`
-    + (c.none ? ` · ${c.none.toLocaleString()} with no fitting category` : '') + (c.slips ? ` · ${c.slips} answers ignored (not one of the offered categories)` : '')
+  const total = c.filled + c.none + c.missed + c.slips
+  if (!total) return 'AI category check: every product has a CartUp category — nothing to ask'
+  return `AI category check: ${c.filled.toLocaleString()} of ${total.toLocaleString()} products without a category filled`
+    + (c.none ? ` · ${c.none.toLocaleString()} with no fitting category (fill by hand)` : '') + (c.slips ? ` · ${c.slips} answers ignored (not one of the offered categories)` : '')
     + (c.missed ? ` · ${c.missed.toLocaleString()} not answered${c.message ? ` (${c.message.slice(0, 60)})` : ''}` : '')
 }
 // The AI's reading of Variations Combo, in a line.

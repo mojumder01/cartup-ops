@@ -14,7 +14,7 @@ export const STEPS = [
   { id: 'prepare', label: 'Find what the rules couldn\'t finish', unit: 'product', what: 'values not on the lists, variants numbered apart or alike' },
   { id: 'pick', label: 'AI picks the closest CartUp values', ai: true, unit: 'product', what: 'only values on CartUp\'s list, only the seller\'s own words' },
   { id: 'apply', label: 'Apply and check the AI\'s picks', what: 'every pick checked again by the rules' },
-  { id: 'category', label: 'AI checks categories', ai: true, unit: 'product', what: 'empty or not fitting → the closest CartUp category, only from those sharing the product\'s words — 15 products per request' },
+  { id: 'category', label: 'AI checks categories', ai: true, unit: 'product', what: 'products without a CartUp category (no mapping) → the closest one, only from those sharing the product\'s words — 15 products per request' },
 ]
 
 const time = ms => {
