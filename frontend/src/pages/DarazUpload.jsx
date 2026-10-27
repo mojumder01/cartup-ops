@@ -11,6 +11,7 @@ import { readDarazFile, crossCheck, DARAZ_FILES, REQUIRED_FILES } from '../utils
 import { loadSavedTemplate, saveTemplate, savedLabel } from '../utils/templateStore'
 import { todayISO, loadSpecialEnd, saveSpecialEnd } from '../utils/dates'
 import VariantReview from '../components/VariantReview'
+import { buildAttributeList, saveFile } from '../utils/attributeList'
 import SheetEditor from '../components/SheetEditor'
 import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch } from 'lucide-react'
 
@@ -240,6 +241,13 @@ export default function DarazUpload() {
     URL.revokeObjectURL(url)
     setLastFile({ name: file.name, parts: file.parts, hiddenErrors: file.hiddenErrors, template: !!(res.template && files.template) })
     setMemory(rememberDecisions(dec))
+  }
+
+  // Values kept as new, for CartUp to add: exported in its Attribute List format.
+  const keptNew = output?.newValues.filter(nv => nv.decided) || []
+  const exportNew = async () => {
+    try { const file = await buildAttributeList(keptNew); saveFile(file.bytes, file.name) }
+    catch (e) { setError(`Could not export the new values: ${e.message}`) }
   }
 
   // AI calls since the run started (live while it runs).
@@ -550,6 +558,11 @@ export default function DarazUpload() {
                   <Table2 size={14} /> View &amp; edit sheet{needs ? ` (${needs} rows to check)` : ''}
                 </button>
                 <button onClick={() => download()} style={btn(false)}><Download size={14} /> Download file</button>
+                {keptNew.length > 0 && (
+                  <button data-export-new onClick={exportNew} style={btn(false)} title="The values kept as new, in CartUp's Attribute List format (Attribute, Attribute Value) — for CartUp to add to its lists">
+                    <Download size={14} /> New values → Attribute List ({keptNew.length})
+                  </button>
+                )}
               </div>
               <div data-file-kind style={{ fontSize:11.5, color:'#64748b', marginTop:6 }}>
                 {result.template && files.template

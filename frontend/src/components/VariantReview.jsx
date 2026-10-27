@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { reviewGroups, valueGroups, decisionKey, headerKey, colLabel, colGroup, splitCombo, productFixes, RISK, COMBO_TARGETS } from '../utils/variantReview'
+import { reviewGroups, valueGroups, cellState, decisionKey, headerKey, colLabel, colGroup, splitCombo, productFixes, RISK, COMBO_TARGETS } from '../utils/variantReview'
 import { MATCH_LABEL } from '../utils/listMatch'
 import CopyButton from './CopyButton'
+import { HoverZoomToggle, zoomProps, hideZoom } from './HoverZoom'
+import { buildAttributeList, saveFile } from '../utils/attributeList'
 import { X, Search, Check, Plus, RotateCcw, ChevronRight, AlertTriangle, ImageOff, Download, Tag, ShieldOff, Filter, Layers, Rows3, Wand2, CheckCircle } from 'lucide-react'
 
 // Review window for Daraz Upload: the dropdown values (Color, Size, Brand,
@@ -51,7 +53,7 @@ function Thumb({ src, size = 40, onOpen }) {
   const [failed, setFailed] = useState(false)
   const ok = src && /^https?:\/\//.test(src) && !failed
   return (
-    <div onClick={ok ? () => onOpen(src) : undefined} title={ok ? 'Click to enlarge' : 'No image'}
+    <div onClick={ok ? () => onOpen(src) : undefined} title={ok ? 'Click to enlarge' : 'No image'} {...(ok ? zoomProps(src) : {})}
       style={{ width:size, height:size, borderRadius:6, border:'1px solid #e2e8f0', background:'#f8fafc', flexShrink:0, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center', cursor: ok ? 'zoom-in' : 'default' }}>
       {ok ? <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
         : <ImageOff size={Math.round(size / 2.6)} color='#cbd5e1' />}
@@ -233,6 +235,30 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
     for (const v of vShown.slice(0, limit)) if (v.status === 'open' || v.key === valueEdit) m.set(v.key, result.lists?.[headerKey(v.col)]?.suggest(v.raw, v.key === valueEdit ? 8 : 3) || [])
     return m
   }, [vShown.map(v => v.key).join('\n'), limit, valueEdit, result.lists])
+  // Values kept as new — for CartUp to add to its lists: one click exports them
+  // in CartUp's Attribute List format (A = attribute, B = value).
+  const newValues = useMemo(() => {
+    const m = new Map()
+    for (const it of result.items) for (const c of it.cells) {
+      if (!c.listed) continue
+      const st = cellState(it, c, decisions, memory, result.lists)
+      const k = `${c.col}|${String(st.value).toLowerCase()}`
+      if (st.state === 'kept' && !m.has(k)) m.set(k, { column: colLabel(c.col), value: st.value })
+    }
+    return [...m.values()]
+  }, [result, decisions, memory])
+  const undecided = values.filter(v => v.status === 'open').length
+  const [exported, setExported] = useState('')
+  const exportNew = async () => {
+    try {
+      const file = await buildAttributeList(newValues)
+      saveFile(file.bytes, file.name)
+      const left = newValues.filter(r => file.skipped.includes(r.column))
+      setExported(`${file.rows} value${file.rows === 1 ? '' : 's'} exported to ${file.name}${left.length ? ` · not in the Attribute List, so not exported: ${[...new Set(left.map(r => r.column))].join(', ')} (${left.length})` : ''}`)
+    } catch (e) { setExported(`Could not export: ${e.message}`) }
+  }
+  useEffect(() => hideZoom, [])   // the window closes: no preview left behind
+
   // A value's products, as cards with all their variants.
   const showProducts = v => { setView('products'); setColFilter(`c:${v.col}`); setPState('all'); setQuery(v.raw); setEditing(null) }
 
@@ -538,11 +564,12 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
               placeholder={view === 'products' ? 'Parent SKU, Seller SKU, name or value' : 'Seller value or CartUp value'}
               style={{ width:'100%', padding:'6px 10px 6px 28px', border:'1.5px solid #e2e8f0', borderRadius:8, fontSize:12.5, boxSizing:'border-box' }} />
           </div>
-          {view === 'products' && (
+          {view === 'products' && <>
             <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:'#475569', cursor:'pointer' }}>
               <input type="checkbox" checked={big} onChange={e => setBig(e.target.checked)} style={{ accentColor:'#4f46e5' }} /> Large images
             </label>
-          )}
+            <HoverZoomToggle />
+          </>}
           {(colFilter !== 'all' || query) && <button onClick={() => { setColFilter('all'); setQuery('') }} style={{ ...mini, border:'none', background:'none', color:'#4f46e5' }}>Clear filters</button>}
         </div>
 
@@ -552,6 +579,17 @@ export default function VariantReview({ result, decisions, setDecisions, memory,
               {vState === 'changed'
                 ? <>Seller values the system matched to another CartUp value. <b>Close spelling</b> matches are listed first{fuzzy ? ` (${fuzzy})` : ''} — they're the ones worth a glance. Pick another value if one is wrong.</>
                 : <>Each seller value once, for all products. Pick the CartUp value, keep it as a <b>new value</b> for CartUp to add{colFilter === 'c:**Brand' || colFilter === 'g:brand' ? <>, or use <b>No Brand</b></> : ''}. A pick here covers every SKU with that value and is remembered for next time. To see a value with its product's other variants, use <b>In product</b>.</>}
+            </div>
+            <div data-export-new style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:10, padding:'8px 10px', background:'#fffbeb', border:'1px solid #fde68a', borderRadius:10, fontSize:12 }}>
+              <button onClick={exportNew} disabled={!newValues.length} style={{ ...btn, padding:'6px 12px', background: newValues.length ? '#b45309' : '#f1f5f9', borderColor: newValues.length ? '#b45309' : '#e2e8f0', color: newValues.length ? '#fff' : '#94a3b8', cursor: newValues.length ? 'pointer' : 'default' }}
+                title="CartUp's Attribute List format: Attribute ([14] Color…) and Attribute Value — for CartUp to add these values to its lists">
+                <Download size={14} /> Export new values (Attribute List){newValues.length ? ` · ${newValues.length}` : ''}
+              </button>
+              <span style={{ color:'#92400e' }}>
+                {exported || (newValues.length
+                  ? <>The values kept as new, in CartUp's Attribute List file{undecided ? <> · {undecided} value{undecided === 1 ? '' : 's'} not decided yet {undecided === 1 ? "isn't" : "aren't"} included — keep {undecided === 1 ? 'it' : 'them'} as new or pick a match</> : ''}</>
+                  : 'No values kept as new yet — "Keep as new" a value and it can be exported for CartUp to add')}
+              </span>
             </div>
             <div style={{ border:'1px solid #e2e8f0', borderRadius:10, overflow:'hidden' }}>
               <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12.5 }}>

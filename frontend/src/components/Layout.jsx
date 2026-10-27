@@ -2,6 +2,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight } from 'lucide-react'
 import VersionSwitch from './VersionSwitch'
+import { HoverZoomLayer } from './HoverZoom'
 
 export default function Layout() {
   const { user, signOut } = useAuth()
@@ -143,6 +144,7 @@ export default function Layout() {
           <Outlet />
         </div>
       </main>
+      <HoverZoomLayer />
 
       <style>{`
         .sb-credit {

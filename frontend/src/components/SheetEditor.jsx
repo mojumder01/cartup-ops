@@ -4,6 +4,7 @@ import { headerKey, colLabel } from '../utils/variantReview'
 import { ISSUE_TYPES } from '../utils/checks'
 import { COLUMN_SECTIONS } from '../utils/processor'
 import CopyButton from './CopyButton'
+import { HoverZoomToggle, zoomProps, hideZoom } from './HoverZoom'
 import { X, Search, Download, RotateCcw, Check, AlertTriangle, ImageOff, ChevronRight, ChevronLeft, Replace, Trash2, Undo2,
   Table2, ListChecks, Pencil, Columns3, Eye, EyeOff, Sparkles, Box, CircleSlash } from 'lucide-react'
 
@@ -36,6 +37,7 @@ const LEVEL = { error: { bg: '#fef2f2', bar: '#ef4444', text: '#991b1b', soft: '
 // initialFilter: 'problems' | 'all' | 'edited' | 'deleted' | 'name' | 'stock0' | an ISSUE_TYPES key
 export default function SheetEditor({ output, items, columns, lists, issues, keyOf, edits, setEdits, deleted = new Set(), setDeleted = () => {}, initialFilter = 'problems', onDownload, onClose }) {
   const rows = output.rows
+  useEffect(() => hideZoom, [])   // the sheet closes: no image preview left behind
   const [filter, setFilter] = useState(initialFilter)
   const [colOnly, setColOnly] = useState(SPECIAL_COL[initialFilter] || null)
   const [query, setQuery] = useState('')
@@ -382,7 +384,8 @@ export default function SheetEditor({ output, items, columns, lists, issues, key
                   <button onClick={() => setColOnly(null)} title="Every column" style={{ border:'none', background:'none', cursor:'pointer', color:'#3730a3', display:'flex', padding:2 }}><X size={12} /></button>
                 </span>
               )}
-              <div style={{ position:'relative', marginLeft:'auto' }}>
+              <HoverZoomToggle style={{ marginLeft:'auto' }} />
+              <div style={{ position:'relative' }}>
                 <Search size={13} color='#94a3b8' style={{ position:'absolute', left:10, top:10 }} />
                 <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search Seller / Parent SKU or name" aria-label="Search rows"
                   style={{ ...field, paddingLeft:30, width:230 }} />
@@ -631,7 +634,7 @@ function Thumb({ src, size = 52 }) {
   const ok = src && /^https?:\/\//.test(src) && !failed
   return (
     <div style={{ width:size, height:size, borderRadius:6, border:'1px solid #e2e8f0', background:'#fff', flexShrink:0, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center' }}>
-      {ok ? <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} style={{ width:'100%', height:'100%', objectFit:'cover' }} /> : <ImageOff size={Math.max(12, size / 3)} color='#cbd5e1' />}
+      {ok ? <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} {...zoomProps(src)} style={{ width:'100%', height:'100%', objectFit:'cover' }} /> : <ImageOff size={Math.max(12, size / 3)} color='#cbd5e1' />}
     </div>
   )
 }
