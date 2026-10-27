@@ -752,10 +752,13 @@ export const rowKey = (item, i) => item.sku || `row ${i + 1}`
 //            deleted: Set of row keys deleted in the sheet view (left out, listed in "invalid") }
 export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const applied = applyDecisions(result, decisions, memory)
-  const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null } = options
+  const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null, onCartup = null } = options
+  // onCartup: { skus, parents } from CartUp's error report (cartupErrors.js) —
+  // products CartUp already has: left out, listed in "already on CartUp".
+  const onCartupRows = []
   const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    spNotBelowSkus: [], namePartRows: 0, keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
+    spNotBelowSkus: [], namePartRows: 0, onCartup: 0, onCartupParent: 0, keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
     variantRows: new Set() }   // rows with variant values (applied.variantLook: those that need a person)
   const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
@@ -782,9 +785,14 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     const log = (column, from, to, change) => applied.changes.push({ sku: item.sku, parent: item.parent, name: item.name, column, from: String(from ?? ''), to: String(to ?? ''), change, detail: '' })
     // A row deleted in the sheet view is left out and not flagged.
     const isDeleted = !!deleted?.has(rowKey(item, i))
+    // Already on CartUp (its error report): not uploaded, so nothing to flag.
+    const skuNow = String(out['**Seller SKU'] ?? '').trim(), parentNow = String(out['**Parent Sku'] ?? '').trim()
+    const onCartupWhy = isDeleted || !onCartup ? ''
+      : onCartup.skus.has(skuNow) ? 'Already on CartUp — CartUp said this Seller SKU exists'
+      : onCartup.parents.has(parentNow) ? 'Parent SKU already on CartUp — a new variant of a product CartUp has: add it on CartUp' : ''
     // type (optional): the sheet's problem type for this flag (see checks.js ISSUE_TYPES)
     const flag = (column, problem, type) => {
-      if (isDeleted) return
+      if (isDeleted || onCartupWhy) return
       problems.push({ sku: item.sku, parent: item.parent, row: i, column, value: String(out[column] ?? ''), problem, type }); applied.attention.add(i)
       if (VARIANT_FLAGS.has(type)) applied.variantLook.add(i)
     }
@@ -798,7 +806,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     if (added) {
       for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = `${String(out[c] ?? '').trim()} (${added.join(', ')})`
       notes.push(`Added to the name from Variations Combo: ${added.join(', ')} (the category has no column for it)`)
-      if (!isDeleted) problems.push({ sku: item.sku, parent: item.parent, row: i, column: '**Name (English)', value: out['**Name (English)'], problem: `"${added.join(', ')}" from Variations Combo added — the category has no column for it, and every SKU of the product has it`, type: 'namepart' })
+      if (!isDeleted && !onCartupWhy) problems.push({ sku: item.sku, parent: item.parent, row: i, column: '**Name (English)', value: out['**Name (English)'], problem: `"${added.join(', ')}" from Variations Combo added — the category has no column for it, and every SKU of the product has it`, type: 'namepart' })
       rules.namePartRows++
     }
     // Name: "#" becomes "-" (the team's choice).
@@ -909,7 +917,12 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       rules.leftNoWeight++
     }
     if (isDeleted) { reasons.splice(0, reasons.length, 'Deleted by hand (sheet view)'); rules.deleted++; deletedRows.add(i) }
-    if (reasons.length) {
+    if (onCartupWhy) {
+      excluded.add(i)
+      notes.push(`Left out: ${onCartupWhy}`)
+      onCartupRows.push({ sku: skuNow, parent: parentNow, name: out['**Name (English)'], why: onCartupWhy })
+      rules[onCartup.skus.has(skuNow) ? 'onCartup' : 'onCartupParent']++
+    } else if (reasons.length) {
       excluded.add(i)
       notes.push(`Left out: ${reasons.join(', ')}`)
       leftOut.push({ 'Product ID': out['**Parent Sku'], 'SellerSKU': out['**Seller SKU'], 'Product Name': out['**Name (English)'], 'catId': item.darazCat ?? '',
@@ -967,12 +980,13 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     if (notes.length) out['Report'] = [out['Report'], ...notes].filter(Boolean).join(' | ')
     // Check = YES: the row needs a person's look (a flag, a value set by rule,
     // no category, left out) — the reason is in Report.
-    if (isDeleted) { applied.attention.delete(i); applied.variantLook.delete(i) }
-    out['Check'] = isDeleted ? '' : applied.attention.has(i) || applied.filledRows?.has(i) || !String(out['**Category Id'] ?? '').trim() || excluded.has(i) ? 'YES' : ''
+    if (isDeleted || onCartupWhy) { applied.attention.delete(i); applied.variantLook.delete(i) }
+    out['Check'] = isDeleted || onCartupWhy ? '' : applied.attention.has(i) || applied.filledRows?.has(i) || !String(out['**Category Id'] ?? '').trim() || excluded.has(i) ? 'YES' : ''
     if (item.cells.some(c => COMBO_TARGETS.includes(c.col) && c.source !== 'mark')) rules.variantRows.add(i)
   })
-  // excluded: row indexes left out of the upload (leftOut: their "invalid" rows)
-  return { ...applied, problems, rules, excluded, leftOut, deletedRows }
+  // excluded: row indexes left out of the upload (leftOut: their "invalid" rows;
+  // onCartupRows: those CartUp already has)
+  return { ...applied, problems, rules, excluded, leftOut, deletedRows, onCartupRows }
 }
 
 // The output for a processed run: decisions, rules and edits applied. With the
@@ -1079,6 +1093,7 @@ export function darazSummary(result, output, options = {}) {
       !options.imageKeys && output.problems.filter(p => p.type === 'noimage').length && `${n(output.problems.filter(p => p.type === 'noimage').length)} images missing (rows kept — flagged)`])}`,
     `Weight: ${n(leftFor(/weight/i))} left out (no package weight)`,
     `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at ${n(houseRules().stockCap)}`, `${n(r.stockZero)} with 0 stock`])}`,
+    r.onCartup + r.onCartupParent ? `Already on CartUp (its error report): ${join([`${s(r.onCartup, 'row')} whose Seller SKU CartUp has`, r.onCartupParent && `${s(r.onCartupParent, 'new variant')} of products CartUp has (add on CartUp)`])} — left out, listed in "already on CartUp"` : '',
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
     `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (fill in the Category Id)${result.ai?.category ? ` · ${categorySummary(result.ai.category)}` : ' · by the mapping table (AI category check off)'}`,
@@ -1188,6 +1203,9 @@ function reportTabs(applied, invalidRows, lists, summary, errors = []) {
     const invCols = ['Product ID', 'SellerSKU', 'Product Name', 'catId', 'Price', 'Image 1', 'Variant Image', 'Quantity', 'Status', 'Report']
     tabs.push({ name: 'invalid', head: true, widths: invCols.map(c => c === 'Report' ? 55 : 22), rows: [invCols, ...invalidRows.map(r => invCols.map(c => r[c] ?? ''))] })
   }
+  // Products CartUp already has (its error report) — not in this file.
+  if (applied.onCartupRows?.length) tabs.push({ name: 'already on CartUp', head: true, widths: [28, 16, 50, 70], rows: [
+    ['Seller SKU', 'Parent SKU', 'Product', 'Why left out'], ...applied.onCartupRows.map(r => [r.sku, r.parent, r.name, r.why])] })
   // Every change, one row per Seller SKU and column.
   tabs.push({ name: 'changes', head: true, widths: [24, 16, 36, 16, 30, 30, 40, 34], rows: [
     ['Seller SKU', 'Parent SKU', 'Product', 'Column', 'Daraz value', 'Output value', 'Change', 'Detail'],

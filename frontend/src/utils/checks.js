@@ -97,7 +97,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (byType.numbered) add({ id: 'numbered', level: 'fix', count: byType.numbered, unit: 'SKU',
     title: 'Variants told apart only by a number', why: 'Multicolor-1, -2…: the seller\'s variants differ by something CartUp has no column for — open the product for one-click quick fixes (the size, a part of the combo, or as the seller wrote it)',
     open: { review: { view: 'products', state: 'variants', col: 'g:variant' } } })
-  add({ id: 'leftout', level: 'fix', count: output.excluded?.size || 0, unit: 'row',
+  add({ id: 'leftout', level: 'fix', count: (output.excluded?.size || 0) - (output.onCartupRows?.length || 0), unit: 'row',
     title: 'Rows left out of the upload', why: imageKeys
       ? 'No package weight, no product image with a CartUp key, or no key for the Variant Image — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet'
       : 'No package weight — type it in the sheet to keep the row; otherwise it goes to the "invalid" sheet',
@@ -144,6 +144,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.stockZero) add({ id: 'stock0', level: 'info', count: output.rules.stockZero, unit: 'row',
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })
+  if (output.rules.onCartup + output.rules.onCartupParent) add({ id: 'oncartup', level: 'info', count: output.rules.onCartup + output.rules.onCartupParent, unit: 'SKU',
+    extra: output.rules.onCartupParent ? `${output.rules.onCartupParent.toLocaleString()} new variant${output.rules.onCartupParent === 1 ? '' : 's'}` : '',
+    title: 'Already on CartUp — left out', why: 'CartUp\'s error report says it has these Seller SKUs (or Parent SKUs) — they are not in this file, so nothing is uploaded twice; listed in the "already on CartUp" sheet' })
   if (output.rules.namePartRows) add({ id: 'namepart', level: 'info', count: output.rules.namePartRows, unit: 'SKU',
     title: 'Names with a part of Variations Combo added', why: 'A part with no column in the category (8TB, 2 pcs…) that every SKU of the product has — kept in the name ("… (8TB)") instead of being lost; CartUp has one name per Parent SKU',
     open: { sheet: 'namepart' } })

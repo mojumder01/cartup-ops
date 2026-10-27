@@ -14,10 +14,11 @@ import VariantReview from '../components/VariantReview'
 import { buildAttributeList, saveFile } from '../utils/attributeList'
 import { houseRules, darazCategories } from '../utils/catalog'
 import { saveTeamSetting, onTeamSettings } from '../utils/teamSettings'
+import { readCartupErrors, mergeCartupErrors, ERROR_ADVICE } from '../utils/cartupErrors'
 import SheetEditor from '../components/SheetEditor'
 import FilePreview from '../components/FilePreview'
 import ProcessSteps from '../components/ProcessSteps'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw, Eye, Activity, Sparkles } from 'lucide-react'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw, Eye, Activity, Sparkles, FileWarning } from 'lucide-react'
 
 // A file box. file: the picked File; current: text shown when nothing is
 // picked here (a remembered file); check: what the file check found
@@ -128,6 +129,9 @@ export default function DarazUpload() {
   const [keySheets, setKeySheets] = useState(null)   // image key file: [{ name, columns, rows }]
   // mode 'link': a Daraz link column + a key column · 'columns': keys per Seller SKU, one column per image
   const [keyPick, setKeyPick]     = useState(NO_KEY_PICK)
+  // CartUp's error reports for this shop (after an upload): products it already has are left out.
+  const [cartupReports, setCartupReports] = useState([])
+  const cartupErrors = useMemo(() => cartupReports.length ? mergeCartupErrors(cartupReports) : null, [cartupReports])
   // The side panel: 'process' (the steps) or a file's preview; the run's steps as reported.
   const [panel, setPanel]         = useState('process')
   const [steps, setSteps]         = useState({})
@@ -152,7 +156,8 @@ export default function DarazUpload() {
     return keyPick.link && keyPick.key ? makeImageKeyMap(sh.rows, keyPick.link, keyPick.key) : null
   }, [keySheets, keyPick])
   const stockSet = stockMode === 'set' && stockValue !== '' ? stockValue : null
-  const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, stock: { set: stockSet }, imageKeys, edits, deleted }), [spInclude, spEnd, stockSet, imageKeys, edits, deleted])
+  const options = useMemo(() => ({ specialPrice: { include: spInclude, start: todayISO(), end: spEnd }, stock: { set: stockSet }, imageKeys, edits, deleted,
+    onCartup: cartupErrors && { skus: cartupErrors.skus, parents: cartupErrors.parents } }), [spInclude, spEnd, stockSet, imageKeys, edits, deleted, cartupErrors])
 
   // Live output for the current decisions, options and edits.
   const output = useMemo(() => result && buildOutput(result, decisions, memory, options), [result, decisions, memory, options])
@@ -311,7 +316,7 @@ export default function DarazUpload() {
     setKeyFile(null); setKeySheets(null); setKeyPick(NO_KEY_PICK)
     setResult(null); setStatus(''); setProgress(''); setError(''); setDecisions({}); setEdits({}); setDeleted(new Set())
     setReviewing(null); setSheetOpen(null); setLastFile(null); setAiRun(null)
-    setSteps({}); setRunTime(null); setPanel('process'); setCatSaved('')
+    setSteps({}); setRunTime(null); setPanel('process'); setCatSaved(''); setCartupReports([])
   }
 
   // Categories the AI check filled for Daraz categories with no mapping: saved
@@ -345,6 +350,15 @@ export default function DarazUpload() {
       await saveTeamSetting('daraz_categories', { ...b, map: { ...b.map, ...Object.fromEntries(aiCatPairs.map(p => [p.d, p.c])) } }, `From the AI category check (${aiCatPairs.length} Daraz categories)`)
       setCatSaved(`${aiCatPairs.length} saved to the Daraz → CartUp map`)
     } catch (e) { setCatSaved(`Not saved: ${e.message}`) }
+  }
+
+  const [reportError, setReportError] = useState('')
+  const loadCartupReports = async list => {
+    setReportError('')
+    try {
+      const read = await Promise.all([...list].map(readCartupErrors))
+      setCartupReports(rs => [...rs.filter(r => !read.some(n => n.name === r.name)), ...read])
+    } catch (e) { setReportError(e.message) }
   }
 
   // Values kept as new, for CartUp to add: exported in its Attribute List format.
@@ -415,7 +429,7 @@ export default function DarazUpload() {
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at ${rulesNow.stockCap.toLocaleString()}`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "${rulesNow.hashTo}"`,
     imageKeys && `${output.rules.imageKeyed} images → keys${output.rules.imageMissing ? ` (${output.rules.imageMissing} links without a key)` : ''}`,
-    output.excluded.size && `${output.excluded.size} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
+    output.excluded.size - (output.onCartupRows?.length || 0) && `${output.excluded.size - (output.onCartupRows?.length || 0)} rows left out (no weight${imageKeys ? ' / no image key' : ''})`,
     output.ruleRows?.size && `${output.ruleRows.size} rows with Color / Model / Size set by rule${output.filledRows?.size ? ` (${output.filledRows.size} to check)` : ''}`,
     output.rules.edited && `${output.rules.edited} cells edited by hand`,
   ].filter(Boolean)
@@ -629,8 +643,9 @@ export default function DarazUpload() {
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'11px 16px', background:'#dcfce7', color:'#166534', fontSize:13, fontWeight:600 }}>
               <CheckCircle size={14} /> Processed — {(rows - output.excluded.size).toLocaleString()} rows
               <span style={{ fontWeight:500 }}>
-                {result.invalidRows.length + output.excluded.size ? ` · ${(result.invalidRows.length + output.excluded.size).toLocaleString()} in "invalid" (no name, price, weight${imageKeys ? ' or image key' : ''})` : ''}
+                {result.invalidRows.length + output.excluded.size - (output.onCartupRows?.length || 0) ? ` · ${(result.invalidRows.length + output.excluded.size - (output.onCartupRows?.length || 0)).toLocaleString()} in "invalid" (no name, price, weight${imageKeys ? ' or image key' : ''})` : ''}
                 {result.duplicateSkus.length ? ` · ${result.duplicateSkus.length} repeated Seller SKU rows removed` : ''}
+                {output.onCartupRows?.length ? ` · ${output.onCartupRows.length.toLocaleString()} already on CartUp (left out)` : ''}
                 {result.skipped ? ` · ${result.skipped.toLocaleString()} inactive rows left out` : ''}
               </span>
             </div>
@@ -691,6 +706,33 @@ export default function DarazUpload() {
                   <div style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', background:'#fffafa' }}>
                     <AlertTriangle size={15} color='#dc2626' />
                     <div style={{ flex:1, color:'#92400e' }}>Values were not checked against CartUp's dropdown lists — add the CartUp template (below) to catch #N/A before uploading.</div>
+                  </div>
+                )}
+              </div>
+
+              {/* CartUp's error report, after an upload: what it already has is left out of the next file */}
+              <div data-cartup-errors style={{ padding:'10px 14px', border:'1px solid #bae6fd', background:'#f0f9ff', borderRadius:10, marginBottom:12 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+                  <FileWarning size={18} color='#0369a1' style={{ flexShrink:0 }} />
+                  <div style={{ flex:1, minWidth:260 }}>
+                    <div style={{ fontWeight:700, color:'#1a202c' }}>CartUp error report {cartupErrors && <span style={{ fontWeight:500, color:'#0369a1', fontSize:11.5 }}>· {cartupErrors.names.join(', ')}</span>}</div>
+                    <div data-cartup-errors-line style={{ fontSize:11.5, color:'#475569', lineHeight:1.5 }}>
+                      {!cartupErrors ? 'Uploaded and CartUp said "Duplicate Seller SKUs / Parent SKUs — already exists"? Load its error report (detailed-errors…xlsx): the products CartUp already has are left out of the next file, so a re-upload sends only what\'s missing — no second copy, no extra text in the SKUs needed.'
+                        : `${(output.rules.onCartup + output.rules.onCartupParent).toLocaleString()} SKU${output.rules.onCartup + output.rules.onCartupParent === 1 ? '' : 's'} already on CartUp — left out of the next file (sheet "already on CartUp")${output.rules.onCartupParent ? ` · ${output.rules.onCartupParent} of them new variants of products CartUp has (add on CartUp)` : ''} · ${(rows - output.excluded.size).toLocaleString()} rows in the next file`}
+                    </div>
+                  </div>
+                  <label style={{ ...btn(false), padding:'6px 12px', fontSize:12 }}>
+                    {cartupErrors ? 'Add another report…' : 'Load error report…'}
+                    <input data-cartup-report type="file" accept=".xlsx" multiple style={{ display:'none' }} onChange={e => { const fs = e.target.files; if (fs?.length) loadCartupReports(fs); e.target.value = '' }} />
+                  </label>
+                  {cartupErrors && <button onClick={() => setCartupReports([])} style={{ ...btn(false), padding:'6px 12px', fontSize:12 }}>Remove</button>}
+                </div>
+                {reportError && <div style={{ fontSize:12, color:'#b91c1c', marginTop:6 }}>{reportError}</div>}
+                {cartupErrors?.other.length > 0 && (
+                  <div data-cartup-other style={{ marginTop:8, paddingLeft:30, fontSize:11.5, color:'#334155', lineHeight:1.55 }}>
+                    {Object.entries(cartupErrors.other.reduce((m, e) => ({ ...m, [e.type]: [...(m[e.type] || []), e] }), {})).map(([type, list]) => (
+                      <div key={type}><b>{type}</b> — {list.length} row{list.length === 1 ? '' : 's'} (Parent SKU {[...new Set(list.map(e => e.parent))].slice(0, 5).join(', ')}{new Set(list.map(e => e.parent)).size > 5 ? ', …' : ''}): {ERROR_ADVICE[type] || 'see CartUp\'s message'}</div>
+                    ))}
                   </div>
                 )}
               </div>
