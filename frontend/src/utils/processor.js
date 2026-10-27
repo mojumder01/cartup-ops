@@ -1,7 +1,8 @@
 import * as XLSX from 'xlsx'
 import JSZip from 'jszip'
 import MAPPINGS from './mappings.json'
-import { processProductsBatch, readVariantCombos, pickVariantValues, localFixName, runConcurrent } from './gemini'
+import { processProductsBatch, readVariantCombos, pickVariantValues, checkProductCategories, localFixName, runConcurrent } from './gemini'
+import { categoryCandidates } from './categoryAI'
 import { applyReplacements } from './wordReplacements'
 import { utf8 } from './zipText'
 import { loadTemplate, writeTemplate, chunkRows, zipFiles } from './shopDuplicate'
@@ -141,13 +142,16 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   // file as they are (a plain lookup, no clean-up). All off: no AI requests.
   // Categories never use the AI: the mapping table, or a note in Report.
   // options.aiFields.combo: the AI labels each Variations Combo part (colour,
-  // size…) — never a value; see readCombos.
-  const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false, combo: options.aiFields?.combo !== false }
+  // size…) — never a value; see readCombos. options.aiFields.category (off
+  // unless ticked): after everything else the AI checks each product's CartUp
+  // category; see checkCategories.
+  const aiFields = { name: options.aiFields?.name !== false, highlights: options.aiFields?.highlights !== false, description: options.aiFields?.description !== false, combo: options.aiFields?.combo !== false,
+    category: options.aiFields?.category === true }
   const aiName = aiFields.name, aiContent = aiFields.name || aiFields.highlights || aiFields.description
   // onProgress(text, step): text for the progress line (or null); step for the
   // page's live view — { step, done, total, last: [what was just done], note
   // (when it ends), end, skip: why it doesn't run }. Steps: read, content,
-  // rows, combo, match, prepare, pick, apply.
+  // rows, combo, match, prepare, pick, apply, category.
   onProgress('Reading files...', { step: 'read' })
 
   const [allPriceRows, basicRows, freightRows, skuimgRows] = await Promise.all([
@@ -461,7 +465,74 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   } else {
     for (const id of ['prepare', 'pick', 'apply']) onProgress(null, { step: id, skip: comboOff || 'no CartUp template' })
   }
-  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo } : null }
+  // ── Step 7 (option): the AI checks each product's CartUp category — last ──
+  let category = null
+  if (apiKey && aiFields.category) {
+    category = await checkCategories(items, onProgress)
+    // A new category can need other variant columns: matched again (no AI).
+    if (category.filled || category.changed) matchItems(items, lists, variantMode)
+  } else onProgress(null, { step: 'category', skip: !apiKey ? 'no Gemini key ticked' : 'Category unticked' })
+  return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo, category } : null }
+}
+
+// Each product's CartUp category, checked by the AI (the Category option, run
+// after everything else): empty (no mapping, mystery box) or not fitting the
+// product → the AI picks from the CartUp categories that share the product's
+// words (categoryCandidates); only such a candidate is taken, so a category is
+// never invented. Kept as it was when the AI keeps it, finds none or doesn't
+// answer. → { asked, kept, filled, changed, none, missed, slips, message }
+const CAT_BATCH = 15
+async function checkCategories(items, onProgress) {
+  const products = []
+  for (const [pid, g] of groupBy(items, it => it.parent)) {
+    const id = String(g[0].out['**Category Id'] ?? '').trim()
+    const current = id ? { id, path: cartup_map[id]?.path || g[0].category || '' } : null
+    const candidates = categoryCandidates(g[0].name, 10).filter(c => c.id !== id)
+    if (!candidates.length && current) continue   // nothing else to offer
+    products.push({ pid, items: g, name: g[0].name, current, candidates })
+  }
+  const stats = { asked: products.length, kept: 0, filled: 0, changed: 0, none: 0, missed: 0, slips: 0, message: '' }
+  const batches = []
+  for (let i = 0; i < products.length; i += CAT_BATCH) batches.push(products.slice(i, i + CAT_BATCH))
+  const answers = {}
+  let done = 0
+  onProgress('AI checking categories...', { step: 'category', done, total: products.length })
+  const leaf = path => String(path || '').split('>').pop().trim()
+  await runConcurrent(batches.map((batch, bi) => async () => {
+    onProgress(`AI checking categories — products ${bi * CAT_BATCH + 1}–${Math.min((bi + 1) * CAT_BATCH, products.length)} of ${products.length}...`)
+    const got = await checkProductCategories(batch, message => { stats.message = message })
+    Object.assign(answers, got)
+    done += batch.length
+    const last = batch.filter(p => got[p.pid]).slice(0, 2).map(p => {
+      const a = got[p.pid], to = p.candidates.find(c => c.id === a.category)
+      return a.verdict === 'change' && to ? `${p.name} → ${leaf(to.path)}${p.current ? ` (was ${leaf(p.current.path)})` : ''}` : `${p.name} · ${a.verdict === 'keep' && p.current ? `keeps ${leaf(p.current.path)}` : 'no fitting category'}`
+    })
+    onProgress(null, { step: 'category', done, total: products.length, last })
+  }))
+  for (const p of products) {
+    const a = answers[p.pid]
+    if (!a) { stats.missed++; continue }
+    const to = a.verdict === 'change' ? p.candidates.find(c => c.id === a.category) : null
+    if (a.verdict === 'change' && !to) { stats.slips++; continue }   // not one of its candidates: ignored
+    if (!to) { if (a.verdict === 'keep' && p.current) stats.kept++; else stats.none++; continue }
+    const why = p.current
+      ? `Category changed by AI: ${p.current.path} → ${to.path} (the mapping's category didn't fit the product)`
+      : `Category by AI: ${to.path} (${p.items[0].reportNote.replace(/\s*[;—]\s*fill in the Category Id$/, '')})`
+    for (const it of p.items) {
+      it.catChange = { from: p.current?.id || '', to: to.id, why }
+      it.out['**Category Id'] = to.id
+      it.out['Cartup Category Path'] = to.path
+      it.out.Tags = cartup_map[to.id]?.tags || ''
+      it.category = to.path
+      it.applicable = cat_variant_map[to.id] || []
+      it.reportNote = why
+      it.out.Report = why
+    }
+    stats[p.current ? 'changed' : 'filled']++
+  }
+  onProgress(null, { step: 'category', end: true,
+    note: `${stats.filled.toLocaleString()} filled · ${stats.changed.toLocaleString()} changed · ${stats.kept.toLocaleString()} kept${stats.none ? ` · ${stats.none} with no fitting category` : ''}${stats.missed ? ` · ${stats.missed} not answered` : ''}` })
+  return stats
 }
 
 // The AI labels the parts of each product's Variations Combo (colour, size…);
@@ -672,7 +743,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null } = options
   const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
+    spNotBelowSkus: [], keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
     variantRows: new Set() }   // rows with variant values (applied.variantLook: those that need a person)
   const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
@@ -808,6 +879,12 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
         'Price': out['**Price(MRP)'], 'Image 1': out['**Product Image 1'], 'Variant Image': out['*Variant Image'], 'Quantity': out['**Current Stock Qty'], 'Status': out['status'],
         'Report': reasons.join(' | ') })
     }
+    // A category set or changed by the AI (the Category option): logged, and
+    // marked while the cell still holds it.
+    if (item.catChange && String(out['**Category Id'] ?? '') === item.catChange.to) {
+      log('Category Id', item.catChange.from, item.catChange.to, item.catChange.why)
+      flag('**Category Id', item.catChange.why, 'aicat')
+    }
     // A special price must be below the price — CartUp rejects the row otherwise
     // ("Special Price must be less than Price"): removed, the SKU stays. Checked
     // after edits, so a price or special price fixed in the sheet keeps it.
@@ -819,6 +896,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
       clearSpecial()
       flag('Special Price', why, 'spremoved')
       rules.spNotBelow++
+      rules.spNotBelowSkus.push({ sku: item.sku, parent: item.parent, price: out['**Price(MRP)'], special: spNow })
     }
     const stockText = String(out['**Current Stock Qty'] ?? '').trim()
     if (stockText !== '' && Number(stockText) === 0) rules.stockZero++
@@ -917,6 +995,13 @@ export function aiSummary(ai) {
   return `AI (${on.join(', ')}): ${(ai.products - ai.missed).toLocaleString()} of ${ai.products.toLocaleString()} products cleaned`
     + (ai.missed ? ` (${ai.missed.toLocaleString()} local clean-up only)` : '') + (off.length ? ` · AI check off — ${offText}` : '')
 }
+// The AI's category check, in a line.
+export function categorySummary(c) {
+  if (!c) return ''
+  return `AI category check: ${c.asked.toLocaleString()} products — ${c.filled.toLocaleString()} filled (no mapping) · ${c.changed.toLocaleString()} changed (didn't fit) · ${c.kept.toLocaleString()} kept`
+    + (c.none ? ` · ${c.none.toLocaleString()} with no fitting category` : '') + (c.slips ? ` · ${c.slips} answers ignored (not one of the offered categories)` : '')
+    + (c.missed ? ` · ${c.missed.toLocaleString()} not answered${c.message ? ` (${c.message.slice(0, 60)})` : ''}` : '')
+}
 // The AI's reading of Variations Combo, in a line.
 export function comboSummary(c) {
   if (!c) return ''
@@ -947,7 +1032,7 @@ export function darazSummary(result, output, options = {}) {
     `Rows: ${n(total)} in the Price file → ${s(uploaded.length, 'row')} uploaded (${s(products, 'product')}) · ${n(left)} left out`,
     `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
     `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–99% discount — SKU kept)`,
-      r.spNotBelow && `${s(r.spNotBelow, 'special price')} removed (not below the price — SKU kept)`])}`,
+      r.spNotBelow && `${s(r.spNotBelow, 'special price')} removed (not below the SKU's own price — SKU kept: ${r.spNotBelowSkus.slice(0, 8).map(x => `${x.sku} ${x.special} ≥ ${x.price}`).join(', ')}${r.spNotBelow > 8 ? ', …' : ''})`])}`,
     `Image: ${join([options.imageKeys ? `${n(leftFor(/^(Images|Variant Image):/))} left out — no CartUp image key (${n(leftFor(/^Images:/))} for any product image, ${n(leftFor(/^Variant Image:/))} for the variant image)` : '0 left out',
       options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`, options.imageKeys && r.imagesMoved && `${s(r.imagesMoved, 'row')} with images moved up to fill gaps`,
       options.imageKeys?.forItem && r.keyRowsMissing && `${s(r.keyRowsMissing, 'Seller SKU')} not in the key file`,
@@ -957,7 +1042,7 @@ export function darazSummary(result, output, options = {}) {
     `Stock: ${join([r.stockSet && `${n(r.stockSet)} set to one number`, `${n(r.stockCapped)} capped at 99,999`, `${n(r.stockZero)} with 0 stock`])}`,
     `Other left out: ${join([`${n(leftFor(/^Product ID/))} no Product ID`, `${n(leftFor(/^Seller SKU/))} no Seller SKU`, `${n(leftFor(/^Name/))} no name`,
       `${n(result.duplicateSkus.length)} repeated Seller SKU`, r.deleted && `${n(r.deleted)} deleted by hand`])}`,
-    `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (no AI — fill in the Category Id)`,
+    `Category: ${n(uploaded.filter(row => !String(row['**Category Id'] ?? '').trim()).length)} uploaded rows without a CartUp category (fill in the Category Id)${result.ai?.category ? ` · ${categorySummary(result.ai.category)}` : ' · by the mapping table (AI category check off)'}`,
     variantKinds(result.items),
     result.variantMode === 'yes' ? 'Variants: Variations Combo not matched — the variant columns each category needs are marked "Yes"' : '',
     result.variantMode !== 'yes' && (() => {

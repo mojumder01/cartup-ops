@@ -316,6 +316,46 @@ Return ONLY a JSON array, no markdown: [{"id":"<product id>","picks":{"<sku>":{"
   }
 }
 
+// ── CartUp category check (Daraz Upload option, after everything else) ──────
+// products: [{ pid, name, current: { id, path } | null, candidates: [{ id, path }] }]
+// → { pid: { verdict: 'keep' | 'change' | 'none', category } } — the caller
+// takes a change only when its category is one of that product's candidates.
+export async function checkProductCategories(products, onError) {
+  if (!products.length) return {}
+  const block = products.map((p, i) => [
+    `${i + 1}. id "${p.pid}" — ${p.name}`,
+    `   Now: ${p.current ? `${p.current.id} | ${p.current.path}` : '(none)'}`,
+    ...p.candidates.map(c => `   - ${c.id} | ${c.path}`),
+  ].join('\n')).join('\n')
+  const prompt = `You check the marketplace category of e-commerce products.
+For EVERY product below answer one verdict:
+- "keep": the category under "Now" fits the product — it is where a shopper would look for it.
+- "change": "Now" is "(none)" or clearly wrong for the product — give the id of the best category from the product's own list (the lines starting with "-").
+- "none": "Now" is "(none)" or wrong, and no category in its list fits.
+STRICT RULES:
+- Judge by what the product IS (from its name), not by words it shares with a category: a phone case is not a phone; a T-shirt with a cartoon is not a toy.
+- Who it is for counts: Men / Women / Boys / Girls / Kids — follow the name; when the name doesn't say, any fitting one is right.
+- Only an id from that product's own list. Never invent an id.
+- When "Now" is reasonable, keep it — change only a clear mistake.
+${block}
+Return ONLY a JSON array, no markdown: [{"id":"<product id>","verdict":"keep|change|none","category":"<category id, or empty>"},...]`
+  try {
+    const parsed = jsonArray(await callAI(prompt, { maxOutputTokens: 4096, temperature: 0 }))
+    const ids = new Set(products.map(p => p.pid)), out = {}
+    for (const x of parsed) {
+      const pid = String(x?.id ?? x?.pid ?? '')
+      const verdict = String(x?.verdict ?? '').trim().toLowerCase()
+      if (ids.has(pid) && ['keep', 'change', 'none'].includes(verdict)) out[pid] = { verdict, category: String(x.category ?? '').trim() }
+    }
+    const missing = products.filter(p => !out[p.pid])
+    if (missing.length) onError?.('The AI answer left some products out', missing.map(p => p.pid))
+    return out
+  } catch (e) {
+    onError?.(e.message || 'Unknown error', products.map(p => p.pid))
+    return {}
+  }
+}
+
 // ── Single product (used by manualProcessor) ──────────────────────────────────
 export async function processProductAI(name, highlights, description, apiKey) {
   const localName = localFixName(name || '')

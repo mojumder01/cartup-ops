@@ -11,6 +11,7 @@ export const IMAGE_COLS = ['**Product Image 1', 'Product Image 2', 'Product Imag
 export const ISSUE_TYPES = {
   list:     { label: 'Not on CartUp list (#N/A)', level: 'error' },
   category: { label: 'No category', level: 'error' },
+  aicat:    { label: 'Category set or changed by the AI', level: 'warn' },
   required: { label: 'Required — empty', level: 'error' },
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
@@ -85,6 +86,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   add({ id: 'category', level: 'fix', count: byType.category || 0, unit: 'row',
     title: 'Rows without a CartUp category', why: 'The Daraz category had no match — fill in the Category Id',
     open: { sheet: 'category' } })
+  if (byType.aicat) add({ id: 'aicat', level: 'check', count: byType.aicat, unit: 'row',
+    title: 'Categories set or changed by the AI', why: 'The Category option: empty (no mapping) or not fitting the product — the AI picked from CartUp\'s categories that share the product\'s words; Report says from what to what',
+    open: { sheet: 'aicat' } })
   add({ id: 'required', level: 'fix', count: byType.required || 0, unit: 'cell',
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',
     open: { sheet: 'required' } })
@@ -141,8 +145,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.discountRemoved) add({ id: 'spremoved', level: 'info', count: output.rules.discountRemoved, unit: 'row',
     title: 'Special prices removed (75–99% discount)', why: 'The special price was removed, the SKU stays — Report and the change log say so',
     open: { sheet: 'spremoved' } })
-  if (output.rules.spNotBelow) add({ id: 'spprice', level: 'info', count: output.rules.spNotBelow, unit: 'row',
-    title: 'Special prices removed (not below the price)', why: 'CartUp rejects a special price that isn\'t below the price ("Special Price must be less than Price") — removed, the SKU stays; fix the price or special price in the sheet to keep one',
+  if (output.rules.spNotBelow) add({ id: 'spprice', level: 'info', count: output.rules.spNotBelow, unit: 'SKU',
+    extra: (n => `${n.toLocaleString()} product${n === 1 ? '' : 's'}`)(new Set(output.rules.spNotBelowSkus.map(x => x.parent)).size),
+    title: 'Special prices removed (not below the price)', why: `Each Seller SKU against its own price: CartUp rejects a special price that isn't below it ("Special Price must be less than Price") — removed, the SKU stays (${output.rules.spNotBelowSkus.slice(0, 3).map(x => `${x.sku}: ${x.special} ≥ ${x.price}`).join(', ')}${output.rules.spNotBelow > 3 ? ', …' : ''}); fix the price or special price in the sheet to keep one`,
     open: { sheet: 'spremoved' } })
   if (result.invalidRows.length) add({ id: 'invalid', level: 'info', count: result.invalidRows.length, unit: 'row',
     title: 'Rows left out (no name / price)', why: 'No name, no price (MRP), or no Product ID / Seller SKU — listed in the "invalid" sheet with the reason, not in the upload' })
