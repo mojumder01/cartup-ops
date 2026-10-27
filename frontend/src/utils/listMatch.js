@@ -227,6 +227,7 @@ export function listMatcher(rows, kind = 'other') {
     kind,
     size: exact.size,
     ranges,
+    entries: () => [...exact.keys()],
     // Closest entries to a value no rule matched safely — shared words,
     // one containing the other, or a few typos — best first.
     suggest(input, limit = 6) {

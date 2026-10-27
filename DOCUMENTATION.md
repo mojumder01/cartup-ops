@@ -52,7 +52,7 @@ Only these call Gemini (they use requests from the ticked keys' daily limits); e
 | **Governance** | Revamp product content (zero-tolerance rewrite) |
 
 ### Latest and old version
-The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/. At the bottom of the sidebar (and under the sign-in box) there are **two buttons — `OLD: v25.6.76` and `Latest: v25.6.84`**; the one you are using is **green with "Running"**, the other one opens that version. The old version shows the same two buttons with OLD running. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
+The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/. At the bottom of the sidebar (and under the sign-in box) there are **two buttons — `OLD: v25.6.76` and `Latest: v25.6.85`**; the one you are using is **green with "Running"**, the other one opens that version. The old version shows the same two buttons with OLD running. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
 - **How it is kept:** every deploy builds the old version from its own source (commit in `frontend/old-version.json`) with `frontend/scripts/build-old.mjs` and puts it in `/old/`; links straight into it (e.g. `/cartup-ops/old/production/daraz`) work too. To keep a different version as the old one, change `version` and `commit` in `frontend/old-version.json`.
 
 ---
@@ -428,6 +428,7 @@ AI runs on **Gemini only** (Production, QC, Governance) — Grok and Groq were r
 | Paused, want to continue later | Re-upload the **same** file (same name + size) → Continue/Resume button appears |
 | Category obviously wrong | Check the Report/Note column — low-confidence picks are labelled for manual review. Add a context hint (QC) to improve accuracy |
 | AI checks skipped | No Gemini key ticked — add or tick one in Profile & Settings |
+| Daraz Upload stays on "AI reading Variations Combo — products … of …" for minutes (big shops) | Fixed in v25.6.85: after the AI reading, preparing what the rules couldn't finish searched CartUp's whole Color list for every part — now it uses a word index (about 2 ms a product instead of 60) and the progress line says *Preparing what the rules couldn't finish — product n of N*, then *Applying the AI's picks*. An AI request with no answer in 2 minutes is given up and retried with another key or model, so a stalled connection can't hang a run |
 | Output missing products | Check the `invalid` sheet — every row there says why (no Product ID, Seller SKU, name, price or image; repeated Seller SKU) |
 
 ---

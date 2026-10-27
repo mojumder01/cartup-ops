@@ -568,22 +568,49 @@ export function grounded(value, parts) {
 export function aiCandidates(items, col, lists) {
   const list = lists?.[headerKey(col)]
   if (!list) return []
-  const out = [], add = v => { if (v && !out.some(x => x.toLowerCase() === v.toLowerCase())) out.push(v) }
-  const hit = listHit(list)
-  for (const it of items) {
+  const hit = listHit(list), ix = wordIndex(list)
+  // Per SKU, then taken in turn, so every SKU's own candidates make the cut.
+  const perSku = items.map(it => {
+    const out = [], add = v => { if (v && !out.some(x => x.toLowerCase() === v.toLowerCase())) out.push(v) }
     const parts = splitCombo(it.combo)
     const colour = parts.find(p => plainKind(p) === 'colour' || valueKind(p) === 'color') || ''
     for (const p of parts) {
       add(list.match(p)?.value)
       for (const t of nameTries(p, p === colour ? '' : colour, true)) add(hit(t))
       for (const b of uniq([...bitsOf(p), headOf(p)])) { add(list.match(b)?.value); for (const t of nameTries(b, '', false)) add(hit(t)) }
-      for (const s of list.suggest(p, 8)) add(s)
       const r = parseRange(cleanPart(p))
       if (r) list.ranges().filter(e => e.whole && sameRangeKind(r, e) && e.lo <= r.hi && r.lo <= e.hi)
         .sort((a, b) => Math.abs(a.lo - r.lo) + Math.abs(a.hi - r.hi) - Math.abs(b.lo - r.lo) - Math.abs(b.hi - r.hi)).slice(0, 6).forEach(e => add(e.name))
     }
+    // The list's entries made only of this SKU's words, in any spelling ("Black-XL", "XL Black"), most words first.
+    const have = new Set(parts.flatMap(words)), found = new Set()
+    for (const w of have) for (const e of ix.get(w) || []) if (e.ws.every(x => have.has(x))) found.add(e)
+    ;[...found].sort((a, b) => b.ws.length - a.ws.length || a.name.length - b.name.length).slice(0, 12).forEach(e => add(e.name))
+    return out.filter(v => grounded(v, parts))
+  })
+  const out = []
+  for (let k = 0; out.length < 60 && perSku.some(c => c.length > k); k++) {
+    for (const c of perSku) if (c[k] && !out.some(x => x.toLowerCase() === c[k].toLowerCase()) && out.length < 60) out.push(c[k])
   }
-  return out.filter(v => items.some(it => grounded(v, splitCombo(it.combo)))).slice(0, 40)
+  return out
+}
+// A list's entries by word (Small = S, XXL = 2XL…), built once per list — so
+// finding the entries made of a SKU's words never goes through all 26,000
+// Color entries part by part.
+const wordIndexes = new WeakMap()
+function wordIndex(list) {
+  let ix = wordIndexes.get(list)
+  if (!ix) {
+    ix = new Map()
+    for (const name of list.entries?.() || []) {
+      const ws = [...new Set(words(name))]
+      if (!ws.length || ws.length > 6) continue
+      const e = { name, ws }
+      for (const w of ws) { if (!ix.has(w)) ix.set(w, []); ix.get(w).push(e) }
+    }
+    wordIndexes.set(list, ix)
+  }
+  return ix
 }
 
 // The AI's picks (it.aiPicks: { col: value }, kept from stage 1) on the cells

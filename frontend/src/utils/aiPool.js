@@ -244,19 +244,26 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // One request with one key and model → { ok, text } or { kind, message, retryMs, perDay }
 // kind: 'limit' (rate limit / quota) · 'invalid' (key) · 'model' (no such model) · 'busy' (overloaded) · 'error'
+// A request that hasn't answered in this long is given up (and tried again
+// with another key or model) — a stalled connection must never hang a run.
+const REQUEST_TIMEOUT = 120_000
 async function requestOnce(model, key, prompt, { maxOutputTokens, temperature }) {
   let res
+  const stop = new AbortController(), timer = setTimeout(() => stop.abort(), REQUEST_TIMEOUT)
   try {
     res = await fetch(`${API}/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature, maxOutputTokens } }),
+      signal: stop.signal,
     })
-  } catch (e) { return { kind: 'busy', message: `Network error: ${e.message}` } }
-  if (res.ok) {
-    const data = await res.json()
-    return { ok: true, text: (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join(''), tokens: data.usageMetadata?.totalTokenCount || 0 }
-  }
+    if (res.ok) {
+      const data = await res.json()
+      return { ok: true, text: (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join(''), tokens: data.usageMetadata?.totalTokenCount || 0 }
+    }
+  } catch (e) {
+    return { kind: 'busy', message: stop.signal.aborted ? `No answer in ${REQUEST_TIMEOUT / 1000} seconds` : `Network error: ${e.message}` }
+  } finally { clearTimeout(timer) }
   const body = await res.json().catch(() => ({}))
   const message = body.error?.message || `Gemini error ${res.status}`
   if (res.status === 429) {
@@ -343,6 +350,7 @@ export async function callAI(prompt, { maxOutputTokens = 4096, temperature = 0.1
   const problems = []
   const deadline = Date.now() + 5 * 60_000
   for (;;) {
+    if (Date.now() > deadline) break   // retried long enough — the caller falls back
     const settings = loadSettings()
     const slot = pickSlot(keys, settings)
     if (!slot.key) {

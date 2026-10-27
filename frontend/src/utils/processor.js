@@ -428,10 +428,14 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   const variantMode = options.variantMode === 'yes' ? 'yes' : 'match'
   // ── Step 5: AI reads each product's Variations Combo — labels only ─────────
   const combo = apiKey && aiFields.combo && variantMode === 'match' ? await readCombos(items, onProgress) : null
+  onProgress('Matching values to CartUp\'s lists...')
+  await new Promise(r => setTimeout(r, 0))
   matchItems(items, lists, variantMode)
   // ── Step 6: what the rules couldn't finish — the AI picks the closest CartUp value
   if (combo && lists) {
     combo.picks = await pickCombos(items, lists, onProgress)
+    onProgress('Applying the AI\'s picks...')
+    await new Promise(r => setTimeout(r, 0))
     if (combo.picks.answered) matchItems(items, lists, variantMode)   // the picks are applied as the rules run
     combo.picks.skus = items.filter(it => it.cells.some(c => c.how === 'ai')).length
     combo.picks.products = new Set(items.filter(it => it.cells.some(c => c.how === 'ai')).map(it => it.parent)).size
@@ -479,8 +483,11 @@ async function readCombos(items, onProgress) {
 // → { asked, answered, message } (products), skus / products picked filled in after.
 const PICK_BATCH = 10
 async function pickCombos(items, lists, onProgress) {
-  const products = []
-  for (const [pid, g] of groupBy(items, it => it.parent)) {
+  const products = [], groups = [...groupBy(items, it => it.parent)]
+  for (let i = 0; i < groups.length; i++) {
+    // A big shop takes a while: say how far, and let the page breathe.
+    if (i % 50 === 0) { onProgress(`Preparing what the rules couldn't finish — product ${i + 1} of ${groups.length}...`); await new Promise(r => setTimeout(r, 0)) }
+    const [pid, g] = groups[i]
     const trouble = troubleCells(g)
     if (!trouble.size) continue
     const cols = [...new Set([...trouble.values()].flatMap(s => [...s]))]
