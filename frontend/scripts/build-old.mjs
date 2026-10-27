@@ -29,9 +29,15 @@ try {
     writeFileSync(p, text.replace(from, to))
   }
   edit('src/main.jsx', 'basename="/cartup-ops"', `basename="${base.replace(/\/$/, '')}"`)
+  // The two version buttons, as the latest has them (VersionSwitch.jsx) — here OLD is running.
+  const latest = /APP_VERSION = '([^']+)'/.exec(readFileSync('src/version.js', 'utf8'))[1]
+  const btn = 'display:flex;align-items:center;justify-content:space-between;gap:6px;box-sizing:border-box;width:100%;padding:6px 10px;border-radius:8px;font:700 11px/1.3 system-ui,sans-serif;text-decoration:none'
   edit('index.html', '<div id="root"></div>', `<div id="root"></div>
-  <a href="/cartup-ops/" title="You are using the old version (v${old.version}). The latest version is the main site."
-    style="position:fixed;left:12px;bottom:70px;width:200px;box-sizing:border-box;z-index:9999;text-align:center;background:#b45309;color:#fff;padding:7px 10px;border-radius:18px;font:600 11.5px system-ui,sans-serif;text-decoration:none;box-shadow:0 4px 12px rgba(0,0,0,.25)">Old version v${old.version} · Go to the latest →</a>`)
+  <div data-version-switch style="position:fixed;left:12px;bottom:66px;width:200px;z-index:9999;display:flex;flex-direction:column;gap:6px;padding:6px;border-radius:10px;background:rgba(30,27,75,.92);box-shadow:0 4px 14px rgba(0,0,0,.25)">
+    <span data-version="old" aria-current="true" title="You are using the old version" style="${btn};color:#fff;background:#16a34a;border:1px solid #16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.25)"><span>OLD: v${old.version}</span><span style="display:inline-flex;align-items:center;gap:5px;font-weight:600"><span class="vs-dot"></span>Running</span></span>
+    <a href="/cartup-ops/" data-version="latest" title="Go to the latest version" style="${btn};color:rgba(255,255,255,.85);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.25)"><span>Latest: v${latest}</span><span style="font-weight:500;opacity:.75">Open →</span></a>
+  </div>
+  <style>.vs-dot{width:7px;height:7px;border-radius:50%;background:#fff;animation:vs-pulse 1.4s ease-in-out infinite}@keyframes vs-pulse{0%,100%{opacity:1}50%{opacity:.35}}</style>`)
   // Same packages as the latest version → reuse its install; otherwise install the old ones.
   const same = readFileSync(join(fe, 'package.json'), 'utf8') === readFileSync('package.json', 'utf8') && existsSync('node_modules')
   if (same) symlinkSync(resolve('node_modules'), join(fe, 'node_modules'), 'dir')

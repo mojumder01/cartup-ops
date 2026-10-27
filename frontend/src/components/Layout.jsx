@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { LayoutDashboard, Upload, CheckSquare, Image, Shield, LogOut, ChevronRight } from 'lucide-react'
-import { APP_VERSION, OLD_VERSION } from '../version'
+import VersionSwitch from './VersionSwitch'
 
 export default function Layout() {
   const { user, signOut } = useAuth()
@@ -94,13 +94,9 @@ export default function Layout() {
         </nav>
 
         {/* Sidebar footer */}
-        <div style={{ padding:'14px 20px 16px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
-          <div className="sb-credit">built by muntasir</div>
-          <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace', marginTop:3 }}>v{APP_VERSION} · latest</div>
-          <a href={OLD_VERSION.path} data-old-version title={`Open the old version (v${OLD_VERSION.version}) for anyone who needs it — this site always stays the latest`}
-            style={{ display:'inline-block', marginTop:6, fontSize:10.5, color:'rgba(255,255,255,0.55)', textDecoration:'none', border:'1px solid rgba(255,255,255,0.15)', borderRadius:12, padding:'2px 9px' }}>
-            Use old version (v{OLD_VERSION.version})
-          </a>
+        <div style={{ padding:'12px 12px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', textAlign:'center' }}>
+          <VersionSwitch dark />
+          <div className="sb-credit" style={{ marginTop:10 }}>built by muntasir</div>
         </div>
       </aside>
 
