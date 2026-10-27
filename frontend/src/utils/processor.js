@@ -10,7 +10,7 @@ import { IMAGE_COLS } from './checks'
 import { todayISO } from './dates'
 import { listMatcher, columnKind } from './listMatch'
 import { darazRows, cell } from './darazFiles'
-import { COMBO_TARGETS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, troubleCells, aiCandidates, applyAIPicks, applyDecisions } from './variantReview'
+import { COMBO_TARGETS, FILL_DEFAULTS, headerKey, colLabel, splitCombo, planParent, placeParts, makeCell, harmonizeSizes, separateCollisions, sizesIntoColor, variantKind, compareWithAI, checkLabels, plainKind, troubleCells, aiCandidates, applyAIPicks, applyDecisions } from './variantReview'
 
 const { daraz_to_cartup, cartup_map, cat_variant_map, mystery_cats, manual_cats } = MAPPINGS
 
@@ -592,7 +592,6 @@ function warrantyRules(it, lists) {
   }
 }
 
-const FILL_DEFAULTS = { Color: 'Not Specified', Model: 'Same as picture', Size: 'One Size', 'Clothing Size': 'One Size', 'Shoe Size': 'One Size', 'Bedding Size': 'One Size' }
 
 // Stage 2 — every dropdown value against the template's lists (or none, when
 // no template is given). Repeatable: a newer template only re-runs this.
@@ -809,10 +808,16 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
         'Price': out['**Price(MRP)'], 'Image 1': out['**Product Image 1'], 'Variant Image': out['*Variant Image'], 'Quantity': out['**Current Stock Qty'], 'Status': out['status'],
         'Report': reasons.join(' | ') })
     }
-    // A special price must be below the price (checked after edits, so a fixed one isn't flagged).
+    // A special price must be below the price — CartUp rejects the row otherwise
+    // ("Special Price must be less than Price"): removed, the SKU stays. Checked
+    // after edits, so a price or special price fixed in the sheet keeps it.
     const spNow = Number(out['Special Price']), mrpNow = Number(out['**Price(MRP)'])
     if (spNow > 0 && mrpNow > 0 && spNow >= mrpNow) {
-      flag('Special Price', `Not below the price (${out['**Price(MRP)']}) — CartUp may reject it`, 'price')
+      const why = `Special price ${out['Special Price']} removed — not below the price (${out['**Price(MRP)']}), CartUp rejects it; the SKU stays`
+      log('Special Price', out['Special Price'], '', why)
+      notes.push(`Special price removed: not below the price (${out['**Price(MRP)']})`)
+      clearSpecial()
+      flag('Special Price', why, 'spremoved')
       rules.spNotBelow++
     }
     const stockText = String(out['**Current Stock Qty'] ?? '').trim()
@@ -942,7 +947,7 @@ export function darazSummary(result, output, options = {}) {
     `Rows: ${n(total)} in the Price file → ${s(uploaded.length, 'row')} uploaded (${s(products, 'product')}) · ${n(left)} left out`,
     `Inactive: ${options.activeOnly || result.skipped ? `${n(result.skipped)} left out (Active only)` : '0 left out (all rows taken)'}`,
     `Price: ${join([`${n(leftFor(/^Price/))} left out (no price / MRP)`, `${s(r.discountRemoved, 'special price')} removed (75–99% discount — SKU kept)`,
-      r.spNotBelow && `${s(r.spNotBelow, 'special price')} not below the price (flagged)`])}`,
+      r.spNotBelow && `${s(r.spNotBelow, 'special price')} removed (not below the price — SKU kept)`])}`,
     `Image: ${join([options.imageKeys ? `${n(leftFor(/^(Images|Variant Image):/))} left out — no CartUp image key (${n(leftFor(/^Images:/))} for any product image, ${n(leftFor(/^Variant Image:/))} for the variant image)` : '0 left out',
       options.imageKeys && `${s(r.imageKeyed, 'image')} → CartUp keys`, options.imageKeys && r.imageMissing && `${s(r.imageMissing, 'image')} without a key not uploaded`, options.imageKeys && r.imagesMoved && `${s(r.imagesMoved, 'row')} with images moved up to fill gaps`,
       options.imageKeys?.forItem && r.keyRowsMissing && `${s(r.keyRowsMissing, 'Seller SKU')} not in the key file`,

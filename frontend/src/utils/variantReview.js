@@ -15,6 +15,11 @@ import { valueKind, MATCH_LABEL, parseRange, sameRangeKind, columnKind } from '.
 // Columns a Variations Combo part can go to: colour, then the size types in
 // the order the category rules prefer them.
 export const COMBO_TARGETS = ['Color', 'Shoe Size', 'Clothing Size', 'Bedding Size', 'Size', 'Age Group', 'Model']
+// A variant column the category needs but the seller left empty: CartUp
+// rejects the row without it ("Attribute-Variant Mapping Missing. Expected 2
+// attribute(s), found 1"), so it gets the neutral value on CartUp's list —
+// Age Group's only one is "One Size". Daraz Upload and Manual Upload.
+export const FILL_DEFAULTS = { Color: 'Not Specified', Model: 'Same as picture', Size: 'One Size', 'Clothing Size': 'One Size', 'Shoe Size': 'One Size', 'Bedding Size': 'One Size', 'Age Group': 'One Size' }
 const MATCH_SCORE = { exact: 100, format: 92, alias: 85, similar: 70 }
 
 export const headerKey = h => String(h).replace(/^\*+/, '').toLowerCase().replace(/[^a-z0-9]/g, '')

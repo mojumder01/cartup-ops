@@ -15,7 +15,7 @@ export const ISSUE_TYPES = {
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
   noimage:  { label: 'Image missing (row kept)', level: 'warn' },
-  spremoved:{ label: 'Special price removed (75–99% discount)', level: 'warn' },
+  spremoved:{ label: 'Special price removed (75–99% discount or not below the price)', level: 'warn' },
   price:    { label: 'Special price not below the price', level: 'warn' },
   defaults: { label: 'Set by rule (Not Specified / One Size)', level: 'warn' },
   sizecolor:{ label: 'Size / variant in the Color column (Grey-L…) — not sure', level: 'warn' },
@@ -118,9 +118,6 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (byType.defaults) add({ id: 'defaults', level: 'check', count: byType.defaults, unit: 'value',
     title: 'Variant values set by rule — part of the combo unused', why: 'The category needs Color / Model / Size and the seller gave none, so it was set to Not Specified / Same as picture / One Size — but part of the Variations Combo went unused (it may have been the value) and the AI didn\'t confirm it. An empty combo → Not Specified needs no look',
     open: { sheet: 'defaults' } })
-  if (output.rules.spNotBelow) add({ id: 'spprice', level: 'check', count: output.rules.spNotBelow, unit: 'row',
-    title: 'Special price not below the price', why: 'CartUp may reject it — fix the price or the special price (or leave special price out)',
-    open: { sheet: 'price' } })
   if (result.ai?.missed) {
     const m = result.ai.message || ''
     const reason = /limit is used/i.test(m) ? "today's Gemini limit was used up" : /at their limit/i.test(m) ? 'every key was at its limit' : m.slice(0, 80) || 'no answer'
@@ -143,6 +140,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     open: { sheet: 'stock0' } })
   if (output.rules.discountRemoved) add({ id: 'spremoved', level: 'info', count: output.rules.discountRemoved, unit: 'row',
     title: 'Special prices removed (75–99% discount)', why: 'The special price was removed, the SKU stays — Report and the change log say so',
+    open: { sheet: 'spremoved' } })
+  if (output.rules.spNotBelow) add({ id: 'spprice', level: 'info', count: output.rules.spNotBelow, unit: 'row',
+    title: 'Special prices removed (not below the price)', why: 'CartUp rejects a special price that isn\'t below the price ("Special Price must be less than Price") — removed, the SKU stays; fix the price or special price in the sheet to keep one',
     open: { sheet: 'spremoved' } })
   if (result.invalidRows.length) add({ id: 'invalid', level: 'info', count: result.invalidRows.length, unit: 'row',
     title: 'Rows left out (no name / price)', why: 'No name, no price (MRP), or no Product ID / Seller SKU — listed in the "invalid" sheet with the reason, not in the upload' })

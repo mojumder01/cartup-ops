@@ -369,6 +369,7 @@ export default function DarazUpload() {
   const summary = output ? darazSummary(result, output, { ...options, activeOnly }) : ''
   const ruleLine = output && [
     output.rules.discountRemoved && `${output.rules.discountRemoved} special prices removed (75%+ discount)`,
+    output.rules.spNotBelow && `${output.rules.spNotBelow} special prices removed (not below the price)`,
     output.rules.stockSet && `${output.rules.stockSet} stocks set to ${stockSet}`,
     output.rules.stockCapped && `${output.rules.stockCapped} stocks capped at 99,999`,
     output.rules.namesHash && `${output.rules.namesHash} names: "#" → "-"`,

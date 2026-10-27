@@ -3,6 +3,7 @@ import MAPPINGS from './mappings.json'
 import { processAndCategoriseBatch, localFixName, runConcurrent } from './gemini'
 import { applyReplacements } from './wordReplacements'
 import { weightNeedsCheck } from './shopDuplicate'
+import { FILL_DEFAULTS } from './variantReview'
 
 const { cartup_map, cat_variant_map } = MAPPINGS
 
@@ -362,7 +363,7 @@ export async function processManualFile(file, apiKey, onProgress) {
   // ── Step 4: Build output rows ─────────────────────────────────────────────
   onProgress('Building output rows...')
   const outputRows = []
-  const summary = { rows: 0, invalid: 0, duplicates: 0, discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, spNotBelow: 0 }
+  const summary = { rows: 0, invalid: 0, duplicates: 0, discountRemoved: 0, stockCapped: 0, namesHash: 0, lowWeight: 0, spNotBelow: 0, filled: 0 }
   const seenSkus = new Set()
 
   for (const r of expandedRows) {
@@ -377,8 +378,8 @@ export async function processManualFile(file, apiKey, onProgress) {
     const cat = catMatchCache[r.pid] || { cartupId:'', cartupPath:'', tags:'', reportNote: 'No category match found' }
     const notes = []
     // House rules (as in Daraz Upload): "#" → "-" in names, stock ≤ 99,999,
-    // a 75%+ special price removed; special price ≥ price and weights starting
-    // with 0.00 are noted, not changed.
+    // a 75%+ special price or one not below the price removed (CartUp rejects
+    // the latter); weights starting with 0.00 are noted, not changed.
     if (/#/.test(ai.name || '')) { summary.namesHash++; notes.push('"#" in name → "-"') }
     const productName = String(ai.name || uniqueProducts[r.pid]?.name || '').replace(/#/g, '-')
     let stock = r.stock
@@ -388,7 +389,10 @@ export async function processManualFile(file, apiKey, onProgress) {
     if (sp > 0 && mrp > 0 && 1 - sp / mrp >= 0.75) {
       notes.push(`Special price removed: ${Math.round((1 - sp / mrp) * 100)}% discount`)
       specialPrice = ''; spStart = ''; spEnd = ''; summary.discountRemoved++
-    } else if (sp > 0 && mrp > 0 && sp >= mrp) { notes.push('Special price not below the price — check it'); summary.spNotBelow++ }
+    } else if (sp > 0 && mrp > 0 && sp >= mrp) {
+      notes.push(`Special price removed: not below the price (${r.price})`)
+      specialPrice = ''; spStart = ''; spEnd = ''; summary.spNotBelow++
+    }
     if (weightNeedsCheck(r.weight)) { notes.push('Weight to check (empty or 0.00x)'); summary.lowWeight++ }
     const highlights = ensureHtmlHighlights(ai.highlights, productName)
     const description = ensureHtmlDescription(ai.description, productName)
@@ -399,7 +403,7 @@ export async function processManualFile(file, apiKey, onProgress) {
       [...(r.colorVal ? ['Color'] : []), ...(r.sizeVal ? ['Clothing Size'] : [])]
     )
 
-    outputRows.push({
+    const row = {
       '**Category Id':            cat.cartupId,
       '**Name (English)':         productName,
       'Name (Bengali)':           productName,
@@ -453,8 +457,18 @@ export async function processManualFile(file, apiKey, onProgress) {
       'Special Price End Date':   spEnd,
       'status':                   r.status,
       'Cartup Category Path':     cat.cartupPath,
-      'Report':                   [cat.reportNote, ...notes].filter(Boolean).join(' | '),
-    })
+      'Report':                   '',
+    }
+    // A variant column the category needs but the file left empty gets the
+    // neutral value (CartUp rejects the row without it), as in Daraz Upload.
+    for (const [col, value] of Object.entries(FILL_DEFAULTS)) {
+      if (!cat.cartupId || !applicable.includes(col) || String(row[col] ?? '').trim()) continue
+      row[col] = value
+      notes.push(`Not given, set by rule (category needs it): ${col} = ${value}`)
+      summary.filled++
+    }
+    row.Report = [cat.reportNote, ...notes].filter(Boolean).join(' | ')
+    outputRows.push(row)
   }
   summary.rows = outputRows.length
   summary.invalid = invalidRows.length

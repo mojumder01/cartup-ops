@@ -165,7 +165,8 @@ export default function ManualUpload() {
             {summary.noCategory > 0 && <span style={{ color:'#b45309' }}> · {summary.noCategory.toLocaleString()} without a category — fill in the Category Id</span>}
             {[
               summary.discountRemoved && `${summary.discountRemoved} special prices removed (75%+ discount)`,
-              summary.spNotBelow && `${summary.spNotBelow} special prices not below the price (noted)`,
+              summary.spNotBelow && `${summary.spNotBelow} special prices removed (not below the price)`,
+              summary.filled && `${summary.filled} variant values set by rule (the category needs them: Not Specified / One Size / Same as picture)`,
               summary.stockCapped && `${summary.stockCapped} stocks capped at 99,999`,
               summary.namesHash && `${summary.namesHash} names: "#" → "-"`,
               summary.lowWeight && `${summary.lowWeight} weights to check (empty or 0.00x)`,
