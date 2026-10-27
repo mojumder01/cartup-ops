@@ -23,12 +23,15 @@ export const BUILT_IN = { daraz_categories: BUILT_IN_DARAZ, cartup_categories: M
 // "One Size". discountLimit: a special price this % or more below the price
 // is removed (the SKU stays). stockCap: stock never above it. hashTo: "#" in
 // names becomes this. wordReplacements: in names, highlights, descriptions.
+// partsToName: a Variations Combo part with no column in the category that
+// every SKU of the product has ("8TB" in "Grey,8TB") goes into the name.
 export const DEFAULT_RULES = {
   fillDefaults: { Color: 'Not Specified', Model: 'Same as picture', Size: 'One Size', 'Clothing Size': 'One Size', 'Shoe Size': 'One Size', 'Bedding Size': 'One Size', 'Age Group': 'One Size' },
   discountLimit: 75,
   stockCap: 99999,
   hashTo: '-',
   wordReplacements: [{ find: 'daraz', replace: 'cartup' }],
+  partsToName: true,
 }
 export function houseRules() {
   const t = teamValue('rules') || {}

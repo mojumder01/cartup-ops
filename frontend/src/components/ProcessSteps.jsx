@@ -26,7 +26,8 @@ const time = ms => {
 // plan: { id: why it won't run } for the chosen options; run: { start, end } | null;
 // state: '' | 'processing' | 'success' | 'error'; ai: the run's AI use (calls, tokens, key…).
 export default function ProcessSteps({ steps, plan, run, state, error, ai }) {
-  const running = state === 'processing'
+  // Processing — or a step run on its own afterwards (the AI category check button).
+  const running = state === 'processing' || Object.values(steps).some(s => s?.status === 'active')
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     if (!running) return

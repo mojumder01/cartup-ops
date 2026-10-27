@@ -13,6 +13,7 @@ export const ISSUE_TYPES = {
   list:     { label: 'Not on CartUp list (#N/A)', level: 'error' },
   category: { label: 'No category', level: 'error' },
   aicat:    { label: 'Category set or changed by the AI', level: 'warn' },
+  namepart: { label: 'Name: a part of Variations Combo added (8TB…)', level: 'warn' },
   required: { label: 'Required — empty', level: 'error' },
   numbered: { label: 'Variants told apart by a number (Multicolor-1…)', level: 'error' },
   leftout:  { label: 'Left out — no weight / no image key', level: 'error' },
@@ -88,7 +89,7 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
     title: 'Rows without a CartUp category', why: 'The Daraz category had no match — fill in the Category Id',
     open: { sheet: 'category' } })
   if (byType.aicat) add({ id: 'aicat', level: 'check', count: byType.aicat, unit: 'row',
-    title: 'Categories set or changed by the AI', why: 'The Category option: empty (no mapping) or not fitting the product — the AI picked from CartUp\'s categories that share the product\'s words; Report says from what to what',
+    title: 'Categories set or changed by the AI', why: 'The AI category check: empty (no mapping) or not fitting the product — the AI picked from CartUp\'s categories that share the product\'s words; Report says from what to what',
     open: { sheet: 'aicat' } })
   add({ id: 'required', level: 'fix', count: byType.required || 0, unit: 'cell',
     title: 'Required cells empty', why: 'Brand, unit, package size, stock, price… the upload needs them',
@@ -143,6 +144,9 @@ export function buildChecklist({ result, output, issues, values, imageKeys }) {
   if (output.rules.stockZero) add({ id: 'stock0', level: 'info', count: output.rules.stockZero, unit: 'row',
     title: 'Rows with 0 stock', why: output.rules.stockSet ? 'Stock set for every row by the Stock option' : 'They upload as out of stock — fine when the seller wants it; otherwise set the stock (Stock option or sheet)',
     open: { sheet: 'stock0' } })
+  if (output.rules.namePartRows) add({ id: 'namepart', level: 'info', count: output.rules.namePartRows, unit: 'SKU',
+    title: 'Names with a part of Variations Combo added', why: 'A part with no column in the category (8TB, 2 pcs…) that every SKU of the product has — kept in the name ("… (8TB)") instead of being lost; CartUp has one name per Parent SKU',
+    open: { sheet: 'namepart' } })
   if (output.rules.discountRemoved) add({ id: 'spremoved', level: 'info', count: output.rules.discountRemoved, unit: 'row',
     title: `Special prices removed (${houseRules().discountLimit}–99% discount)`, why: 'The special price was removed, the SKU stays — Report and the change log say so',
     open: { sheet: 'spremoved' } })

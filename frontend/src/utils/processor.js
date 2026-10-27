@@ -477,6 +477,16 @@ export async function processDarazFiles(files, apiKey, onProgress, options = {})
   return { items, invalidRows, duplicateSkus, skipped, total: allPriceRows.length, lists, template: !!lists, variantMode, ai: apiKey ? { products: aiContent ? pidList.length : 0, missed: aiMissed.size, message: aiMessage, name: aiName, fields: aiFields, combo, category } : null }
 }
 
+// The AI category check on a processed run (Daraz Upload's button, any time
+// after processing — no files read again): the same check as the Category
+// option, then the variant columns matched again where a category changed.
+export async function runCategoryCheck(result, onProgress = () => {}) {
+  const category = await checkCategories(result.items, onProgress)
+  if (category.filled || category.changed) matchItems(result.items, result.lists, result.variantMode)
+  const ai = result.ai || { products: 0, missed: 0, message: '', name: false, fields: { name: false, highlights: false, description: false, combo: false }, combo: null }
+  return { ...result, items: [...result.items], ai: { ...ai, fields: { ...ai.fields, category: true }, category } }
+}
+
 // Each product's CartUp category, checked by the AI (the Category option, run
 // after everything else): empty (no mapping, mystery box) or not fitting the
 // product → the AI picks from the CartUp categories that share the product's
@@ -746,7 +756,7 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const { specialPrice = { include: true, start: todayISO(), end: '' }, stock = { set: null }, imageKeys = null, edits = {}, deleted = null } = options
   const problems = [], excluded = new Set(), leftOut = [], deletedRows = new Set()
   const rules = { discountRemoved: 0, spNotBelow: 0, stockCapped: 0, stockSet: 0, stockZero: 0, namesHash: 0, imageKeyed: 0, imageMissing: 0,
-    spNotBelowSkus: [], keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
+    spNotBelowSkus: [], namePartRows: 0, keyRows: 0, keyRowsMissing: 0, leftNoImage: 0, leftNoVariant: 0, leftNoWeight: 0, deleted: 0, numbered: 0, sizeColor: 0, sizeColorSure: 0, aiDisagree: 0, imagesMoved: 0, edited: 0, specialPrices: 0,
     variantRows: new Set() }   // rows with variant values (applied.variantLook: those that need a person)
   const numberedBy = new Map(), sizeColorBy = new Map()
   for (const nb of applied.numbered || []) { if (!numberedBy.has(nb.row)) numberedBy.set(nb.row, []); numberedBy.get(nb.row).push(nb) }
@@ -755,6 +765,19 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
   const { stockCap, discountLimit, hashTo } = houseRules()
   const capText = Number(stockCap).toLocaleString()
   const stockSet = stock?.set == null || stock.set === '' ? null : Math.min(stockCap, Math.max(0, Math.round(Number(stock.set) || 0)))
+  // Combo parts with no column that every SKU of a product has (applyDecisions'
+  // nameParts) go into the product's name — once per product, unless a variant
+  // value (a quick fix, a pick) or the name already has them.
+  const norm = s => ` ${String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `
+  const has = (text, part) => { const q = norm(part).replace(/ /g, ''); return q.length >= 3 ? norm(text).replace(/ /g, '').includes(q) : norm(text).includes(norm(part)) }
+  const rowsOf = new Map()
+  result.items.forEach((it, i) => { if (!rowsOf.has(it.parent)) rowsOf.set(it.parent, []); rowsOf.get(it.parent).push(i) })
+  const nameAdd = new Map()
+  for (const [parent, parts] of applied.nameParts || []) {
+    const ix = rowsOf.get(parent) || []
+    const keep = parts.filter(p => !ix.some(i => has(applied.rows[i]['**Name (English)'], p) || COMBO_TARGETS.some(c => has(applied.rows[i][c], p))))
+    if (keep.length) nameAdd.set(parent, keep)
+  }
   applied.rows.forEach((out, i) => {
     const item = result.items[i]
     const log = (column, from, to, change) => applied.changes.push({ sku: item.sku, parent: item.parent, name: item.name, column, from: String(from ?? ''), to: String(to ?? ''), change, detail: '' })
@@ -771,12 +794,21 @@ export function buildOutput(result, decisions = {}, memory = {}, options = {}) {
     for (const [c, v] of Object.entries(item.fixed || {})) out[c] = v
     for (const rc of item.ruleChanges || []) log(rc.column, rc.from, rc.to, rc.change)
 
+    // Name: the product's combo part with no column ("… (8TB)"), see nameAdd.
+    const added = nameAdd.get(item.parent)
+    if (added) {
+      for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = `${String(out[c] ?? '').trim()} (${added.join(', ')})`
+      notes.push(`Added to the name from Variations Combo: ${added.join(', ')} (the category has no column for it)`)
+      if (!isDeleted) problems.push({ sku: item.sku, parent: item.parent, row: i, column: '**Name (English)', value: out['**Name (English)'], problem: `"${added.join(', ')}" from Variations Combo added — the category has no column for it, and every SKU of the product has it`, type: 'namepart' })
+      rules.namePartRows++
+    }
     // Name: "#" becomes "-" (the team's choice).
     const hash = /#/.test(item.name) && hashTo !== '#'
     if (hash) for (const c of ['**Name (English)', 'Name (Bengali)', "What's in the box"]) out[c] = String(out[c] ?? '').replace(/#/g, hashTo)
     if (hash) rules.namesHash++
     if (item.darazName && out['**Name (English)'] !== item.darazName) {
-      log('Name (English)', item.darazName, out['**Name (English)'], [item.name !== item.darazName ? item.nameHow : '', hash ? `"#" replaced with "${hashTo}"` : ''].filter(Boolean).join(' · '))
+      log('Name (English)', item.darazName, out['**Name (English)'], [item.name !== item.darazName ? item.nameHow : '', hash ? `"#" replaced with "${hashTo}"` : '',
+        added ? `"(${added.join(', ')})" added from Variations Combo — no column for it in this category` : ''].filter(Boolean).join(' · '))
     }
 
     // Stock: one number for every row when chosen (a seller who wants to upload with 0 stock).
@@ -1058,6 +1090,7 @@ export function darazSummary(result, output, options = {}) {
     `Variants set: ${join([`${n(output.ruleRows?.size || 0)} by rule (Color = Not Specified when the combo is empty or has no colour, Model = Same as picture, size = One Size)${output.filledRows?.size ? ` — ${n(output.filledRows.size)} to check (part of the combo unused)` : ''}`,
       r.sizeColor && `${n(r.sizeColor)} with the size in the Color column (L, Grey-L… — the category has no size column; ${n(r.sizeColorSure)} sure, ${n(r.sizeColor - r.sizeColorSure)} to check)`,
       output.aiPickRows?.size && `${n(output.aiPickRows.size)} picked by the AI — the closest value on CartUp's list (Report says which)`,
+      r.namePartRows && `${n(r.namePartRows)} with a part of the combo that has no column (8TB, 2 pcs…) kept in the name`,
       r.numbered && `${n(r.numbered)} told apart only by a number (Multicolor-1…) — check`,
       r.aiDisagree && `${n(r.aiDisagree)} read differently by the AI — check`])}`,
     `Check = YES: ${n(uploaded.filter(row => row.Check === 'YES').length)} uploaded rows to look at (reason in Report)`,

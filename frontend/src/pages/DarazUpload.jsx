@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getActiveApiKey as getApiKey } from '../utils/gemini'
 import { poolSummary, onAiChange, sessionStats, resetText, maskKey } from '../utils/aiPool'
 import {
-  processDarazFiles, buildOutput, buildDarazWorkbook, darazSummary, aiSummary, comboSummary, categorySummary, templateLists, rematch, rowKey,
+  processDarazFiles, runCategoryCheck, buildOutput, buildDarazWorkbook, darazSummary, aiSummary, comboSummary, categorySummary, templateLists, rematch, rowKey,
   readTableFile, guessImageKeys, makeImageKeyMap, makeImageKeyColumns, OUTPUT_COLS,
 } from '../utils/processor'
 import { loadMemory, rememberDecisions, forgetMemory, valueGroups, colGroup } from '../utils/variantReview'
@@ -17,7 +17,7 @@ import { saveTeamSetting, onTeamSettings } from '../utils/teamSettings'
 import SheetEditor from '../components/SheetEditor'
 import FilePreview from '../components/FilePreview'
 import ProcessSteps from '../components/ProcessSteps'
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw, Eye, Activity } from 'lucide-react'
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, AlertTriangle, Loader, Download, Zap, ListChecks, Layers, Table2, RefreshCw, Settings2, Info, ChevronRight, ClipboardCheck, XCircle, FileSearch, RotateCcw, Eye, Activity, Sparkles } from 'lucide-react'
 
 // A file box. file: the picked File; current: text shown when nothing is
 // picked here (a remembered file); check: what the file check found
@@ -328,6 +328,16 @@ export default function DarazUpload() {
     return [...to].filter(([, c]) => c).map(([d, c]) => ({ d, c, path: result.items.find(it => it.catChange?.to === c)?.category || '' }))
   }, [result])
   const [catSaved, setCatSaved] = useState('')
+  // The AI category check, run on the processed run when wanted (the Category
+  // option runs it during processing instead).
+  const [catRun, setCatRun] = useState(false)
+  const runCategoryAI = async () => {
+    if (result.ai?.category && !window.confirm('Run the AI category check again? Every product is asked again (more requests).')) return
+    setCatRun(true); setCatSaved(''); setError(''); setPanel('process')
+    setSteps(s => { const n = { ...s }; delete n.category; return n })
+    try { setResult(await runCategoryCheck(result, onStep)) } catch (e) { setError(`AI category check: ${e.message}`) }
+    setProgress(''); setCatRun(false)
+  }
   const saveAiCategories = async () => {
     if (!window.confirm(`Add ${aiCatPairs.length} Daraz → CartUp mapping${aiCatPairs.length === 1 ? '' : 's'} for the whole team?\n\n${aiCatPairs.slice(0, 15).map(p => `${p.d} → ${p.c} ${p.path}`).join('\n')}${aiCatPairs.length > 15 ? '\n…' : ''}\n\nThey can be changed or undone in Data & Rules.`)) return
     try {
@@ -387,6 +397,7 @@ export default function DarazUpload() {
 
   const rulesNow = houseRules()   // the team's house rules (Settings), for the texts here
   const rows = output?.rows.length || 0
+  const productCount = result ? new Set(result.items.map(it => it.parent)).size : 0
   const needs = output?.attention.size || 0
   const autoPct = rows ? Math.round(((rows - needs) / rows) * 100) : 0
   // Rows with variant values (uploaded), and those whose variants need a person.
@@ -483,7 +494,7 @@ export default function DarazUpload() {
               {aiFields.name && aiFields.highlights && aiFields.description ? 'Gemini fixes spelling and grammar in all three'
                 : !aiFields.name && !aiFields.highlights && !aiFields.description ? 'all off — no AI requests: names get the spelling rules, highlights and description come from the Basic file as they are'
                 : `unticked — ${['name', 'highlights', 'description'].filter(k => !aiFields[k]).map(k => k === 'name' ? 'name: spelling rules only' : `${k}: from the Basic file as it is`).join(' · ')}`}
-              {' · '}{aiFields.category ? 'Category: after everything else, Gemini checks each product\'s CartUp category — empty (no mapping) or not fitting the product → it picks one of CartUp\'s categories that share the product\'s words; every change in Report and the check list' : 'Category: the mapping table only (tick to let the AI check it — more requests)'}
+              {' · '}{aiFields.category ? 'Category: after everything else, Gemini checks each product\'s CartUp category — empty (no mapping) or not fitting the product → it picks one of CartUp\'s categories that share the product\'s words; every change in Report and the check list' : 'Category: the mapping table — tick to have the AI check it during processing, or use "Run AI category check" on the result whenever needed'}
               {' · '}{aiFields.combo ? 'Variations Combo: Gemini says which part is the colour and which the size, and where the rules can\'t finish (L/XL, 1-5 years, Black-1…) picks the closest value on CartUp\'s list — only from the list, only the seller\'s own words, every pick checked' : 'Variations Combo: rules only'}
               {result?.ai && ['name', 'highlights', 'description', 'combo', 'category'].some(k => (result.ai.fields?.[k] ?? k !== 'category') !== aiFields[k]) ? ' · applies when you process again' : ''}
             </span>
@@ -682,6 +693,26 @@ export default function DarazUpload() {
                 )}
               </div>
 
+              {/* AI category check — on this run, whenever wanted */}
+              <div data-category-check style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 14px', border:'1px solid #ddd6fe', background:'#faf5ff', borderRadius:10, marginBottom:12, flexWrap:'wrap' }}>
+                <Sparkles size={18} color='#7c3aed' style={{ flexShrink:0 }} />
+                <div style={{ flex:1, minWidth:260 }}>
+                  <div style={{ fontWeight:700, color:'#1a202c' }}>AI category check {result.ai?.category && <span style={{ fontWeight:500, color:'#15803d', fontSize:11.5 }}>· done</span>}</div>
+                  <div style={{ fontSize:11.5, color:'#64748b', lineHeight:1.5 }}>
+                    {catRun ? progress || 'Checking…'
+                      : result.ai?.category ? categorySummary(result.ai.category)
+                      : `Gemini checks every product's CartUp category — empty (no mapping) or not fitting the product → the closest one from CartUp's list (only from it). ${productCount.toLocaleString()} products ≈ ${Math.ceil(productCount / 15).toLocaleString()} requests · no files read again`}
+                  </div>
+                  {aiCatPairs.length > 0 && !catSaved && !catRun && <button data-save-ai-cats onClick={saveAiCategories} style={{ marginTop:4, border:'1px solid #c7d2fe', background:'#fff', color:'#4f46e5', borderRadius:6, padding:'2px 10px', fontSize:11.5, fontWeight:600, cursor:'pointer' }}>Save {aiCatPairs.length} filled categor{aiCatPairs.length === 1 ? 'y' : 'ies'} to the Daraz → CartUp map</button>}
+                  {catSaved && <div style={{ marginTop:4, fontSize:11.5, color: /^Not/.test(catSaved) ? '#b91c1c' : '#15803d', fontWeight:600 }}>{catSaved}</div>}
+                </div>
+                {apiKey ? (
+                  <button data-run-category-check onClick={runCategoryAI} disabled={catRun || status === 'processing'} style={{ ...btn(!result.ai?.category), background: result.ai?.category ? '#fff' : '#7c3aed', color: result.ai?.category ? '#7c3aed' : '#fff', border: result.ai?.category ? '1.5px solid #ddd6fe' : 'none', opacity: catRun ? 0.7 : 1 }}>
+                    {catRun ? <><Loader size={14} style={{ animation:'spin 1s linear infinite' }} /> Checking…</> : result.ai?.category ? <><RefreshCw size={14} /> Run again</> : <><Sparkles size={14} /> Run AI category check</>}
+                  </button>
+                ) : <span style={{ fontSize:11.5, color:'#b45309' }}>Needs a Gemini key — tick one in Profile</span>}
+              </div>
+
               <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                 {result.template && (
                   <button onClick={() => setReviewing(reviewStart(values, stats.dupes))} style={btn(true)}>
@@ -730,10 +761,7 @@ export default function DarazUpload() {
                   </> : <div>· Values were not checked against CartUp's lists (no template)</div>}
                   {result.ai && <div>· {aiSummary(result.ai)}{aiUse ? ` · ${aiUse.calls.toLocaleString()} request${aiUse.calls === 1 ? '' : 's'}, ${aiUse.tokens.toLocaleString()} tokens` : ''}</div>}
                   {result.ai?.combo && <div data-combo-ai>· {comboSummary(result.ai.combo)}</div>}
-                  {result.ai?.category && <div data-category-ai>· {categorySummary(result.ai.category)}
-                    {aiCatPairs.length > 0 && !catSaved && <button data-save-ai-cats onClick={saveAiCategories} style={{ marginLeft:8, border:'1px solid #c7d2fe', background:'#fff', color:'#4f46e5', borderRadius:6, padding:'1px 9px', fontSize:11.5, fontWeight:600, cursor:'pointer' }}>Save {aiCatPairs.length} to the Daraz → CartUp map</button>}
-                    {catSaved && <span style={{ marginLeft:8, color: /^Not/.test(catSaved) ? '#b91c1c' : '#15803d', fontWeight:600 }}>{catSaved}</span>}
-                  </div>}
+                  {result.ai?.category && <div data-category-ai>· {categorySummary(result.ai.category)}</div>}
                   {ruleLine.length > 0 && <div>· {ruleLine.join(' · ')}</div>}
                 </div>
               </details>

@@ -381,9 +381,11 @@ function RulesSection({ team }) {
     ...Object.keys(form.fillDefaults).filter(c => form.fillDefaults[c] !== cur.fillDefaults[c]).map(c => `Empty ${c} → "${form.fillDefaults[c]}" (was "${cur.fillDefaults[c]}")`),
     ...['discountLimit', 'stockCap', 'hashTo'].filter(k => String(form[k]) !== String(cur[k])).map(k => `${{ discountLimit: 'Special price removed at a discount of', stockCap: 'Stock cap', hashTo: '"#" in names becomes' }[k]} ${form[k]} (was ${cur[k]})`),
     ...(JSON.stringify(form.wordReplacements.filter(r => r.find)) !== JSON.stringify(cur.wordReplacements) ? ['Word replacements changed'] : []),
+    ...((form.partsToName !== false) !== (cur.partsToName !== false) ? [`Combo parts with no column → name: ${form.partsToName !== false ? 'on' : 'off'}`] : []),
   ] : []
   const compose = () => ({ fillDefaults: form.fillDefaults, discountLimit: Math.min(100, Math.max(1, Number(form.discountLimit) || DEFAULT_RULES.discountLimit)),
-    stockCap: Math.max(0, Math.round(Number(form.stockCap) || DEFAULT_RULES.stockCap)), hashTo: String(form.hashTo ?? '-'), wordReplacements: form.wordReplacements.filter(r => r.find.trim()) })
+    stockCap: Math.max(0, Math.round(Number(form.stockCap) || DEFAULT_RULES.stockCap)), hashTo: String(form.hashTo ?? '-'), wordReplacements: form.wordReplacements.filter(r => r.find.trim()),
+    partsToName: form.partsToName !== false })
   const label = { fontSize:12, fontWeight:600, color:'#475569' }
   return (
     <>
@@ -400,6 +402,11 @@ function RulesSection({ team }) {
           </div>
           <div style={{ fontSize:11.5, color:'#94a3b8', marginTop:4 }}>The value must be on CartUp's list for that column (the template) — e.g. Age Group's only neutral one is "One Size"</div>
         </div>
+        <label style={{ ...label, display:'flex', gap:8, alignItems:'flex-start', cursor:'pointer' }}>
+          <input data-rule="partsToName" type="checkbox" checked={form.partsToName !== false} onChange={e => setF('partsToName', e.target.checked)} style={{ accentColor:'#4f46e5', marginTop:2 }} />
+          <span>Keep a Variations Combo part that has no column in the category in the product name — when every SKU of the product has it ("Grey,8TB" for External Hard Drives, Color only → "… (8TB)"; CartUp has one name per Parent SKU)
+            <span style={{ display:'block', fontWeight:400, color:'#94a3b8' }}>Off: the part is only noted in Report ("Not used from Variations Combo"). Parts that differ between SKUs always stay with the variant values.</span></span>
+        </label>
         <div style={{ display:'flex', gap:16, flexWrap:'wrap' }}>
           <label style={label}>Remove a special price at a discount of<br /><input data-rule="discountLimit" type="number" min={1} max={100} value={form.discountLimit} onChange={e => setF('discountLimit', e.target.value)} style={{ ...input, width:80, marginTop:3 }} /> % or more</label>
           <label style={label}>Stock never above<br /><input data-rule="stockCap" type="number" min={0} value={form.stockCap} onChange={e => setF('stockCap', e.target.value)} style={{ ...input, width:110, marginTop:3 }} /></label>

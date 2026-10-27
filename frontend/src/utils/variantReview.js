@@ -11,6 +11,7 @@
 // (Daraz sellers name variants freely; CartUp can add them to its lists).
 
 import { valueKind, MATCH_LABEL, parseRange, sameRangeKind, columnKind } from './listMatch'
+import { houseRules } from './catalog'
 
 // Columns a Variations Combo part can go to: colour, then the size types in
 // the order the category rules prefer them.
@@ -320,6 +321,11 @@ const listHit = list => name => { const h = list.match(name); return h && ['exac
 function putInColor(it, value, part, note, lists) {
   let c = it.cells.find(x => x.col === 'Color')
   if (!c) { c = makeCell('Color', value, lists); it.cells.push(c) }
+  // The seller's colour, when the size alone takes its place ("Black" → "2 TB"),
+  // is no longer in the upload: it joins the unused parts (the name keeps it
+  // when every SKU has it).
+  const squash = x => String(x ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (c.source !== 'fill' && c.raw && plainKind(c.raw) !== 'none' && !squash(value).includes(squash(c.raw)) && !it.unused.includes(c.raw)) it.unused.push(c.raw)
   c.auto = value; c.how = 'sizecolor'; c.note = note; c.part = part
   it.unused = it.unused.filter(x => x !== part)
 }
@@ -827,6 +833,19 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
     if (!byParent.has(item.parent)) byParent.set(item.parent, [])
     byParent.get(item.parent).push(item)
   }
+  // Parts of the combo with no column in the category that every SKU of the
+  // product has (a single SKU's, or the same for all — "8TB" in "Grey,8TB" for
+  // External Hard Drives, which has only Color): CartUp has one name per
+  // Parent SKU, so buildOutput adds them to the name instead of losing them.
+  // Placeholders (Not Specified) and a bare seller number ("1") don't count;
+  // parts that differ between SKUs tell them apart and stay with the variant
+  // values (Grey-L, numbered + quick fixes).
+  const nameParts = new Map()   // parent → [part]
+  if (houseRules().partsToName !== false) for (const [parent, items] of byParent) {
+    const shared = (items[0].unused || []).filter(p => plainKind(p) !== 'none' && !/^#?\d+$/.test(p.trim())
+      && items.every(it => (it.unused || []).some(x => x.toLowerCase() === p.toLowerCase())))
+    if (shared.length) nameParts.set(parent, shared)
+  }
   const dupeNote = new Map()
   for (const items of byParent.values()) {
     for (const g of duplicateVariants(items, it => c => cellState(it, c, decisions, memory, result.lists).value)) {
@@ -888,7 +907,8 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
     if (fresh.length) notes.push(`Not on CartUp list (#N/A until added or matched): ${fresh.join(', ')}`)
     if (changed.length) notes.push(`Changed: ${changed.join(', ')}`)
     if (dupeNote.has(item.sku)) { notes.push(`Same variant values as ${dupeNote.get(item.sku).join(', ')} — make them different`); attention.add(rowIndex); variantLook.add(rowIndex) }
-    if (item.unused.length) notes.push(`Not used from Variations Combo: ${item.unused.join(', ')}`)
+    const lost = item.unused.filter(p => !(nameParts.get(item.parent) || []).includes(p))
+    if (lost.length) notes.push(`Not used from Variations Combo: ${lost.join(', ')}`)
     if (item.aiRead === 'slip') notes.push(`AI reading of Variations Combo dropped (${item.aiSlips.join('; ')}) — the rules decided`)
     if (picked.length) { notes.push(`AI picked the closest CartUp value: ${picked.join(', ')} (Daraz "${item.combo}")`); aiPickRows.add(rowIndex) }
     out['Report'] = notes.filter(Boolean).join(' | ')
@@ -904,5 +924,5 @@ export function applyDecisions(result, decisions = {}, memory = {}) {
   }
   stats.openValues = openValues.size
   stats.openParents = openParents.size
-  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, ruleRows, variantLook, aiPickRows, numbered, sizeColor }
+  return { rows, changes, newValues: [...newValues.values()].map(nv => ({ ...nv, parents: [...nv.parents] })), stats, attention, filledRows, ruleRows, variantLook, aiPickRows, numbered, sizeColor, nameParts }
 }
