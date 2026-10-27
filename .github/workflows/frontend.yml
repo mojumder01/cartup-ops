@@ -27,6 +27,11 @@ jobs:
           npm install
           npm run build
 
+      # The old version (frontend/old-version.json) next to the latest one, at /cartup-ops/old/
+      - name: Build the old version
+        working-directory: frontend
+        run: node scripts/build-old.mjs
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

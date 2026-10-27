@@ -4,10 +4,12 @@
   <meta charset="utf-8">
   <script>
     // GitHub Pages SPA redirect: store the path and redirect to index.html
+    // (the old version's own index.html for paths under /cartup-ops/old/)
     var l = window.location;
+    var parts = l.pathname.split('/');
     l.replace(
       l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-      l.pathname.split('/').slice(0, 2).join('/') +
+      parts.slice(0, parts[2] === 'old' ? 3 : 2).join('/') +
       '/?p=' + encodeURIComponent(l.pathname.slice(1) + (l.search || '') + (l.hash || ''))
     );
   </script>

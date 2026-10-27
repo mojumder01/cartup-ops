@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { login } from '../utils/api'
-import { APP_VERSION } from '../version'
+import { APP_VERSION, OLD_VERSION } from '../version'
 
 export default function Login() {
   const [email, setEmail]       = useState('')
@@ -115,7 +115,10 @@ export default function Login() {
         </form>
 
         <div style={{ textAlign:'center', marginTop:'22px', fontSize:'11px', color:'#a0aec0' }}>
-          built by muntasir · v{APP_VERSION}
+          built by muntasir · v{APP_VERSION} (latest)
+          <div style={{ marginTop:6 }}>
+            <a href={OLD_VERSION.path} data-old-version style={{ color:'#a0aec0' }} title="For anyone who needs it — this site always stays the latest">Use the old version (v{OLD_VERSION.version})</a>
+          </div>
         </div>
       </div>
 

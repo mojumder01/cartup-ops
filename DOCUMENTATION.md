@@ -51,6 +51,10 @@ Only these call Gemini (they use requests from the ticked keys' daily limits); e
 | **QC** | Flag product issues (the QC team flags, never edits) |
 | **Governance** | Revamp product content (zero-tolerance rewrite) |
 
+### Latest and old version
+The site (https://mojumder01.github.io/cartup-ops/) is always the **latest version** — every deploy updates it; the sidebar shows *v25.6.84 · latest*. For anyone who needs the way it worked before, the **old version v25.6.76** stays online at https://mojumder01.github.io/cartup-ops/old/ — open it with **Use old version (v25.6.76)** at the bottom of the sidebar (or under the sign-in box). The old version has an orange **Old version v25.6.76 · Go to the latest →** button to come back. Sign-in, Gemini keys and the saved CartUp template are shared by both (same browser storage).
+- **How it is kept:** every deploy builds the old version from its own source (commit in `frontend/old-version.json`) with `frontend/scripts/build-old.mjs` and puts it in `/old/`; links straight into it (e.g. `/cartup-ops/old/production/daraz`) work too. To keep a different version as the old one, change `version` and `commit` in `frontend/old-version.json`.
+
 ---
 
 ## 2. Production — Daraz Upload

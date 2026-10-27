@@ -1,0 +1,6 @@
+{
+  "version": "25.6.76",
+  "commit": "bcba315517476d9d098135930f0f8df92783c220",
+  "path": "/cartup-ops/old/",
+  "note": "The old version kept online for anyone who needs it. Every deploy builds it from this commit into dist/old/ (scripts/build-old.mjs); the latest version is always the main site. To keep another version as the old one, change version and commit."
+}
